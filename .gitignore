@@ -1,0 +1,12 @@
+# Rust
+/target
+**/*.rs.bk
+
+# macOS
+/apps/macos/Browser.xcodeproj
+/apps/macos/build/
+*.xcuserstate
+xcuserdata/
+
+# Generated bindings (§18: generated, disposable)
+/bindings/

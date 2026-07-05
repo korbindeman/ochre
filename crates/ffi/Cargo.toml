@@ -1,0 +1,9 @@
+[package]
+name = "browser-ffi"
+version = "0.1.0"
+description = "UniFFI + C ABI exports — the bridge between Rust core and native UIs (§17 architecture spec)"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+browser-core = { path = "../core" }

@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/ffi",
+]
+
+# crates/agent and apps/windows are future workspace members (§18 of the
+# architecture spec). They're omitted now so the workspace compiles cleanly
+# during the Step 0 spike; add them when their first code lands.
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = ""
+
+[workspace.dependencies]
+# Shared dep versions go here so crates reference them with `dep.workspace = true`.
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
