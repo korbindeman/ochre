@@ -13,9 +13,22 @@ members = [
 edition = "2021"
 license = "MIT"
 repository = ""
+authors = ["Native-Chrome Browser Team"]
 
 [workspace.dependencies]
 # Shared dep versions go here so crates reference them with `dep.workspace = true`.
+# CEF bindings (tauri-apps/cef-rs) — published on crates.io.
+# The -sys crate downloads the prebuilt CEF binary distribution and builds
+# libcef_dll_wrapper via cmake at compile time.
+cef = { version = "149.3.0", default-features = false, features = ["sandbox", "build-util"] }
+cef-dll-sys = "149.3.0"
+
+# macOS Objective-C interop
+objc2 = "0.6.3"
+objc2-foundation = "0.3.2"
+objc2-app-kit = { version = "0.3.2", default-features = false }
+
+anyhow = "1"
 
 [profile.release]
 lto = "thin"

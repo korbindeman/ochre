@@ -4,5 +4,40 @@ version = "0.1.0"
 description = "Core engine: tabs, spaces, adblock, vault, CDP surface (§17 architecture spec)"
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "browser_core"
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "browser"
+path = "src/bin/browser.rs"
+
+[[bin]]
+name = "browser_helper"
+path = "src/bin/browser_helper.rs"
+
+[features]
+default = ["sandbox"]
+sandbox = ["cef/sandbox"]
+
+[package.metadata.cef.bundle]
+helper_name = "browser_helper"
+resources_path = "resources"
 
 [dependencies]
+cef = { workspace = true }
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true }
+objc2-app-kit = { workspace = true, features = [
+    "NSApplication",
+    "NSEvent",
+    "NSResponder",
+    "NSUserInterfaceValidation",
+    "NSView",
+    "NSWindow",
+] }
+
+[build-dependencies]
+anyhow = { workspace = true }
