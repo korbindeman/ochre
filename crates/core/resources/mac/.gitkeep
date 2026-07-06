@@ -1,0 +1,2 @@
+# Placeholder so cef-rs bundling has a resources/mac dir to copy into
+# Contents/Resources. App icon and MainMenu.nib will live here later.

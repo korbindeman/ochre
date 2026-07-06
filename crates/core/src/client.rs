@@ -6,14 +6,17 @@
 //! - Window and browser-view delegates for the Views framework.
 
 use cef::*;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+
+use crate::history;
+use crate::tabs;
 
 // ─── Platform helpers ────────────────────────────────────────────────────
 
 #[cfg(target_os = "macos")]
-mod mac;
-#[cfg(target_os = "macos")]
-use mac::*;
+use crate::mac::{platform_show_window, platform_title_change};
 
 #[cfg(not(target_os = "macos"))]
 fn platform_show_window(_browser: Option<&mut Browser>) {
@@ -36,6 +39,12 @@ pub struct BrowserHandler {
     browser_list: Vec<Browser>,
     is_closing: bool,
     weak_self: Weak<Mutex<Self>>,
+    /// Per-browser main-frame URL, tracked from `on_address_change` so title
+    /// and favicon changes attribute to the right history row. Keyed by CEF
+    /// browser identifier (*not* the core tab id — the `tabs::note_*` calls
+    /// translate, ADR-0013); multi-tab means one "current page" per browser,
+    /// not one globally.
+    current_url: HashMap<i32, String>,
 }
 
 impl BrowserHandler {
@@ -53,11 +62,47 @@ impl BrowserHandler {
                 browser_list: Vec::new(),
                 is_closing: false,
                 weak_self: weak.clone(),
+                current_url: HashMap::new(),
             })
         })
     }
 
+    /// Record the main-frame URL as the current page and log a history visit.
+    /// Subframe navigations and off-scheme URLs are ignored (the latter by
+    /// [`history::record_visit`]).
+    fn on_address_change(
+        &mut self,
+        browser: Option<&mut Browser>,
+        frame: Option<&mut Frame>,
+        url: Option<&CefString>,
+    ) {
+        if frame.map(|f| f.is_main() != 0) != Some(true) {
+            return;
+        }
+        let Some(id) = browser.as_deref().map(|b| b.identifier()) else {
+            return;
+        };
+        let Some(url) = url.map(CefString::to_string) else {
+            return;
+        };
+        history::record_visit(&url);
+        self.current_url.insert(id, url.clone());
+        // Push the address change to the host's tab model (a no-op for non-tab
+        // browsers, e.g. popups, which are never registered as tabs).
+        tabs::note_url(id, &url);
+    }
+
     fn on_title_change(&mut self, browser: Option<&mut Browser>, title: Option<&CefString>) {
+        let id = browser.as_deref().map(|b| b.identifier());
+        // Persist the title against this tab's current page before the
+        // window-title plumbing (which the Views/Alloy paths need) consumes it.
+        let title_str = title.map(CefString::to_string).unwrap_or_default();
+        if let Some(url) = id.and_then(|id| self.current_url.get(&id)) {
+            history::update_title(url, &title_str);
+        }
+        if let Some(id) = id {
+            tabs::note_title(id, &title_str);
+        }
         let mut browser = browser.cloned();
         if let Some(browser_view) = browser_view_get_for_browser(browser.as_mut()) {
             if let Some(window) = browser_view.window() {
@@ -68,20 +113,57 @@ impl BrowserHandler {
         }
     }
 
+    /// Download the current page's favicon and cache it under the page's host.
+    /// CEF resolves the icon URL(s) from `<link rel="icon">`/`/favicon.ico`;
+    /// we take the first and let CEF decode it, then store the PNG.
+    fn on_favicon_urlchange(
+        &mut self,
+        browser: Option<&mut Browser>,
+        icon_urls: Option<&mut CefStringList>,
+    ) {
+        let Some(id) = browser.as_deref().map(|b| b.identifier()) else {
+            return;
+        };
+        let Some(host) = self
+            .current_url
+            .get(&id)
+            .and_then(|url| history::host_of(url))
+        else {
+            return;
+        };
+        let Some(icon_url) = icon_urls.and_then(|list| first_icon_url(list)) else {
+            return;
+        };
+        let Some(host_obj) = browser.and_then(|b| b.host()) else {
+            return;
+        };
+        let mut callback = FaviconDownloadCallback::new(id, host);
+        host_obj.download_image(
+            Some(&CefString::from(icon_url.as_str())),
+            1,  // is_favicon
+            32, // max_image_size (px) — one row-height icon
+            0,  // bypass_cache
+            Some(&mut callback),
+        );
+    }
+
     fn on_after_created(&mut self, browser: Option<&mut Browser>) {
+        eprintln!("[client] on_after_created");
         let browser = browser.cloned().expect("Browser is None");
         self.browser_list.push(browser);
     }
 
+    /// Let every browser close proceed. Unlike the old single-window logic, this
+    /// no longer flags "app closing" when one browser remains — closing the last
+    /// *tab* must leave the app alive on its empty state. The app-quit flag is
+    /// set only by [`mark_closing`](Self::mark_closing) (from `request_close_all`).
     fn do_close(&mut self, _browser: Option<&mut Browser>) -> bool {
-        if self.browser_list.len() == 1 {
-            self.is_closing = true;
-        }
         false
     }
 
     fn on_before_close(&mut self, browser: Option<&mut Browser>) {
         let mut browser = browser.cloned().expect("Browser is None");
+        let id = browser.identifier();
         if let Some(index) = self
             .browser_list
             .iter()
@@ -89,15 +171,35 @@ impl BrowserHandler {
         {
             self.browser_list.remove(index);
         }
-        if self.browser_list.is_empty() {
+        // Drop this tab's history-attribution entry and tell the host (a no-op
+        // for non-tab browsers like popups / DevTools).
+        self.current_url.remove(&id);
+        tabs::note_closed(id);
+        // Quit only when the whole app is closing (window close / ⌘Q) and the
+        // last browser is gone — *not* when the user merely closed the last tab.
+        if self.is_closing && self.browser_list.is_empty() {
             quit_message_loop();
         }
+    }
+
+    /// Number of live CEF browsers (tabs + popups + DevTools).
+    pub fn browser_count(&self) -> usize {
+        self.browser_list.len()
+    }
+
+    /// Flag that the whole app is shutting down, so the final `on_before_close`
+    /// quits the message loop. Set from `request_close_all` (window close / ⌘Q).
+    pub fn mark_closing(&mut self) {
+        self.is_closing = true;
     }
 
     pub fn show_main_window(&mut self) {
         let thread_id = ThreadId::UI;
         if currently_on(thread_id) == 0 {
-            let this = self.weak_self.upgrade().expect("Weak ref to handler is None");
+            let this = self
+                .weak_self
+                .upgrade()
+                .expect("Weak ref to handler is None");
             let mut task = ShowMainWindowTask::new(this);
             post_task(thread_id, Some(&mut task));
             return;
@@ -114,15 +216,24 @@ impl BrowserHandler {
         }
     }
 
-    pub fn close_all_browsers(&mut self, force_close: bool) {
+    /// Close every live browser. Associated function (not a method) on
+    /// purpose: `close_browser` synchronously re-enters `do_close` /
+    /// `on_before_close` on the UI thread, and those handlers lock this same
+    /// mutex — so the caller must NOT hold the lock, and this function only
+    /// takes it briefly to snapshot the browser list.
+    pub fn close_all_browsers(this: &Arc<Mutex<Self>>, force_close: bool) {
         let thread_id = ThreadId::UI;
         if currently_on(thread_id) == 0 {
-            let this = self.weak_self.upgrade().expect("Weak ref to handler is None");
-            let mut task = CloseAllBrowsersTask::new(this, force_close);
+            let mut task = CloseAllBrowsersTask::new(this.clone(), force_close);
             post_task(thread_id, Some(&mut task));
             return;
         }
-        for browser in self.browser_list.iter() {
+        let browsers = this
+            .lock()
+            .expect("Failed to lock handler")
+            .browser_list
+            .clone();
+        for browser in browsers.iter() {
             let host = browser.host().expect("BrowserHost is None");
             host.close_browser(force_close.into());
         }
@@ -152,6 +263,190 @@ wrap_client! {
         fn load_handler(&self) -> Option<LoadHandler> {
             Some(BrowserLoadHandler::new(self.inner.clone()))
         }
+
+        fn find_handler(&self) -> Option<FindHandler> {
+            Some(BrowserFindHandler::new())
+        }
+
+        fn context_menu_handler(&self) -> Option<ContextMenuHandler> {
+            Some(BrowserContextMenuHandler::new())
+        }
+
+        fn keyboard_handler(&self) -> Option<KeyboardHandler> {
+            Some(BrowserKeyboardHandler::new())
+        }
+
+        fn focus_handler(&self) -> Option<FocusHandler> {
+            Some(BrowserFocusHandler::new())
+        }
+    }
+}
+
+// Forwards find-in-page results to the host's registered callback (embedded
+// mode only; a no-op in standalone, where no callback is set). Stateless — it
+// carries no handler state, only bridges CEF's `on_find_result` to the FFI.
+wrap_find_handler! {
+    struct BrowserFindHandler;
+
+    impl FindHandler {
+        fn on_find_result(
+            &self,
+            _browser: Option<&mut Browser>,
+            _identifier: i32,
+            count: i32,
+            _selection_rect: Option<&Rect>,
+            active_match_ordinal: i32,
+            final_update: i32,
+        ) {
+            crate::embed::dispatch_find_result(count, active_match_ordinal, final_update != 0);
+        }
+    }
+}
+
+// ─── DevTools & context menu ─────────────────────────────────────────────
+
+/// Custom context-menu command id for "Inspect Element". CEF reserves the
+/// `MENU_ID_USER_FIRST..=MENU_ID_USER_LAST` range for application-defined items.
+const MENU_ID_INSPECT_ELEMENT: i32 = sys::cef_menu_id_t::MENU_ID_USER_FIRST as i32;
+
+/// Toggle DevTools for `browser`: close it if already open, otherwise open it in
+/// its own window. Backs both the ⌘⌥I menu item (via `embed::toggle_dev_tools`)
+/// and the F12 keyboard shortcut, so the two stay consistent. UI thread only.
+pub(crate) fn toggle_dev_tools(browser: &Browser) {
+    let Some(host) = browser.host() else { return };
+    if host.has_dev_tools() != 0 {
+        host.close_dev_tools();
+    } else {
+        host.show_dev_tools(None, None, None, None);
+    }
+}
+
+/// Open DevTools focused on the element at the given page coordinates — the
+/// context-menu "Inspect Element" path. Unlike [`toggle_dev_tools`] this always
+/// opens (or refocuses) DevTools; it never closes it. UI thread only.
+fn inspect_element_at(browser: &Browser, x: i32, y: i32) {
+    if let Some(host) = browser.host() {
+        host.show_dev_tools(None, None, None, Some(&Point { x, y }));
+    }
+}
+
+// Adds "Inspect Element" to CEF's default page context menu and routes it to
+// DevTools. The default model already carries navigation / editing / view-source
+// items; we only append the inspect entry CEF never includes on its own. The
+// DevTools window itself is created with a null client, so it keeps CEF's own
+// context menu rather than this one.
+wrap_context_menu_handler! {
+    struct BrowserContextMenuHandler;
+
+    impl ContextMenuHandler {
+        fn on_before_context_menu(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            _params: Option<&mut ContextMenuParams>,
+            model: Option<&mut MenuModel>,
+        ) {
+            let Some(model) = model else { return };
+            // Only separate from existing items — skip a leading separator on the
+            // rare empty model.
+            if model.count() > 0 {
+                model.add_separator();
+            }
+            model.add_item(
+                MENU_ID_INSPECT_ELEMENT,
+                Some(&CefString::from("Inspect Element")),
+            );
+        }
+
+        fn on_context_menu_command(
+            &self,
+            browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            params: Option<&mut ContextMenuParams>,
+            command_id: i32,
+            _event_flags: EventFlags,
+        ) -> i32 {
+            if command_id != MENU_ID_INSPECT_ELEMENT {
+                return 0; // not ours — let CEF run its default command
+            }
+            if let (Some(browser), Some(params)) = (browser, params) {
+                inspect_element_at(browser, params.xcoord(), params.ycoord());
+            }
+            1
+        }
+    }
+}
+
+// F12 toggles DevTools, matching Chrome. ⌘⌥I is handled by the native menu,
+// which consumes the key equivalent before it reaches CEF, so this handler only
+// needs the un-menued F12. Stateless.
+wrap_keyboard_handler! {
+    struct BrowserKeyboardHandler;
+
+    impl KeyboardHandler {
+        fn on_pre_key_event(
+            &self,
+            browser: Option<&mut Browser>,
+            event: Option<&KeyEvent>,
+            _os_event: *mut u8,
+            _is_keyboard_shortcut: Option<&mut i32>,
+        ) -> i32 {
+            let Some(event) = event else { return 0 };
+            // Act on the raw key-down (once per press) so the page never sees F12.
+            // `windows_key_code` is CEF's cross-platform VK code; VK_F12 = 0x7B.
+            if event.type_ == KeyEventType::RAWKEYDOWN && event.windows_key_code == 0x7B {
+                if let Some(browser) = browser {
+                    toggle_dev_tools(browser);
+                }
+                return 1; // handled — don't forward to the renderer
+            }
+            0
+        }
+    }
+}
+
+// P0-1 focus-routing observability. The one hard-to-prove seam in the whole
+// project is whether keyboard focus routes correctly between CEF's web view and
+// the native chrome (page ↔ command bar ↔ sidebar ↔ tab switch). A screenshot
+// can't show it and an occluded window can't exercise it, so this handler turns
+// every CEF focus transition into a logged fact: `on_got_focus` is ground truth
+// that the page actually holds keyboard focus. Paired with the Swift-side
+// first-responder logs, it makes the routing verifiable by running (and later,
+// a standing regression the CEF security-bump treadmill can re-check).
+wrap_focus_handler! {
+    struct BrowserFocusHandler;
+
+    impl FocusHandler {
+        // The web view has taken keyboard focus. Seeing this after the command
+        // bar closes / after a click into the page / after a tab switch is the
+        // proof that keys will land in the page.
+        fn on_got_focus(&self, browser: Option<&mut Browser>) {
+            let id = browser.map_or(-1, |b| b.identifier());
+            eprintln!("[focus] cef on_got_focus tab={id}");
+        }
+
+        // The web view is about to receive focus. `source` distinguishes a
+        // page-driven focus (NAVIGATION, e.g. autofocus) from a host/system one
+        // (SYSTEM, e.g. our `set_focus` or a click). Returning 0 never cancels —
+        // this only observes.
+        fn on_set_focus(&self, browser: Option<&mut Browser>, source: FocusSource) -> i32 {
+            let id = browser.map_or(-1, |b| b.identifier());
+            let source = if source == FocusSource::NAVIGATION {
+                "navigation"
+            } else {
+                "system"
+            };
+            eprintln!("[focus] cef on_set_focus tab={id} source={source}");
+            0
+        }
+
+        // The web view is giving up focus (e.g. Tab-ing out of the page). `next`
+        // is the traversal direction. Lets us see the page → chrome hand-off.
+        fn on_take_focus(&self, browser: Option<&mut Browser>, next: i32) {
+            let id = browser.map_or(-1, |b| b.identifier());
+            let dir = if next != 0 { "next" } else { "previous" };
+            eprintln!("[focus] cef on_take_focus tab={id} to={dir}");
+        }
     }
 }
 
@@ -161,9 +456,28 @@ wrap_display_handler! {
     }
 
     impl DisplayHandler {
+        fn on_address_change(
+            &self,
+            browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            url: Option<&CefString>,
+        ) {
+            let mut inner = self.inner.lock().expect("Failed to lock handler");
+            inner.on_address_change(browser, frame, url);
+        }
+
         fn on_title_change(&self, browser: Option<&mut Browser>, title: Option<&CefString>) {
             let mut inner = self.inner.lock().expect("Failed to lock handler");
             inner.on_title_change(browser, title);
+        }
+
+        fn on_favicon_urlchange(
+            &self,
+            browser: Option<&mut Browser>,
+            icon_urls: Option<&mut CefStringList>,
+        ) {
+            let mut inner = self.inner.lock().expect("Failed to lock handler");
+            inner.on_favicon_urlchange(browser, icon_urls);
         }
     }
 }
@@ -197,6 +511,32 @@ wrap_load_handler! {
     }
 
     impl LoadHandler {
+        // Drives each tab's spinner and its back/forward enablement: this one
+        // callback carries both, so forward all three to the host's tab model
+        // (a no-op for non-tab browsers). The nav-state stream is what lets the
+        // sidebar disable the arrows live; `browser_can_go_back/forward` remain
+        // for on-demand menu validation.
+        fn on_loading_state_change(
+            &self,
+            browser: Option<&mut Browser>,
+            is_loading: i32,
+            can_go_back: i32,
+            can_go_forward: i32,
+        ) {
+            if let Some(id) = browser.as_deref().map(|b| b.identifier()) {
+                tabs::note_load_state(id, is_loading != 0, can_go_back != 0, can_go_forward != 0);
+            }
+        }
+
+        fn on_load_end(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            http_status_code: i32,
+        ) {
+            eprintln!("[client] on_load_end status={http_status_code}");
+        }
+
         fn on_load_error(
             &self,
             browser: Option<&mut Browser>,
@@ -251,6 +591,66 @@ fn get_data_uri(data: &[u8], mime_type: &str) -> String {
     format!("data:{mime_type};base64,{uri}")
 }
 
+// ─── Favicon capture ─────────────────────────────────────────────────────
+
+/// First entry of a CEF string list, read without consuming it (the list is
+/// borrowed from CEF and freed after the callback returns). Mirrors the raw
+/// `cef_string_list_*` access the `cef` crate uses in its own `Debug` impl.
+fn first_icon_url(list: &CefStringList) -> Option<String> {
+    let raw: *const sys::_cef_string_list_t = list.into();
+    if raw.is_null() {
+        return None;
+    }
+    let raw = raw as *mut sys::_cef_string_list_t;
+    unsafe {
+        if sys::cef_string_list_size(raw) == 0 {
+            return None;
+        }
+        let mut value = std::mem::zeroed();
+        (sys::cef_string_list_value(raw, 0, &mut value) != 0)
+            .then(|| CefString::from(std::ptr::from_ref(&value)).to_string())
+    }
+}
+
+// `cef_id` is the CEF browser identifier of the requesting tab (translated to
+// a tab id by `tabs::note_favicon`).
+wrap_download_image_callback! {
+    struct FaviconDownloadCallback {
+        cef_id: i32,
+        host: String,
+    }
+
+    impl DownloadImageCallback {
+        fn on_download_image_finished(
+            &self,
+            _image_url: Option<&CefString>,
+            _http_status_code: i32,
+            image: Option<&mut Image>,
+        ) {
+            let Some(image) = image else { return };
+            if image.is_empty() != 0 {
+                return;
+            }
+            // Encode CEF's decoded image to PNG at 1x with transparency.
+            let Some(png) = image.as_png(1.0, 1, None, None) else {
+                return;
+            };
+            let size = png.size();
+            if size == 0 {
+                return;
+            }
+            let mut buf = vec![0u8; size];
+            let written = png.data(Some(&mut buf), 0);
+            buf.truncate(written);
+            if !buf.is_empty() {
+                history::store_favicon(&self.host, &buf);
+                // Now that the PNG is cached, tell the host to display it.
+                tabs::note_favicon(self.cef_id, &self.host);
+            }
+        }
+    }
+}
+
 // ─── Tasks ───────────────────────────────────────────────────────────────
 
 wrap_task! {
@@ -276,8 +676,7 @@ wrap_task! {
     impl Task {
         fn execute(&self) {
             debug_assert_ne!(currently_on(ThreadId::UI), 0);
-            let mut inner = self.inner.lock().expect("Failed to lock handler");
-            inner.close_all_browsers(self.force_close);
+            BrowserHandler::close_all_browsers(&self.inner, self.force_close);
         }
     }
 }
@@ -368,8 +767,14 @@ wrap_browser_view_delegate! {
 }
 
 impl BrowserClient {
-    pub fn new(runtime_style: RuntimeStyle) -> Self {
+    /// Build a CEF client wired to a fresh handler for the given runtime style.
+    ///
+    /// `wrap_client!` generates the actual `new(inner) -> Client` constructor
+    /// (which fills the hidden `cef_object` field and returns the ref-counted
+    /// `cef::Client`), so this convenience just constructs the handler and
+    /// delegates to it.
+    pub fn create(runtime_style: RuntimeStyle) -> Client {
         let inner = BrowserHandler::new(runtime_style);
-        Self { inner }
+        Self::new(inner)
     }
 }

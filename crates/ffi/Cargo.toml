@@ -5,5 +5,12 @@ description = "UniFFI + C ABI exports — the bridge between Rust core and nativ
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "browser_ffi"
+# cdylib: linked by the SwiftUI app. rlib: usable by other Rust crates/tests.
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 browser-core = { path = "../core" }
+# Serialize the suggestion payload for `browser_query_suggestions`.
+serde_json = { workspace = true }

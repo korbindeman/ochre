@@ -15,12 +15,18 @@ pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod app;
 pub mod client;
+pub mod embed;
+pub mod fuzzy;
+pub mod history;
 pub mod mac;
+pub mod native_shell;
 pub mod resources;
+pub mod session;
+pub mod tabs;
 
 use cef::{
-    args::Args, api_hash, execute_process, initialize, run_message_loop, shutdown, sys,
-    MainArgs, Settings,
+    api_hash, args::Args, execute_process, initialize, run_message_loop, shutdown, sys,
+    ImplCommandLine, MainArgs, Settings,
 };
 
 /// Initialize CEF and run the message loop.
@@ -40,7 +46,7 @@ pub fn run() -> Result<(), &'static str> {
     };
 
     let main_args = args.as_main_args();
-    run_browser_process(&main_args, &cmd_line);
+    run_browser_process(main_args, &cmd_line);
     Ok(())
 }
 
@@ -73,17 +79,37 @@ fn run_browser_process(main_args: &MainArgs, cmd_line: &cef::CommandLine) {
 
     let settings = Settings {
         no_sandbox: !cfg!(feature = "sandbox") as _,
+        root_cache_path: cef::CefString::from(root_cache_dir().as_str()),
         ..Default::default()
     };
     assert_eq!(
-        initialize(Some(main_args), Some(&settings), Some(&mut app), std::ptr::null_mut()),
+        initialize(
+            Some(main_args),
+            Some(&settings),
+            Some(&mut app),
+            std::ptr::null_mut()
+        ),
         1
     );
 
-    // Set up the NSApplication delegate (loads MainMenu.nib, sets up app menus).
-    let _delegate = mac::setup_app_delegate();
+    // Bring the app to the foreground so the CEF window becomes key/visible.
+    mac::setup_app_delegate();
 
     run_message_loop();
 
     shutdown();
+}
+
+/// Absolute directory CEF uses for its cache and the single-instance lock.
+///
+/// CEF requires an absolute `root_cache_path`. Without one it falls back to a
+/// shared default, and every launch collides on Chromium's process singleton —
+/// a second `browser` detects the first, hands its command line off to it, and
+/// exits. Pinning a stable per-user directory lets repeated dev launches reuse
+/// the same profile instead of racing the singleton.
+pub(crate) fn root_cache_dir() -> String {
+    let home = std::env::var("HOME").expect("HOME environment variable is not set");
+    let dir = format!("{home}/Library/Application Support/Browser");
+    std::fs::create_dir_all(&dir).expect("failed to create the CEF root cache directory");
+    dir
 }

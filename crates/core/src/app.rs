@@ -6,9 +6,7 @@
 use cef::*;
 use std::cell::RefCell;
 
-use crate::client::{
-    BrowserWindowDelegate, BrowserBrowserViewDelegate, BrowserClient,
-};
+use crate::client::{BrowserBrowserViewDelegate, BrowserClient, BrowserWindowDelegate};
 
 wrap_app! {
     pub struct BrowserApp;
@@ -16,6 +14,26 @@ wrap_app! {
     impl App {
         fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
             Some(BrowserBrowserProcessHandler::new(RefCell::new(None)))
+        }
+
+        /// In debug builds, use Chromium's in-memory mock keychain so it never
+        /// touches the macOS login keychain. This avoids the "Chromium Safe
+        /// Storage" authorization prompt on every launch — the prompt reappears
+        /// each time because the keychain ACL is keyed to the code signature,
+        /// which an unsigned dev binary changes on every rebuild.
+        ///
+        /// Runs for all process types (empty `process_type` is the browser
+        /// process); adding the switch here propagates it to child processes.
+        /// Release/signed builds keep the real keychain (needed for passkeys).
+        #[cfg(debug_assertions)]
+        fn on_before_command_line_processing(
+            &self,
+            _process_type: Option<&CefString>,
+            command_line: Option<&mut CommandLine>,
+        ) {
+            if let Some(command_line) = command_line {
+                command_line.append_switch(Some(&CefString::from("use-mock-keychain")));
+            }
         }
     }
 }
@@ -42,7 +60,7 @@ wrap_browser_process_handler! {
             // Create the client (handlers for display, life span, load, etc.).
             {
                 let mut client = self.client.borrow_mut();
-                *client = Some(BrowserClient::new(runtime_style));
+                *client = Some(BrowserClient::create(runtime_style));
             }
 
             // Browser settings.

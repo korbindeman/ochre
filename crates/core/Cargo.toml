@@ -18,8 +18,18 @@ path = "src/bin/browser.rs"
 name = "browser_helper"
 path = "src/bin/browser_helper.rs"
 
+# Dev-only: builds `browser` + `browser_helper` and assembles `Browser.app`
+# (CEF must run from a bundle). See `src/bin/bundle.rs` and `just run`.
+[[bin]]
+name = "bundle"
+path = "src/bin/bundle.rs"
+
 [features]
-default = ["sandbox"]
+# The CEF macOS sandbox needs a signed bundle plus `Sandbox::initialize` wiring
+# in each process; that's a later (signing/entitlements) milestone. The spike
+# runs unsandboxed (`Settings::no_sandbox`), which is the standard CEF dev
+# configuration. Enable with `--features sandbox` once that wiring lands.
+default = []
 sandbox = ["cef/sandbox"]
 
 [package.metadata.cef.bundle]
@@ -28,11 +38,20 @@ resources_path = "resources"
 
 [dependencies]
 cef = { workspace = true }
+# Used only by the `bundle` binary to construct the app's `BundleInfo`.
+semver = "1"
+# History + favicon store (see `src/history.rs`).
+rusqlite = { workspace = true }
+# Derive `Serialize` on the suggestion type surfaced across the FFI boundary.
+serde = { workspace = true }
+# Session persistence — the tab/space/folder tree as JSON (see `src/session.rs`).
+serde_json = { workspace = true }
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true }
 objc2-app-kit = { workspace = true, features = [
     "NSApplication",
     "NSEvent",
+    "NSGraphics",
     "NSResponder",
     "NSUserInterfaceValidation",
     "NSView",
