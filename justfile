@@ -13,17 +13,9 @@ default:
 build:
     cargo build --workspace
 
-# Build in release mode.
-build-release:
-    cargo build --workspace --release
-
 # Run all tests.
 test:
     cargo test --workspace
-
-# Run tests for a specific crate (e.g. `just test-one core`).
-test-one crate:
-    cargo test -p browser-{{crate}}
 
 # Lint with clippy.
 lint:
@@ -37,9 +29,29 @@ fmt-check:
 fmt:
     cargo fmt --all
 
-# Clean build artifacts.
-clean:
-    cargo clean
+# ── Run ─────────────────────────────────────────────────────────────
+
+# On macOS this builds the SwiftUI Browser.app (embedded CEF via FFI) — the actual
+# product — and execs the binary directly (not via `open`) so CEF's + the core's
+# stdout/stderr stay in the terminal.
+#
+# Run the native development app for the current platform.
+run: gen-macos
+    cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build
+    ./apps/macos/build/Build/Products/Debug/Browser.app/Contents/MacOS/Browser
+
+# A pure-Rust AppKit NSWindow hosting the embedded browser (native_shell.rs) — the
+# same embed.rs hosting path the SwiftUI app uses, minus SwiftUI + FFI. Reach for
+# it to answer "is a blank page / CEF issue in the engine or the Swift layer?" CEF
+# must run from a .app bundle, so this assembles target/bundle/browser.app first.
+#
+# Engine-isolation bisection tool (embedded CEF, no SwiftUI).
+run-native-shell: bundle
+    ./target/bundle/browser.app/Contents/MacOS/browser --native-shell
+
+# Assemble target/bundle/browser.app (builds browser + browser_helper).
+bundle:
+    cargo run --bin bundle
 
 # ── macOS app (SwiftUI) ─────────────────────────────────────────────
 # Requires XcodeGen + Xcode Command Line Tools.
@@ -48,7 +60,7 @@ clean:
 gen-macos:
     cd apps/macos && xcodegen generate
 
-# Build the macOS app (generate project first if missing).
+# Build the macOS app without running it (generate project first if missing).
 build-macos: gen-macos
     cd apps/macos && xcodebuild -scheme Browser build
 
