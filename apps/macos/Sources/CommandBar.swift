@@ -1,0 +1,293 @@
+import AppKit
+import Combine
+import SwiftUI
+
+/// The ⌘T command bar — a Spotlight-style floating panel over the browser
+/// window for web search / URL entry, with favicon autocomplete.
+///
+/// It lives in its own borderless `NSPanel` (a child window of the browser
+/// window) rather than a SwiftUI overlay for two reasons: a separate window is
+/// guaranteed to composite above CEF's GPU-rendered view, and becoming the key
+/// window gives its text field keyboard focus without fighting the web view
+/// for first responder.
+///
+/// Autocomplete is provided by the reusable `SuggestionController` /
+/// `AutocompleteList` component; the command bar is just its first host.
+@MainActor
+final class CommandBarController {
+    weak var parentWindow: NSWindow?
+    private var panel: KeyablePanel?
+    private var isHiding = false
+    private var keyMonitor: Any?
+
+    /// The autocomplete engine, shared across presentations so the controller
+    /// can observe it to resize the panel. Local providers (typed-URL row, then
+    /// history) run instantly on every keystroke and drive inline autocomplete;
+    /// live search suggestions (Google default) are the debounced remote tier,
+    /// merged in below.
+    private let suggestions = SuggestionController(
+        local: [URLProvider(), HistoryProvider()],
+        remote: [SearchSuggestProvider()]
+    )
+    /// The SwiftUI hosting view, retained to measure its fitting height.
+    private var hosting: NSView?
+    private var suggestionsObserver: AnyCancellable?
+
+    /// Distance from the window's top edge to the command bar's top edge. The
+    /// bar's top stays pinned here; it grows *downward* as suggestions appear.
+    private let barTopOffset: CGFloat = 150
+    private let barWidth: CGFloat = 620
+    private let fieldHeight: CGFloat = 60
+
+    var isVisible: Bool { panel?.isVisible ?? false }
+
+    func toggle() {
+        isVisible ? hide() : show()
+    }
+
+    func show() {
+        guard let parent = parentWindow else { return }
+        let panel = self.panel ?? makePanel()
+        self.panel = panel
+
+        // Fresh state each presentation. The command bar is the ⌘T new-tab
+        // surface (editing the current tab's URL is inline in the sidebar now —
+        // ADR-0014), so commits always open a new tab and the field starts empty.
+        suggestions.reset()
+        Navigation.route = .newTab
+
+        // Host the SwiftUI content pinned top/left/right at a fixed width, with
+        // its height left to the content — that is what lets `fittingSize`
+        // report the height to grow the panel to.
+        let hosting = NSHostingView(rootView: CommandBarView(
+            controller: suggestions,
+            onChoose: { [weak self] suggestion in
+                suggestion.run()
+                self?.hide()
+            }
+        ))
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        hosting.sizingOptions = [.intrinsicContentSize]
+        let container = NSView()
+        container.addSubview(hosting)
+        NSLayoutConstraint.activate([
+            hosting.topAnchor.constraint(equalTo: container.topAnchor),
+            hosting.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hosting.widthAnchor.constraint(equalToConstant: barWidth),
+        ])
+        panel.contentView = container
+        self.hosting = hosting
+
+        // Resize the panel to fit whenever the result set changes (next runloop
+        // tick, so SwiftUI has laid the new content out first).
+        suggestionsObserver = suggestions.$suggestions
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.resizeToFit() }
+            }
+        installKeyMonitor()
+
+        positionPanel(height: fieldHeight)
+        parent.addChildWindow(panel, ordered: .above)
+        // Fade the panel in; the content adds its own spring scale-in.
+        panel.alphaValue = 0
+        panel.makeKeyAndOrderFront(nil)
+        NSLog("[focus] commandbar opened → panel is key")
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 1
+        }
+    }
+
+    func hide() {
+        guard let panel, panel.isVisible, !isHiding else { return }
+        isHiding = true
+        // Back to the default target for the next ⌘T.
+        Navigation.route = .newTab
+        removeKeyMonitor()
+        suggestionsObserver = nil
+        suggestions.reset()
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.12
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, let panel = self.panel else { return }
+                panel.parent?.removeChildWindow(panel)
+                panel.orderOut(nil)
+                self.isHiding = false
+                // Make the browser window key again, then deterministically
+                // return keyboard focus to the active tab's web view. Relying on
+                // AppKit to restore the first responder is not enough: if the
+                // pre-open responder was the bare window (e.g. after a sidebar
+                // click resigned the page), `makeKey()` alone leaves keystrokes
+                // falling on the floor. Driving CEF `set_focus` mirrors the
+                // tab-switch path and matches Safari/Arc (dismissing the address
+                // bar returns focus to the page).
+                self.parentWindow?.makeKey()
+                browser_focus_active_tab()
+                // P0-1 observability: log what AppKit settled on; the paired
+                // `[focus] cef on_got_focus` in the Rust log confirms the page
+                // actually took keyboard focus.
+                let responder = self.parentWindow?.firstResponder
+                NSLog(
+                    "[focus] commandbar closed → refocus page; window.firstResponder=%@",
+                    responder.map { String(describing: type(of: $0)) } ?? "nil"
+                )
+            }
+        })
+    }
+
+    // ─── Panel sizing ────────────────────────────────────────────────────
+
+    /// Size the panel to the content's fitting height, keeping the top edge
+    /// fixed so the field stays put and suggestions extend downward.
+    private func resizeToFit() {
+        guard let hosting else { return }
+        positionPanel(height: max(fieldHeight, ceil(hosting.fittingSize.height)))
+    }
+
+    private func positionPanel(height: CGFloat) {
+        guard let parent = parentWindow, let panel else { return }
+        let frame = parent.frame
+        let topEdge = frame.maxY - barTopOffset
+        panel.setFrame(
+            NSRect(
+                x: frame.midX - barWidth / 2,
+                y: topEdge - height,
+                width: barWidth,
+                height: height
+            ),
+            display: true
+        )
+    }
+
+    // ─── Keyboard ────────────────────────────────────────────────────────
+
+    /// Route arrow/return/escape to the suggestion list with an AppKit key
+    /// monitor. A monitor intercepts arrow keys before the focused `TextField`
+    /// reliably (unlike SwiftUI `onKeyPress`, which the field can swallow first);
+    /// everything else — typing, editing keys — passes straight through.
+    private func installKeyMonitor() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            // Pull out the Sendable primitives before hopping onto the main
+            // actor, so the non-Sendable NSEvent never crosses the boundary.
+            let keyCode = event.keyCode
+            let modifiers = event.modifierFlags
+            let handled = MainActor.assumeIsolated {
+                self.handleKey(keyCode: keyCode, modifiers: modifiers)
+            }
+            return handled ? nil : event
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
+    }
+
+    /// Handle a navigation key. Returns true if consumed (arrows move the
+    /// selection, return chooses / submits, escape dismisses); false lets the
+    /// event through to the text field for normal editing.
+    private func handleKey(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
+        guard isVisible,
+              modifiers.intersection([.command, .option, .control]).isEmpty
+        else {
+            return false
+        }
+        switch keyCode {
+        case 126: // up arrow
+            suggestions.moveSelection(by: -1)
+        case 125: // down arrow
+            suggestions.moveSelection(by: 1)
+        case 53: // escape
+            hide()
+        case 36, 76: // return, enter
+            if let selected = suggestions.selected() {
+                selected.run()
+            } else {
+                Navigation.open(suggestions.currentQuery)
+            }
+            hide()
+        default:
+            return false
+        }
+        return true
+    }
+
+    private func makePanel() -> KeyablePanel {
+        let panel = KeyablePanel(
+            contentRect: NSRect(x: 0, y: 0, width: barWidth, height: fieldHeight),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        // The glass effect draws its own depth; a window shadow would double it.
+        panel.hasShadow = false
+        panel.isMovable = false
+        panel.hidesOnDeactivate = false
+        // Dismiss when the user clicks back into the page (the panel loses key).
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: panel,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.hide() }
+        }
+        return panel
+    }
+}
+
+/// Borderless panels refuse key status by default; the command bar needs it
+/// for its text field.
+final class KeyablePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
+/// The Liquid Glass search field plus its favicon autocomplete dropdown.
+///
+/// The field text and inline-completion behaviour live in the shared
+/// `AutocompleteField`; keyboard navigation (arrows/return/escape) is handled by
+/// the host's key monitor in `CommandBarController`. This view just lays the two
+/// out and plays the spring scale-in.
+private struct CommandBarView: View {
+    @ObservedObject var controller: SuggestionController
+    /// Called when a row is clicked — the host runs the suggestion and dismisses.
+    var onChoose: (Suggestion) -> Void
+
+    @State private var appeared = false
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 12) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(.secondary)
+                AutocompleteField(controller: controller)
+            }
+            .padding(.horizontal, 24)
+            .frame(maxWidth: .infinity, minHeight: 60)
+            .glassEffect(.regular, in: .capsule)
+
+            if !controller.suggestions.isEmpty {
+                AutocompleteList(controller: controller, onChoose: onChoose)
+                    .padding(6)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 16))
+            }
+        }
+        .scaleEffect(appeared ? 1 : 0.94, anchor: .top)
+        .onAppear {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.72)) {
+                appeared = true
+            }
+        }
+    }
+}

@@ -2,7 +2,7 @@ name: Browser
 options:
   bundleIdPrefix: com.nativechrome
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "26.0"
   developmentLanguage: en
   createIntermediateGroups: true
   groupSortPosition: top
@@ -11,7 +11,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    GENERATE_INFOPLIST_FILE: "YES"
     PRODUCT_NAME: Browser
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
@@ -30,11 +31,28 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.nativechrome.Browser
         PRODUCT_NAME: Browser
         INFOPLIST_KEY_CFBundleDisplayName: Browser
-        INFOPLIST_KEY_LSMinimumSystemVersion: "14.0"
+        INFOPLIST_KEY_LSMinimumSystemVersion: "26.0"
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        # Link against the Rust C-ABI dylib (built by the pre-build script).
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Browser-Bridging-Header.h
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../target/debug
+        OTHER_LDFLAGS: -lbrowser_ffi
+        # Resolve @rpath/libbrowser_ffi.dylib + the CEF framework from the bundle.
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Automatic
-        ENABLE_HARDENED_RUNTIME: YES
-        # Headless build: skip code signing for CI/local builds
+        # Dev build: ad-hoc signed in the post-build script (after the CEF
+        # framework/helper are injected). Hardened runtime is off because
+        # Chromium's V8 JIT needs it disabled until entitlements land with
+        # real signing; Xcode itself skips signing (we do it inside-out).
+        ENABLE_HARDENED_RUNTIME: NO
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGNING_ALLOWED: NO
+    preBuildScripts:
+      - path: ../../scripts/prebuild-macos.sh
+        name: "Build Rust core & CEF bundle"
+        basedOnDependencyAnalysis: false
+    postBuildScripts:
+      - path: ../../scripts/bundle-macos-app.sh
+        name: "Inject CEF framework & ad-hoc sign"
+        basedOnDependencyAnalysis: false
