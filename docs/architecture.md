@@ -1,6 +1,6 @@
-# Native-Chrome Browser — Architecture Spec
+# Architecture
 
-A minimal, fast, cross-platform browser: **Arc's interaction model, native OS chrome.** Chromium engine via CEF, a shared Rust core, and per-platform native UI (SwiftUI + Liquid Glass on macOS, WinUI 3 + Fluent on Windows).
+The structural spec: **Arc's interaction model, native OS chrome.** A minimal, fast, cross-platform browser — Chromium engine via CEF, a shared Rust core, and per-platform native UI (SwiftUI + Liquid Glass on macOS, WinUI 3 + Fluent on Windows). §-numbered; other docs cite these sections as `spec §N`.
 
 ---
 
@@ -68,6 +68,7 @@ Single Cargo workspace. Modules:
 | `engine` | CEF init, browser/host lifecycle, per-tab native view handles, resource-request interception | `cef` (tauri-apps/cef-rs) **or** cef-ui (hytopiagg) |
 | `tabs` | Tab + space + session model, ordering, persistence | — |
 | `adblock` | Filter-list load/update, network + cosmetic filtering on the CEF request path | `adblock` (brave/adblock-rust) |
+| `tweaks` | Per-site page customization (Snip / Restyle / Script): rule store, URL scoping, import/export; injects via the engine's cosmetic path (§20) | — |
 | `vault` | Bitwarden-compatible client + crypto, autofill lookup | rbw-derived logic / `rwarden` (see §10) |
 | `sync` | Tab/space/settings sync client (separate service, §12) | `reqwest`, crypto crates |
 | `automation` | Thin wrapper over CEF's CDP endpoint for user-facing automations | CDP over remote-debugging port |
@@ -113,7 +114,7 @@ The interaction model is view logic bound to the shared core; the "feel" is nati
 - **Icons:** SF Symbols via `Image(systemName:)`.
 - **Window:** transparent title bar / full-size content; sidebar + toolbar as glass; web view (CEF `NSView`) in the content region via `NSViewRepresentable`.
 - **Animations:** SwiftUI springs, `matchedGeometryEffect`, and for glass morphing `glassEffectID` + a `@Namespace` inside a `GlassEffectContainer`.
-- **Visual style — slim, content-first (Safari-like):** Arc's *interaction* model, not Arc's chrome. Web content takes maximum real estate; **no Arc-style thick inset frame**. Chrome is a thin glass sidebar + minimal top controls; no persistent full-width address bar (URL via Cmd+T). Target the native macOS 26 Safari look — content full-bleed with slim glass floating over it (glass lensing live content) — with the fallback of content flush beside a slim glass sidebar if the over-content compositing seam is troublesome. Windows mirrors this philosophy with Mica/Fluent.
+- **Visual style:** slim, content-first, Safari-like — full rules live in `style-guide §3` (source of truth). In short: content full-bleed, **no Arc-style thick inset frame**, chrome is a thin glass sidebar + minimal top controls, URL via Cmd+T. Windows mirrors this with Mica/Fluent.
 
 ## 8. Windows UI (WinUI 3 + Fluent)
 
@@ -168,6 +169,7 @@ Native, no extension needed. Use the **`adblock`** crate (brave/adblock-rust —
 - Consumes uBlock Origin / EasyList / EasyPrivacy syntax directly (uBO-compatible resources).
 - **Better than uBO Lite:** not bound by MV3 declarativeNetRequest caps — full cosmetic filtering + scriptlet injection, no rule-count limits.
 - Disable `embedded-domain-resolver` when embedding to avoid binary bloat; enable single-thread perf features.
+- **User-authored cosmetic rules share this path.** Per-site *Tweaks* — the Snip element remover, custom CSS, and userscripts (§20) — inject through the same document-start mechanism; filter-list rules and user Tweaks coexist in one injector, differing only in provenance.
 
 ---
 
@@ -202,14 +204,13 @@ A bonus of going native: the chrome gets platform accessibility **for free** —
 
 ---
 
-## 16. Suggested build order
+## 16. Build order
 
-0. **Spike (de-risk the foundation).** cef-rs/cef-ui "one tab in a native window." Confirm: DevTools opens, a passkey login works, a DRM video plays (if needed), `adblock` blocks on the request path. Everything downstream depends on this passing.
-1. **Rust core.** `engine` + `tabs`/session model + `adblock` + CDP surface + `ffi`.
-2. **macOS shell.** SwiftUI window, sidebar + vertical tabs + spaces, CEF via `NSViewRepresentable`, Cmd+T glass command bar.
-3. **Vault.** rbw-derived client wired into the command bar + autofill.
-4. **Windows shell.** WinUI 3 mirror of the macOS shell (Mica/Acrylic, Fluent, Segoe icons, Composition animations).
-5. **Sync service.** Separate; last.
+Authoritative sequencing lives in `rm §5` (the five phases) and `mvp` (the macOS M1–M5 milestones); this is the coarse component-dependency chain they realize:
+
+**Spike** (de-risk — done, see `spike.md`) → **Rust core** (`engine` + `tabs`/session model + `adblock` + CDP surface + `ffi`) → **macOS shell** (SwiftUI window, sidebar + vertical tabs + spaces, CEF via `NSViewRepresentable`, Cmd+T glass command bar) → **Vault** (rbw-derived client wired into the command bar + autofill) → **Windows shell** (WinUI 3 mirror — Mica/Acrylic, Fluent, Segoe icons, Composition animations) → **Sync service** (separate; last).
+
+Each stage depends on the one before it.
 
 ---
 
@@ -224,6 +225,7 @@ A bonus of going native: the chrome gets platform accessibility **for free** —
 | Rust↔Swift | UniFFI / swift-bridge |
 | Rust↔C# | None if `windows-reactor`; else UniFFI (C#) / csbindgen |
 | Ad blocking | `adblock` (brave/adblock-rust) on the CEF request path |
+| Page customization | `tweaks` module — Snip / Restyle / Script over the adblock cosmetic path (§20) |
 | Vault | rbw-derived / `rwarden`; Bitwarden or Vaultwarden backend |
 | DevTools / automation | CEF `ShowDevTools` + CDP (`--remote-debugging-port`) |
 | Accessibility | Native (free via native controls) |
@@ -276,3 +278,40 @@ Lives in `crates/agent`, over the same core.
 - **Browser-as-tool:** CEF + CDP (§13) already provides navigate / extract / download / screenshot — expose as an MCP/ACP tool. "Pull in sites via the real browser" is near-free.
 - **Virtual folder:** a sandboxed working dir the agent reads/writes; downloads route here, artifacts for the user are produced here.
 - **Permission model:** one consent surface, escalating scopes — virtual folder → named paths → shell exec → full system. The in-sandbox vs. real-computer boundary is a hard, auditable line; that boundary is the entire safety story for full-computer access.
+- **Tweaks as an agent surface:** the per-site content-modification store (§20) is declarative and inspectable, so the agent can read, propose, and apply *Tweaks* — e.g. author a Snip to hide a cookie banner on request. Human-written userscripts and agent-authored Tweaks are the *same object* through the same store; agent-authored Script Tweaks pass the same consent gate as any other (§20).
+
+---
+
+## 20. Page customization — Tweaks (Snip / Restyle / Script)
+
+**What it is.** Per-site page customization: the native answer to Arc Boosts, uBlock Origin's element picker, Stylus, and Tampermonkey — unified into one feature. A **Tweak** is a saved, URL-scoped set of changes applied to matching pages. This is the concrete anchor of the "extensible by scripting and automation" goal (§19): the object a power user hand-writes is the same object an agent authors and applies.
+
+**One primitive, three tiers.** All three are the *same* underlying thing — URL-scoped content injected at document-start — surfaced at rising levels of power:
+
+| Tier | Name | What the user does | What it compiles to |
+|---|---|---|---|
+| 1 | **Snip** | Click an element to remove it (visual picker, no code) | An element-hiding rule (`selector { display:none !important }`) |
+| 2 | **Restyle** | Write custom CSS for the site | A scoped stylesheet |
+| 3 | **Script** | Write / inject custom JS (power users) | A userscript in an isolated world |
+
+Snip covers the ~90% case (kill a banner, a sticky header, a paywall veil) with zero code; Restyle and Script are the power-user escape hatches. One scoping model and one injection path serve all three — build the primitive once, and all three tiers come nearly free (the roadmap's recurring "one primitive, many audiences" leverage, rm §5.3).
+
+**Shared injection path with adblock (§11).** A Snip is mechanically identical to an adblock *cosmetic* rule — element-hiding CSS injected per page — and the Script tier is the same scriptlet-injection path adblock already uses. Tweaks therefore **reuse the engine's document-start injector** rather than adding a parallel mechanism; the only difference from §11 is *provenance* (user-authored, per-site, editable in the UI) versus filter-list-sourced. Filter-list rules and user Tweaks coexist in one injector.
+
+**Core module (`tweaks`).** Owns the rule store, the URL-scoping / match logic, editor state, and import/export. Frontend-agnostic like the rest of the core (§3); the native layer is only the picker overlay + editor + manager bound to it — its UI treatment is specified in the UI style guide. It emits injections through the same `engine` hook `adblock` feeds.
+
+**Scoping.** One match-pattern grammar across all three tiers. Default scope for a new Tweak is the current site (registrable domain); power users edit a match pattern (`*://*.example.com/path*`, à la WebExtension match patterns / Tampermonkey `@match`). Scoping lives in the core, so it is identical on every platform.
+
+**Injection mechanics.**
+- **CSS (Snip + Restyle)** — injected at **document-start** to avoid a flash of the un-hidden / un-styled element (FOUC), and re-asserted for dynamically-inserted DOM.
+- **JS (Script)** — injected via CDP `Page.addScriptToEvaluateOnNewDocument` into an **isolated world** (a separate V8 context) at document-start by default, with an opt-in `run-at` of document-end / idle. The research (rm §3.1) confirms this path is production-grade. A Tampermonkey-style metadata header (`@match`, `@run-at`, name, version) is the script's manifest.
+
+**Sync & portability.** A Tweak is a portable document (match pattern + rules / CSS / JS + metadata). Per rm §3.4 the model is **sync-ready from the start** — Tweaks are exactly the per-device user data sync must carry — even though sync itself ships later. Tweaks export / import as a self-contained file for sharing.
+
+**Safety — the load-bearing part.** A shared Tweak carrying JS is arbitrary code execution in the user's authenticated session — the userscript supply-chain risk, and a sibling of the AI prompt-injection concern (rm §8.4). The engine treats it accordingly:
+- **No silent auto-run.** Importing a Tweak never enables it implicitly; enabling is an explicit user act.
+- **Code is always shown, never obfuscated-run.** The full CSS / JS is visible and diffable before enable, and on any change to a Script Tweak (a modified script re-prompts).
+- **JS requires explicit, worded consent** on enable; Snip / Restyle (no DOM or script access) are lower-risk and lighter-gated — though CSS can still exfiltrate via resource requests (e.g. `background-image`), noted rather than ignored.
+- **Isolation is not a sandbox against the user's own session.** The isolated world stops the *page* from clobbering / detecting the script; it is not a security boundary against the script itself. The consent gate, not isolation, is the real control. Per-site enable / disable, a global kill switch, and an on-page indicator when any Tweak is active are all required.
+
+**FFI surface.** Coarse-grained like the rest (§5): `tweaks_for_host(host)`, `snip_begin` / `snip_commit(selector)`, `tweak_upsert`, `tweak_toggle`, `tweak_import` / `tweak_export`, plus a `TweakActivated` event so the UI can show the active-Tweak indicator. Names follow the shared vocabulary (`tweak`, `snip`) per the UI style-guide terminology contract.

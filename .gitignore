@@ -3,6 +3,7 @@
 **/*.rs.bk
 
 # macOS
+.DS_Store
 /apps/macos/Browser.xcodeproj
 /apps/macos/build/
 *.xcuserstate

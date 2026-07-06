@@ -1,31 +1,33 @@
-# MVP 1 — macOS, Arc UX
+# MVP 1 — macOS
 
-**Goal:** a daily-drivable macOS browser with Arc's core interaction model and native Liquid Glass chrome. One platform, no sync, no agent layer, no vault. Proves the whole thesis — native chrome + Arc UX + Chromium — on macOS.
+**Goal:** a daily-drivable macOS browser with Arc's core interaction model and native Liquid Glass chrome. One platform, no sync, no agent layer, no vault. Proves the whole thesis — native chrome + Arc UX + Chromium — on macOS. This is `rm §5.1` (Phase 1) at milestone granularity.
 
-**Precondition:** the step-0 spike passes — single CEF tab in a native `NSView`, DevTools opens, a passkey login works, `adblock` blocks on the request path. MVP builds directly on that foundation.
+**Precondition:** the step-0 spike (`spike.md`) — single CEF tab in a native `NSView`, DevTools opens, a passkey login works, `adblock` blocks on the request path. MVP builds directly on that foundation.
 
-Companion to the full architecture spec; section refs (§) point there.
+Companion to `architecture.md`; cross-refs to it appear as `spec §N`.
 
 ---
 
 ## Scope
 
 **In:**
-- Multi-tab CEF — one browser per tab, hosted in `NSView`s (windowed rendering, §4).
+- Multi-tab CEF — one browser per tab, hosted in `NSView`s (windowed rendering, `spec §4`).
 - Arc vertical-tab sidebar: create / close / reorder / select, with live title / favicon / load state.
 - Cmd+T center command bar with the Liquid Glass morph (open URL / search / switch to an open tab).
 - Native Liquid Glass chrome (glass sidebar + minimal toolbar), SF Symbols.
 - Core navigation: back / forward / reload; address entry via the command bar.
-- Adblock (`adblock` crate on the CEF request path, §11) — cheap once the path exists.
-- Spaces: switchable tab sets (create / switch / delete), each owns its tabs. **No** per-space profile / theme / color.
+- Adblock (`adblock` crate on the CEF request path, `spec §11`) — cheap once the path exists.
+- Spaces: switchable tab sets (create / switch / delete / rename), each owns its tabs, with **tab folders**
+  in the pinned section and a **bidirectional folder↔space transform** (ADR-0006). **No** per-space
+  profile / theme / color.
 
 **Out (named so they don't creep in):**
 - Windows (→ MVP 2).
-- Sync (§12), agent layer / ACP / tools (§19), password vault (§10).
+- Sync (`spec §12`), agent layer / ACP / tools (`spec §19`), password vault (`spec §10`).
 - Extensions (dropped by design), DRM/Widevine (build-flag; enable only if you actually need protected video).
 - Advanced Arc: split view, easels, boosts, peek, Little Arc, tab auto-archive, per-space profiles/themes/colors.
 - Settings UI beyond the minimum; history/downloads UI beyond command-bar suggestions.
-- Docked DevTools polish — MVP uses CEF `ShowDevTools` in a popup (§13).
+- Docked DevTools polish — MVP uses CEF `ShowDevTools` in a popup (`spec §13`).
 
 **Spaces:** firm MVP feature, stripped to essentials — switchable tab sets only, no per-space profile / theme / color. The tab model is **space-aware from M1** (a tab belongs to a space) rather than bolting spaces on later.
 
@@ -33,12 +35,10 @@ Companion to the full architecture spec; section refs (§) point there.
 
 ## Visual style
 
-**macOS-native, Safari-slim, content-first.** Arc's *interaction* model, not Arc's *chrome*.
+The general look-and-behavior rules live in `style-guide §3` (slim, content-first, Safari-like; no Arc thick inset frame; glass on the top functional layer only). The MVP-specific decisions on top of them:
 
-- **Content comes first.** The web view is the priority and takes maximum real estate. **Remove Arc's thick inset frame** — no rounded card floated in from the edges with big margins. That specific look is the thing being killed.
-- **Slim chrome, Safari-like.** A thin glass sidebar (vertical tabs + spaces) and minimal top controls (window controls + slim back/forward/reload). No persistent full-width address bar — URL entry is the Cmd+T command bar. Chrome stays out of the content's way.
-- **Liquid Glass on the slim chrome.** Sidebar and any top strip are `NSGlassEffectView`; glass belongs on this top functional layer, which is exactly the slim floating chrome.
-- **Target layout (native macOS 26 Safari look):** content extends full-bleed with the slim glass chrome floating *over* it, so the glass lenses live page content. **Validate in M2:** floating a glass view over the CEF `NSView` is the native-view-layering seam that can bite. **Fallback if troublesome:** content flush *beside* a slim glass sidebar — still slim + content-first, just no over-content lensing.
+- **Liquid Glass on the slim chrome.** Sidebar and any top strip are `NSGlassEffectView` — the concrete macOS material behind the style-guide's "glass on the top functional layer" rule.
+- **Target layout (native macOS 26 Safari look):** content full-bleed with the slim glass chrome floating *over* it, so the glass lenses live page content. **Validate in M2:** floating a glass view over the CEF `NSView` is the native-view-layering seam that can bite. **Fallback if troublesome:** content flush *beside* a slim glass sidebar — still slim + content-first, just no over-content lensing.
 - **Icons:** SF Symbols throughout.
 - **Sidebar collapse** lets content fill the whole window on demand.
 
@@ -51,7 +51,10 @@ The features that make it read as "Arc," nothing more:
 - Spaces: a compact switcher in the sidebar; each space is its own tab set.
 - Cmd+T command bar, centered, Spotlight-style glass expand.
 - Sidebar collapse/expand toggle (⌘S-style) with a spring width animation.
-- Pinned vs. ephemeral tabs — **simplified to one flat list** for MVP; the pinned/today split is a fast-follow.
+- Pinned vs. ephemeral tabs — **now implemented** (the fast-follow landed early): new tabs are ephemeral
+  ("today"), pinning persists them, and **folders** group pinned tabs, with a **bidirectional folder↔space
+  transform** (ADR-0006). This was pulled forward because the transform is only correct with the
+  persistent/ephemeral split — only persistent tabs survive a demotion.
 
 ---
 
@@ -100,4 +103,4 @@ Compact space switcher in the sidebar (icon row / swipe); create / switch / dele
 
 ## Not in this doc
 
-Full architecture, Windows, vault, sync, agent layer, DevTools/automation surface → the main architecture spec.
+Full architecture, Windows, vault, sync, agent layer, DevTools/automation surface → `architecture.md`.
