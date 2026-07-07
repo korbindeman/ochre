@@ -163,6 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// no active tab there is nothing to edit — fall back to the command bar for a
     /// new tab. Reveal a collapsed sidebar first so the field is on-screen.
     @objc func editCurrentURL() {
+        guard !BrowserState.shared.isSurfaceOpen else { return }
         guard BrowserState.shared.activeTab != nil else {
             commandBar.toggle()
             return

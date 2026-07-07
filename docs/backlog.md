@@ -142,8 +142,8 @@ Goal (rm §5.1 / mvp): the Arc interaction model in native chrome, good enough f
 | P1-M4 | Spaces switcher + multi-space UX | done | ~60k | P1-M1 | mvp M4 · ADR-0005/0006 |
 | P1-7 | Tab folders + pinned/ephemeral split + folder↔space transform | done | ~110k | P1-M4 | ADR-0006; user request 2026-07-06 |
 | P1-M5 | Adblock integration + polish (shortcuts, tab suspension, animation) | blocked | ~70k | P1-M2 (P0-3 covers the request-path core) | mvp M5 |
-| P1-8 | Split `client.rs` (727 L) → `client/{handlers,favicon,devtools}.rs` — one file mixes 8+ CEF handlers, favicon capture, DevTools, error-page HTML | next | ~20k | — | code §3 |
-| P1-9 | Split Swift view monoliths — `BrowserRootView.swift` (8+ view types) + `CommandBar.swift` (panel + key-handling + sizing) into per-component files | next | ~25k | — | code §3 |
+| P1-8 | Split `client.rs` (727 L) → `client/{handlers,favicon,devtools}.rs` — one file mixes 8+ CEF handlers, favicon capture, DevTools, error-page HTML | done | ~20k | — | code §3 |
+| P1-9 | Split Swift view monoliths — `BrowserRootView.swift` (8+ view types) + `CommandBar.swift` (panel + key-handling + sizing) into per-component files | done | ~25k | — | code §3 |
 | P1-10 | Omnibox-grade command-bar autocomplete — core fuzzy ranking + match highlighting + inline autocomplete | done | ~55k | — | ADR-0011 · style §6 · spec §9; user request 2026-07-06 |
 | P1-11 | Sidebar layout: Arc control placement — nav controls share the traffic-light row, New Tab row heads the today section | done | ~15k | P1-6 | style §3; user request 2026-07-06 |
 | P1-12 | Space emoji icons (core model + switcher UI) + default 🏠 Home space visible at launch (initial snapshot pull) | done | ~30k | P1-M4 | style §5; user request 2026-07-06 |
@@ -155,7 +155,7 @@ Goal (rm §5.1 / mvp): the Arc interaction model in native chrome, good enough f
 | P1-18 | Adblock control UI — per-site shield (live blocked count + allowlist popover) beside the sidebar URL chip + global/per-site menu toggles | done | ~35k | P0-3 | ADR-0020 · style §16; user request 2026-07-07 |
 | P1-19 | Auto-reveal collapsed sidebar when the empty canvas is showing — the empty (zero-tab) state floats the collapsed sidebar out so a saved/pinned tab can be picked, and keeps it out (hover-dismissal suspended) until a tab exists; scoped to the *visible* empty canvas so a full-content panel (History/Vault) over it tucks the sidebar away and closing the panel floats it back; covers launch-into-empty + close-last-tab | done | ~12k | P1-6, P1-16 | style §3; user request 2026-07-07 |
 | P1-20 | App-UI surface ↔ tab mutual exclusivity — opening History/Passwords suppresses the sidebar active-tab highlight; clicking a tab dismisses the surface + focuses that tab; the two surfaces are exclusive with each other; leading ✕ close button on each; ⌘W dismisses whichever surface is open | done | ~15k | P1-13, P2-13 | ADR-0022 · style §15; user request/bug 2026-07-07 |
-| P1-21 | URL-bar chip neutralized while an app-UI surface is open — the chip still shows the active tab's host while History/Passwords covers the canvas (the highlight is cleared but the address chip isn't); decide whether to blank/neutralize it for consistency (self-contained; core active tab stays as-is) | next | ~8k | P1-20 | ADR-0022 (discovered in P1-20) |
+| P1-21 | URL-bar chip neutralized while an app-UI surface is open — the chip still shows the active tab's host while History/Passwords covers the canvas (the highlight is cleared but the address chip isn't); decide whether to blank/neutralize it for consistency (self-contained; core active tab stays as-is) | done | ~8k | P1-20 | ADR-0022 (discovered in P1-20) |
 | P1-22 | Uniform button feedback — shared `IconButtonStyle` (hover fill + press-deepen, Reduce-Motion-aware) replaces the hand-rolled per-button highlights across the chrome; brings the URL-chip copy/shield buttons in line with the rest, adds the pressed state no custom button had, and generalizes action-confirmation (vault copy ✓ like the URL chip) | done | ~18k | P1-M2 | ADR-0023 · style §17; user request 2026-07-07 |
 
 Notes:
@@ -283,13 +283,20 @@ Notes:
   `crates/ffi`). A fair amount of Phase-1-flavored UI (command bar ≈ M3, autocomplete, favicons) already
   exists against that single browser, but the **multi-tab spine (M1) is absent** — no `tabs` module, no
   `TabTitleChanged`-style event stream. M1 is the real structural unblock for M2–M5.
-- **P1-8 / P1-9 (2026-07-06) — file-monolith splits surfaced by `code-style.md` §3.** No function in the tree
-  is a tangled monolith; the pressure is purely at the *file* level, so these are decomposition-only (move
-  code into concern-scoped files, adjust visibility/imports, no behavior change). **Sequencing matters:**
-  **P1-8** (`client.rs`) is independent — safe to pick anytime. **P1-9** touches the two Swift files that
-  **P1-M2 / P1-M3** will heavily expand; both milestones are `blocked` on P0-1, so the files aren't churning
-  now and a split is safe — but best done *just before* M2/M3 open (or folded into them) so the decomposition
-  benefits that work rather than being redone. Not a hard dep; a sequencing note.
+- **Landed 2026-07-07 (P1-8 + P1-9 → done) — file-monolith splits (`code-style.md` §3).** Decomposition-only,
+  no behavior change. **P1-8:** `crates/core/src/client.rs` → `client/{mod,handlers,favicon,devtools}.rs` —
+  handlers (display/life-span/load/find/focus/request + Alloy error pages + Views delegates), favicon download,
+  DevTools/context-menu/F12 in separate files; `BrowserHandler` + `BrowserClient` stay in `mod.rs`.
+  **P1-9:** `BrowserRootView.swift` → `Sidebar`, `TabRow`, `TabFavicon`, `EmptyStateView`, `FloatingSidebar`,
+  `TrackingView`, `CEFContainerView`; `CommandBar.swift` → `CommandBarController`, `CommandBarPanel`,
+  `CommandBarKeys`, `CommandBarView`. **Verified:** `just verify` green (162 core tests, clippy, fmt);
+  `just build-macos` **BUILD SUCCEEDED**.
+- **Landed 2026-07-07 (P1-21 → done) — URL chip neutralized while a surface is open (ADR-0022 follow-up).**
+  When History/Passwords covers the canvas the sidebar chip no longer shows the active tab's host — it renders
+  a muted, non-interactive label ("History" / "Passwords" + clock/key icon) with shield/vault/copy suppressed.
+  `openHistory`/`openVault` call `URLBarModel.endEditing()`; `beginEditing` and ⌘L (`editCurrentURL`) no-op
+  while `isSurfaceOpen`. Dismissing the surface restores the normal chip. **`just build-macos` green** before
+  the parallel P1-8/P1-9 split landed; re-verify after those merges settle.
 - **Landed 2026-07-06 (P1-10) — omnibox-grade autocomplete (ADR-0011).** Replaced the history
   `LIKE '%q%'` substring matcher with a purpose-built, dependency-free fuzzy scorer in the core
   (`crates/core/src/fuzzy.rs`, Smith-Waterman DP returning score + matched char indices) and a

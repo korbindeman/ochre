@@ -297,11 +297,13 @@ final class BrowserState: ObservableObject {
     /// Goes straight to the booleans (not through `close*`) so switching between
     /// surfaces never bounces focus down to the web view in between.
     func openHistory() {
+        URLBarModel.shared.endEditing()
         isVaultOpen = false
         isHistoryOpen = true
     }
 
     func openVault() {
+        URLBarModel.shared.endEditing()
         isHistoryOpen = false
         isVaultOpen = true
     }

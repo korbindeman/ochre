@@ -34,7 +34,8 @@ final class URLBarModel: ObservableObject {
     /// query and any chosen suggestion) to the current tab. No-op without a tab —
     /// the empty chip is a new-tab launcher instead.
     func beginEditing() {
-        guard !isEditing, let tab = BrowserState.shared.activeTab else { return }
+        let state = BrowserState.shared
+        guard !isEditing, !state.isSurfaceOpen, let tab = state.activeTab else { return }
         Navigation.route = .currentTab
         initialQuery = tab.url
         suggestions.reset()
@@ -87,17 +88,54 @@ struct URLBar: View {
 
     private var tab: TabItem? { state.activeTab }
     private var isEmpty: Bool { tab?.url.isEmpty ?? true }
+    /// History/Passwords covers the canvas — the chip reads as inert, not the
+    /// active tab's address (ADR-0022 follow-up, P1-21).
+    private var isNeutralized: Bool { state.isSurfaceOpen }
     private var text: String {
         guard let tab, !tab.url.isEmpty else { return "Search or enter URL" }
         return prettyURL(tab.url)
     }
 
     var body: some View {
-        if model.isEditing && isVisible {
-            editor
-        } else {
-            chip
+        Group {
+            if model.isEditing && isVisible && !isNeutralized {
+                editor
+            } else if isNeutralized {
+                neutralChip
+            } else {
+                chip
+            }
         }
+        .onChange(of: state.isSurfaceOpen) { _, open in
+            if open {
+                showShield = false
+                showVault = false
+                hovering = false
+            }
+        }
+    }
+
+    // ─── Neutral chip (surface open) ─────────────────────────────────────────
+
+    private var neutralChip: some View {
+        HStack(spacing: 6) {
+            Image(systemName: state.isHistoryOpen ? "clock" : "key")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.tertiary)
+            Text(state.isHistoryOpen ? "History" : "Passwords")
+                .lineLimit(1)
+                .foregroundStyle(.tertiary)
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 13))
+        .padding(.horizontal, 10)
+        .frame(height: fieldHeight)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(.quaternary)
+                .opacity(0.35)
+        )
+        .allowsHitTesting(false)
     }
 
     // ─── Display chip ──────────────────────────────────────────────────────────

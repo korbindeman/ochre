@@ -6,11 +6,14 @@
 #
 #   1. libbrowser_ffi.dylib — the C-ABI dylib the app links against (-lbrowser_ffi).
 #   2. Its install name rewritten to @rpath/... — cargo bakes an absolute
-#      target/debug/deps path into LC_ID_DYLIB, which the linker would copy into
-#      the executable verbatim; @rpath lets it resolve from Contents/Frameworks.
-#   3. target/bundle/browser.app — the authoritative source (via cef-rs's own
-#      bundler) for the CEF framework + `browser Helper.app` the post-build step
+#      target/{debug,release}/deps path into LC_ID_DYLIB, which the linker would
+#      copy into the executable verbatim; @rpath lets it resolve from
+#      Contents/Frameworks.
+#   3. target/bundle[/ -release]/browser.app — the authoritative source (via
+#      `bin/bundle.rs`) for the CEF framework + helper apps the post-build step
 #      injects. Rebuilt every time so the helper binary never goes stale.
+#
+# Xcode sets CONFIGURATION (Debug / Release); `just dogfood` builds Release.
 set -euo pipefail
 
 # Xcode script phases run with a minimal PATH; cargo lives under ~/.cargo/bin.
@@ -24,11 +27,23 @@ else
   cd "$(cd "$(dirname "$0")/.." && pwd)"
 fi
 
-echo "[prebuild] building libbrowser_ffi.dylib"
-cargo build -p browser-ffi
+if [ "${CONFIGURATION:-Debug}" = "Release" ]; then
+  CARGO_PROFILE=(--release)
+  CARGO_TARGET=release
+  BUNDLE_FLAG=(--release)
+  BUNDLE_DIR=target/bundle-release
+else
+  CARGO_PROFILE=()
+  CARGO_TARGET=debug
+  BUNDLE_FLAG=()
+  BUNDLE_DIR=target/bundle
+fi
+
+echo "[prebuild] building libbrowser_ffi.dylib (${CARGO_TARGET})"
+cargo build -p browser-ffi "${CARGO_PROFILE[@]}"
 
 echo "[prebuild] pinning dylib install name to @rpath/libbrowser_ffi.dylib"
-install_name_tool -id @rpath/libbrowser_ffi.dylib target/debug/libbrowser_ffi.dylib
+install_name_tool -id @rpath/libbrowser_ffi.dylib "target/${CARGO_TARGET}/libbrowser_ffi.dylib"
 
-echo "[prebuild] assembling target/bundle/browser.app (CEF framework + helper)"
-cargo run --quiet --bin bundle
+echo "[prebuild] assembling ${BUNDLE_DIR}/browser.app (CEF framework + helper)"
+cargo run --quiet --bin bundle -- "${BUNDLE_FLAG[@]}"

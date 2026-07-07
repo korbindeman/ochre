@@ -81,6 +81,14 @@ focus-selftest: gen-macos
     cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build
     HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/Browser.app/Contents/MacOS/Browser --focus-selftest
 
+# ── Dogfood (release) ───────────────────────────────────────────────
+
+# Release build of Browser.app, install to /Applications, and launch.
+# Replaces any existing /Applications/Browser.app (quits a running instance first).
+dogfood: gen-macos
+    cd apps/macos && xcodebuild -scheme Browser -configuration Release -derivedDataPath build build
+    ./scripts/install-dogfood.sh apps/macos/build/Build/Products/Release/Browser.app
+
 # ── Convenience ─────────────────────────────────────────────────────
 
 # Verify: build + test + lint — the full CI-style check.

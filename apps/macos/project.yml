@@ -35,7 +35,6 @@ targets:
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         # Link against the Rust C-ABI dylib (built by the pre-build script).
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Browser-Bridging-Header.h
-        LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../target/debug
         OTHER_LDFLAGS: -lbrowser_ffi
         # Resolve @rpath/libbrowser_ffi.dylib + the CEF framework from the bundle.
         LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
@@ -48,6 +47,13 @@ targets:
         ENABLE_HARDENED_RUNTIME: NO
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGNING_ALLOWED: NO
+      configs:
+        Debug:
+          LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../target/debug
+        Release:
+          LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../target/release
+          SWIFT_COMPILATION_MODE: wholemodule
+          SWIFT_OPTIMIZATION_LEVEL: -O
     preBuildScripts:
       - path: ../../scripts/prebuild-macos.sh
         name: "Build Rust core & CEF bundle"

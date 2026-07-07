@@ -14,7 +14,16 @@ set -euo pipefail
 
 ROOT="$SRCROOT/../.."
 APP="$BUILT_PRODUCTS_DIR/$FULL_PRODUCT_NAME"
-SRC="$ROOT/target/bundle/browser.app/Contents/Frameworks"
+
+if [ "${CONFIGURATION:-Debug}" = "Release" ]; then
+  CARGO_TARGET=release
+  BUNDLE_DIR=target/bundle-release
+else
+  CARGO_TARGET=debug
+  BUNDLE_DIR=target/bundle
+fi
+
+SRC="$ROOT/${BUNDLE_DIR}/browser.app/Contents/Frameworks"
 FRAMEWORKS="$APP/Contents/Frameworks"
 
 mkdir -p "$FRAMEWORKS"
@@ -50,8 +59,8 @@ for HELPER in "$SRC"/browser\ Helper*.app; do
   ditto "$HELPER" "$FRAMEWORKS/$NAME"
 done
 
-echo "[bundle] embedding libbrowser_ffi.dylib"
-ditto "$ROOT/target/debug/libbrowser_ffi.dylib" "$FRAMEWORKS/libbrowser_ffi.dylib"
+echo "[bundle] embedding libbrowser_ffi.dylib (${CARGO_TARGET})"
+ditto "$ROOT/target/${CARGO_TARGET}/libbrowser_ffi.dylib" "$FRAMEWORKS/libbrowser_ffi.dylib"
 
 # Re-sign only the dylib: install_name_tool (pre-build phase) invalidated its
 # ad-hoc signature, and dyld refuses to load an arm64 dylib whose signature is
