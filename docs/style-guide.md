@@ -51,7 +51,8 @@ Slim, content-first, Safari-like. Arc's interaction model, **not** Arc's thick i
 - **Chrome is a slim glass sidebar + minimal top controls.** Sidebar holds the controls (sidebar toggle, back/forward/reload), a compact current-tab URL chip (§6 — edits inline, not a full-width bar), vertical tabs, and the space switcher. No persistent chrome beyond that — *new-tab* entry is the command bar (§6); editing the current tab's address happens inline in the chip.
 - **Control placement mirrors Arc.** One top row shared with the traffic lights: lights, then the sidebar toggle beside them, back/forward/reload grouped at the right edge. The URL chip sits directly below. The New Tab row heads the today section of the tab list (below the pinned divider, above today's tabs) — it is not a bottom-of-sidebar control.
 - **Sidebar sizing.** Comfortable default width, favicon + title per tab, no wasted padding. Draggable within a sane min/max. Collapsible to give content the whole window (§9 shortcut); collapse/expand is a spring width animation.
-- **Glass floats over content where the platform allows it** (macOS 26 Safari target: glass lensing live content), with the fallback of content flush *beside* the sidebar if over-content compositing is troublesome (validate per `mvp1.md` M2). Either way: slim and content-first.
+- **A collapsed sidebar auto-reveals when the empty canvas is showing** (Arc). The empty (zero-tab) state has no other affordance to reach a saved/pinned tab, so the sidebar floats out on its own and stays out — hover-dismissal is suspended — until a tab exists again; opening one lets it collapse back on the next pointer-leave. Applies at launch-into-empty and after the last tab closes. Scoped to the *visible* empty canvas: a full-content-area panel over it (History/Vault, §16) takes over the surface, so the auto-floated sidebar tucks away while the panel is up and floats back when it closes — over a panel the sidebar reverts to ordinary hover-reveal. A pinned sidebar is already visible, so this is a no-op there.
+- **Sidebar is slim glass, flush *beside* the content** (not lensing over it). The M2 validation is resolved (ADR-0019): in-window glass can't sample CEF's GPU-hosted web layer, so over-content lensing has nothing valid to lens — the documented fallback stands. The sidebar's material is the standard sidebar vibrancy (macOS 26 renders it as Liquid Glass, sampling behind the *window*); discrete `.glassEffect` is reserved for the floating chrome that composites correctly over content (command bar, find bar, history capsules). Either way: slim and content-first.
 - **Glass belongs on the top functional layer only** (spec §7) — the slim floating chrome — never on content rows or as a stacked backdrop.
 - **Traffic lights are custom-drawn in the sidebar; the real window buttons are hidden** (Arc-style, ADR-0012). The sidebar's top row leads with three lights we render ourselves as sidebar *content* — so they ride the sidebar's slide/fade animations natively and vanish with it, never stranding window controls over full-bleed content. They match native: exact colors, the window-inactive gray state, and hover-revealed × / − / fullscreen glyphs; clicks route to close / minimize / fullscreen. Fullscreen defers to the OS auto-hiding titlebar (the custom set steps aside, the real buttons come back). A deliberate, documented deviation from strict host-OS window-control placement (§2), chosen after three attempts at positioning/hiding the *real* buttons in sync with the sidebar drifted — AppKit re-lays them out on more triggers than any callback set covers, worst on the beta OS (macOS `TrafficLights.swift`).
 
@@ -92,6 +93,7 @@ The signature interaction (spec §9). A center overlay, Spotlight-positioned, th
 - **Expand animation is the platform's morph** — Spotlight-style on macOS (`glassEffectID`), `ConnectedAnimation`/Composition on Windows. Budget hand-tuning; the feel is the point.
 - **The command bar itself is never a persistent bar.** It's transient — appears on invocation, dismisses on commit or escape. There is no always-visible *full-width* address bar (§3, §13). It is the **new-tab** surface only; editing the current tab's address is inline (below), not a command-bar mode.
 - **The sidebar's URL chip edits inline** (Arc, ADR-0014). Below the controls it shows the active tab's address; clicking it — or `Cmd/Ctrl+L` — turns the chip into a live search/URL field *in the sidebar*, prefilled + selected, with the same unified autocomplete dropping down over the tab list. Commit loads in the active tab; Escape or clicking away restores the display and returns focus to the page. Only the on-screen sidebar hosts the live field (a collapsed sidebar reveals first). With no active tab the chip is a placeholder that opens the command bar for a new tab. This is the one persistent entry surface the guide allows — it's the sidebar-width chip, never the full-width toolbar §3/§13 forbid.
+- **The chip leads with an icon only when empty.** A magnifying glass on the empty/placeholder chip (and the inline edit field) is a *search affordance* — "type here." A loaded URL displays flush with no leading glyph: the text is self-evidently a web address, so a leading globe would only restate it. Site *identity* already lives in the tab's favicon (§4), and site *status/security* consolidates into the trailing shield (§16) — the chip does not carry a second leading favicon or a lock icon. (Reversed an earlier proposal to show the favicon here; cut instead — the tab already owns identity.)
 
 ---
 
@@ -133,6 +135,7 @@ Everything is reachable from the keyboard; the command bar is the hub. Shortcuts
 | Back / forward | `Cmd+[` / `Cmd+]` |
 | Show history | `Cmd+Y` |
 | Find in page | `Cmd+F` |
+| Find next / previous | `Cmd+G` / `Cmd+Shift+G` |
 | Snip an element (Tweaks) | `Cmd+Shift+Y` |
 | DevTools (toggle) | `Cmd+Opt+I` / `F12` |
 | Inspect element | right-click → *Inspect Element* |
@@ -160,7 +163,7 @@ Every surface handles every state. No placeholder, no "for now."
 Going native buys platform accessibility largely for free (spec §14) — don't squander it.
 
 - **Use native controls** so VoiceOver / Narrator / screen readers, and UI Automation work without a custom a11y tree. Custom-drawn chrome would forfeit this; avoid it.
-- **Honor system settings:** reduce-motion (§7), increased contrast, text scaling / Dynamic Type (§8), and reduce-transparency (fall back off glass to a solid material when the OS asks).
+- **Honor system settings:** color scheme / light-dark (§18 — forwarded to web content, System mode tracks the OS), reduce-motion (§7), increased contrast, text scaling / Dynamic Type (§8), and reduce-transparency (fall back off glass to a solid material when the OS asks).
 - **Full keyboard navigation** (§9) and visible focus everywhere.
 - **Label everything** — icon-only controls carry accessible labels; tab rows announce title and load state.
 
@@ -179,6 +182,7 @@ One vocabulary across UI copy, code, and all platforms. Consistency in naming is
 | **web view / content** | viewport, page area |
 | **Tweak** (a per-site customization) | boost, mod, site rule |
 | **Snip** (the element remover) | zap, element picker/zapper (in UI copy) |
+| **adblock** (code) / **the shield** (the affordance) · "block ads and trackers" (copy) | content blocker, Shields, ad guard |
 
 - **"Mod"** is reserved for browser-*chrome* theming (a later, separate feature); page-content customization is always a **Tweak**. **"Script"** is the JS tier of Tweaks; *userscript* is its technical name, not the user-facing umbrella.
 
@@ -244,3 +248,55 @@ App-UI surfaces are **native**, not web pages (ADR-0010). Each renders in the co
 - **Content.** Native `List` / controls (§8, §11): favicon + primary/secondary text + a trailing, tabular metadata column (§8); native section headers where the data groups naturally (History by day).
 - **States (§10).** A designed empty state, a distinct no-results state for a search, and hover-revealed row actions (e.g. remove).
 - **Dismissal.** Escape, `Cmd+W`, or opening/navigating to a tab closes the surface — an open surface intercepts `Cmd+W` so it never closes the tab or window beneath it. `Cmd+Y` toggles History.
+
+---
+
+## 16. Adblock & the site shield (ADR-0020)
+
+Native request-path ad-blocking (spec §11) is on by default; its user-facing surface is a **shield beside the sidebar URL chip** plus menu toggles. Blocking is a background invariant (the core), so the chrome stays quiet — it appears when it has something to say, never as persistent noise.
+
+- **The shield.** A small shield glyph sits at the trailing edge of the sidebar URL chip (§6) — the Chrome/Brave-native home, address-adjacent. It shows the **active tab's** state:
+  - **Actively blocking** (blocking on, count > 0): a filled shield in the accent color with the live blocked count beside it (tabular digits, §8).
+  - **On, nothing blocked yet:** a quiet secondary shield, no number.
+  - **Off for this site** (allowlisted) or **globally off:** a `shield.slash`, dimmed.
+- **When it shows.** Only on a real web page, and only when it has meaning — a block count, blocking turned off here, or on hover (so it's always reachable). A fresh page with nothing blocked keeps the chip clean. It never appears on the empty/new-tab chip or internal surfaces.
+- **The popover.** Clicking the shield opens a **native popover** (not web UI, §13): the site host, a one-line count ("*N requests blocked on this page*" / "*No ads or trackers blocked yet*"), and a **switch — "Block ads and trackers on this site."** Toggling it allowlists/de-allowlists the site (registrable domain) and reloads the page so the change applies on screen (matching Brave/Arc). Off a global switch, the toggle is disabled with a one-line note.
+- **Menu items (View).** "Block Ads and Trackers" (global, carries a checkmark for the on state) and "Block Ads on This Site" (checked when blocking is on for the active site; disabled off a web page or when blocking is globally off). **"Block Cookie Notices"** (ADR-0026) is a sibling toggle governing cookie-consent handling (reject + hide) as its own switch, distinct from ad-block — global, checkmark for the on state. Every control has a menu path (`CLAUDE.md`); none needs a shortcut (rarely-toggled), so none is assigned.
+- **Count semantics.** The count is per active tab, reset at each navigation, and reflects requests the engine cancelled on the request path. It settles at page-load end; a mid-load number is not promised.
+- **Cosmetic filtering (later, P2-21).** Element-hiding will collapse the empty gaps network blocking leaves; until it lands (it needs the document-start injection substrate), a blocked ad may leave layout space. The shield count already reflects network blocks.
+- **The canonical site-status surface.** The shield is the one address-adjacent place for *how this site is being handled*. Future per-site status/security — connection info, camera/mic/location permissions — consolidates into this trailing affordance and its popover, **not** a second leading lock icon on the chip (§6). One quiet control that expands on demand, not a row of glyphs.
+- **Terminology.** "Block ads and trackers" / "this site" in copy; the feature is **adblock** in code and **the shield** for the affordance. Not "content blocker," not "brave shields."
+
+### The vault key (quick access, P2-34)
+
+A **second** trailing-chip affordance, deliberately distinct from the shield's site-*status* role: a **key glyph** beside the shield that surfaces **the saved logins for this site** (the 1Password/Bitwarden toolbar idiom). Two affordances at the chip's trailing edge, not a row of glyphs — the shield answers *how this site is handled*, the key answers *do I have a login here* (ADR-0029).
+
+- **The key.** Filled + accent-tinted when the site has saved logins (the valuable case); a quiet secondary outline otherwise. Shown when the vault is set up and either there are matches or the chip is hovered — reachable on demand, mirroring the shield's reveal rule. Absent entirely when the vault was never set up.
+- **The popover.** Clicking opens a **native popover** (not web UI, §13): the site host, then this site's logins — each row **fills** on click (the primary action, like picking an entry in a password manager) with **Copy username** / **Copy password** beside it. Locked → an Unlock button (opens the Passwords page, §15); no matches → Open Passwords.
+- **Fill vs. Copy.** Fill injects into the page's login fields (an email-only two-step first step included). **Copy is the detection-independent path** — it works on *any* page regardless of what the form detector can see, the reliable escape hatch when auto-fill can't find the fields. A copied password **auto-clears from the clipboard after 30s** (only if nothing was copied since).
+- **Terminology.** "Passwords for this site" / "Fill" / "Copy" in copy; the affordance is **the vault key**.
+
+---
+
+## 17. Controls & interaction feedback (ADR-0023)
+
+Every control acknowledges the pointer and every action confirms itself — the concrete rules behind §10's "shows hover / focus / active / disabled correctly" and "feedback is immediate." This is an **Invariant** (§2): the *feel* is identical on every platform; the fill/curve are drawn with native materials and native motion.
+
+- **Two-stage feedback, always.** A chrome control lights up on **hover** and **deepens on press** — the native macOS / Arc toolbar-button response. Hover-only is a half-measure; a control that doesn't react to mouse-down doesn't feel real. Both stages animate with the shared hover curve (`Animation.hover`, ~120ms ease-out) and honor Reduce Motion (§7 — the fill cuts instead of fading).
+- **One button style, not per-site paint.** macOS icon buttons use the shared **`IconButtonStyle`** (`IconButton.swift`): a quiet `.quaternary` rounded fill, off → hover → press, matching the container's corner radius. Don't hand-roll a hover `.background` on a new button — adopt the style so hover, press, disabled, and Reduce Motion are correct and uniform for free. (Windows/Linux get the equivalent single control style; the actions stay in the core/FFI so it's view-only.)
+- **Buttons vs. rows.** `IconButtonStyle` is for `Button`s. Selection **rows** (a tab, a history/vault row) and the URL chip are `onTapGesture` surfaces — they keep the lighter `hoverFade` highlight (same curve) so a nested button's tap stays unambiguous, and the active tab carries its sliding selection pill (§4). A button *inside* a row still uses the style.
+- **Glyph emphasis.** A plain icon reads secondary and brightens to primary while hovered/pressed. A glyph whose **color already encodes state** — the URL copy button (green on success), the shield (tint by block-state) — keeps its own color and takes only the fill (`emphasizesLabel: false`); never override a state color to brighten it.
+- **Selected & disabled.** A persistently-selected control (the active space pill, the open Passwords toggle) keeps its fill lit at rest (`isActive`). A disabled control dims its glyph to quaternary and shows **no** fill — dead, not merely quiet — and blocks the action and the hover/press response (never a lit control that does nothing).
+- **Actions confirm within a frame or two (§10).** A command that would otherwise complete invisibly shows a brief, in-place acknowledgement: a copy flashes a checkmark (the URL chip's Copy Link and the vault row's copy), a toggle flips its own state, destructive actions animate the row out. Silent success is a bug — the user must see that the click landed.
+- **Focus & keyboard (§9, §11).** Pointer feedback never replaces keyboard feedback: the platform focus ring stays on the underlying native control, and every hover-only affordance also has a keyboard/menu path. Icon-only controls carry an accessible label and a `help` tooltip.
+
+---
+
+## 18. Appearance — Light / Dark / System (ADR-0030)
+
+One appearance choice governs the **whole browser** — native chrome *and* web content — matching Chrome and Arc. This is an **Invariant** (§2): the setting and its behavior are identical on every platform; only the mechanism (how the OS appearance is detected, how native chrome is themed) is platform-native.
+
+- **One setting, three values — System / Light / Dark.** Lives in **View → Appearance** as a radio group (checkmark on the active choice). System is the default and tracks the OS. Like a browser's appearance preference everywhere (Safari/Chrome/Arc), it deliberately carries **no keyboard shortcut** — it's a rarely-flipped preference, not a power-user command, so it's the one menu action §9's "no dead ends" doesn't cover.
+- **The choice drives web content, not just chrome.** The core forwards the resolved scheme to Chromium so a page's `prefers-color-scheme` (and `color-scheme`) match the setting — in the ALLOY hosting model the OS won't apply it to the CEF web view on its own (ADR-0030). A dark shell around a light page (or the reverse) is a split-appearance **bug**, not a look.
+- **System tracks the OS live.** Flipping the OS light/dark setting re-themes open pages with **no reload**; the host forwards `effectiveAppearance` changes to the core. Light/Dark pin the browser regardless of the OS.
+- **Honor system settings, but allow the override (§11).** Appearance joins reduce-motion, increased-contrast, and reduce-transparency as an OS signal the browser respects by default (System) — and, unlike those accessibility signals, it also offers an explicit Light/Dark override, because a per-app appearance choice is an established browser affordance.

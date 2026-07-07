@@ -279,6 +279,10 @@ wrap_client! {
         fn focus_handler(&self) -> Option<FocusHandler> {
             Some(BrowserFocusHandler::new())
         }
+
+        fn request_handler(&self) -> Option<RequestHandler> {
+            Some(BrowserRequestHandler::new())
+        }
     }
 }
 
@@ -311,7 +315,14 @@ const MENU_ID_INSPECT_ELEMENT: i32 = sys::cef_menu_id_t::MENU_ID_USER_FIRST as i
 
 /// Toggle DevTools for `browser`: close it if already open, otherwise open it in
 /// its own window. Backs both the ⌘⌥I menu item (via `embed::toggle_dev_tools`)
-/// and the F12 keyboard shortcut, so the two stay consistent. UI thread only.
+/// and the F12 keyboard shortcut, so the two stay consistent.
+///
+/// DevTools opens as a **separate window**, not docked in-window: under CEF 149's
+/// Chrome bootstrap a DevTools browser must be Chrome-style, but hosting one in a
+/// child `NSView` forces Alloy style (which it rejects), and its own Chrome-managed
+/// window ignores `CefWindowInfo` (so it can't be created hidden for view-adoption
+/// either). Inline docking is therefore not feasible for our Alloy-style tabs — see
+/// ADR-0021. UI thread only.
 pub(crate) fn toggle_dev_tools(browser: &Browser) {
     let Some(host) = browser.host() else { return };
     if host.has_dev_tools() != 0 {
@@ -489,6 +500,13 @@ wrap_life_span_handler! {
 
     impl LifeSpanHandler {
         fn on_after_created(&self, browser: Option<&mut Browser>) {
+            // Attach the content-script injection substrate (a no-op unless a
+            // consumer is registered) before the browser loads its first document
+            // (ADR-0017). Reborrow so `browser` is still handed to the handler.
+            let mut browser = browser;
+            if let Some(browser) = browser.as_deref_mut() {
+                crate::inject::install_for_browser(browser);
+            }
             let mut inner = self.inner.lock().expect("Failed to lock handler");
             inner.on_after_created(browser);
         }
@@ -499,6 +517,12 @@ wrap_life_span_handler! {
         }
 
         fn on_before_close(&self, browser: Option<&mut Browser>) {
+            // Drop the tab's adblock counter (ADR-0020) and its injection-substrate
+            // observer registration (ADR-0017) so neither map grows unbounded.
+            if let Some(id) = browser.as_deref().map(|b| b.identifier()) {
+                crate::adblock::forget_tab(id);
+                crate::inject::uninstall_for_browser(id);
+            }
             let mut inner = self.inner.lock().expect("Failed to lock handler");
             inner.on_before_close(browser);
         }
@@ -524,6 +548,11 @@ wrap_load_handler! {
             can_go_forward: i32,
         ) {
             if let Some(id) = browser.as_deref().map(|b| b.identifier()) {
+                // Reset the tab's adblock count at each navigation start so the
+                // sidebar shield reflects the current page (ADR-0020).
+                if is_loading != 0 {
+                    crate::adblock::reset_count(id);
+                }
                 tabs::note_load_state(id, is_loading != 0, can_go_back != 0, can_go_forward != 0);
             }
         }
@@ -535,6 +564,10 @@ wrap_load_handler! {
             http_status_code: i32,
         ) {
             eprintln!("[client] on_load_end status={http_status_code}");
+            // Autofill no longer hooks here: it rides the injection substrate
+            // (isolated world, ask-the-core, gesture-gated) via `crate::inject`
+            // — see `crate::vault::autofill` (P2-15, ADR-0017). The v0 main-world,
+            // password-baked-in `on_load_end` push is retired.
         }
 
         fn on_load_error(
@@ -547,6 +580,102 @@ wrap_load_handler! {
         ) {
             let mut inner = self.inner.lock().expect("Failed to lock handler");
             inner.on_load_error(browser, frame, error_code, error_text, failed_url);
+        }
+    }
+}
+
+// ─── Adblock request-path filtering (ADR-0020, spec §11) ─────────────────────
+
+/// Map a CEF resource type to the lowercase request-type string adblock-rust
+/// expects (`cpt_match_type`); unmapped kinds fall through to `"other"`, which
+/// the engine treats as an unconstrained type.
+fn adblock_request_type(resource_type: ResourceType) -> &'static str {
+    match resource_type {
+        ResourceType::MAIN_FRAME => "document",
+        ResourceType::SUB_FRAME => "sub_frame",
+        ResourceType::STYLESHEET => "stylesheet",
+        ResourceType::SCRIPT => "script",
+        ResourceType::IMAGE | ResourceType::FAVICON => "image",
+        ResourceType::FONT_RESOURCE => "font",
+        ResourceType::OBJECT => "object",
+        ResourceType::MEDIA => "media",
+        ResourceType::XHR => "xmlhttprequest",
+        ResourceType::PING => "ping",
+        ResourceType::CSP_REPORT => "csp_report",
+        _ => "other",
+    }
+}
+
+// Registers the resource-request handler that carries the network filter. CEF
+// calls `resource_request_handler` once per request to obtain it; the handler is
+// stateless (the engine + state are process-global in `crate::adblock`), so a
+// fresh one per request is fine.
+wrap_request_handler! {
+    struct BrowserRequestHandler;
+
+    impl RequestHandler {
+        fn resource_request_handler(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            _request: Option<&mut Request>,
+            _is_navigation: ::std::os::raw::c_int,
+            _is_download: ::std::os::raw::c_int,
+            _request_initiator: Option<&CefString>,
+            _disable_default_handling: Option<&mut ::std::os::raw::c_int>,
+        ) -> Option<ResourceRequestHandler> {
+            Some(BrowserResourceRequestHandler::new())
+        }
+    }
+}
+
+// The network filter itself. Runs on the CEF **IO thread**: cancels ad/tracker
+// requests before they hit the network and records the block against the tab for
+// the sidebar shield. Cosmetic (element-hiding) filtering is the P2-21 fast-
+// follow on the document-start injection substrate — this is network blocking.
+wrap_resource_request_handler! {
+    struct BrowserResourceRequestHandler;
+
+    impl ResourceRequestHandler {
+        fn on_before_resource_load(
+            &self,
+            browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            request: Option<&mut Request>,
+            _callback: Option<&mut Callback>,
+        ) -> ReturnValue {
+            let Some(request) = request else {
+                return ReturnValue::CONTINUE;
+            };
+
+            // Never cancel a top-level document load — blocking it would blank
+            // the tab. Adblock targets sub-resources.
+            let resource_type = request.resource_type();
+            if resource_type == ResourceType::MAIN_FRAME {
+                return ReturnValue::CONTINUE;
+            }
+
+            let url = CefString::from(&request.url()).to_string();
+            // The top-level document URL — adblock's first-party for third-party
+            // detection, and the host the per-site allowlist keys on.
+            let source_url = CefString::from(&request.first_party_for_cookies()).to_string();
+            let first_party_host =
+                crate::vault::lookup::host_from_uri(&source_url).unwrap_or_default();
+
+            let blocked = crate::adblock::check(
+                &url,
+                &source_url,
+                &first_party_host,
+                adblock_request_type(resource_type),
+            );
+
+            if blocked {
+                if let Some(browser) = browser {
+                    crate::adblock::note_blocked(browser.identifier());
+                }
+                return ReturnValue::CANCEL;
+            }
+            ReturnValue::CONTINUE
         }
     }
 }

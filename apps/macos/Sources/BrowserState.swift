@@ -60,6 +60,9 @@ final class BrowserState: ObservableObject {
     /// across launches, like the sidebar width (`RootView`); defaults to pinned.
     @Published var isSidebarPinned =
         UserDefaults.standard.object(forKey: BrowserState.sidebarPinnedKey) as? Bool ?? true
+    /// Whether the collapsed sidebar is *hover-revealed*. Pointer-driven only
+    /// (`revealSidebar` in, `RootView`'s dismissal monitor out). The empty-canvas
+    /// auto-float is a separate, derived cause — see `isFloatingSidebarShown`.
     @Published var isSidebarRevealed = false
 
     private static let sidebarPinnedKey = "sidebarPinned"
@@ -71,8 +74,40 @@ final class BrowserState: ObservableObject {
 
     /// Whether the History surface is shown over the content area (a native
     /// app-UI page, not a tab — ADR-0010). `RootView` reveals/hides its host on
-    /// this; opening a tab or Escape closes it.
+    /// this; opening a tab or Escape closes it. It also counts as covering the
+    /// canvas, so the empty-state floating sidebar tucks away while it's up and
+    /// returns when it closes (derived — see `isFloatingSidebarShown`).
     @Published var isHistoryOpen = false
+
+    /// Whether the Passwords (vault) surface is showing (ADR-0010/0016). Same
+    /// content-area-surface model as History (and same empty-canvas rule).
+    @Published var isVaultOpen = false
+
+    // ─── Adblock (ADR-0020) ────────────────────────────────────────────────
+    // Mirrors the core's adblock state for the sidebar shield + menu items. The
+    // count and per-site state are for the *active* tab; refreshed off the event
+    // stream (load start/end, tab switch) via `refreshAdblock()`.
+
+    /// Global blocking switch (on by default).
+    @Published var adblockEnabled = true
+    /// Requests blocked on the active tab since its last navigation.
+    @Published var adblockBlockedCount = 0
+    /// Whether blocking is turned **off** for the active tab's site (allowlisted).
+    @Published var adblockSiteOff = false
+    /// Cookie-consent handling (reject + hide) switch (on by default; ADR-0026).
+    @Published var consentEnabled = true
+
+    // ─── Vault quick access (P2-34, ADR-0029) ──────────────────────────────
+    // Backs the URL-bar key button + current-site logins popover. Refreshed off
+    // the event stream (load start/end, tab switch) like the adblock shield, and
+    // on any vault lock-state change (VaultModel.reload → refreshVaultMatches).
+
+    /// Whether the vault has been set up (a button only appears once it is).
+    @Published var vaultConfigured = false
+    /// Whether the vault is locked (the popover offers unlock instead of a list).
+    @Published var vaultLocked = true
+    /// Logins matching the active tab's host (metadata only; empty when locked).
+    @Published var vaultMatches: [VaultLogin] = []
 
     var activeTab: TabItem? {
         guard let activeTabId else { return nil }
@@ -93,8 +128,14 @@ final class BrowserState: ObservableObject {
         switch type {
         case 0: patch(id) { $0.title = payload ?? "" } // TabTitleChanged
         case 1: patch(id) { $0.url = payload ?? "" } // TabUrlChanged
-        case 2: patch(id) { $0.isLoading = true } // TabLoadStarted
-        case 3: patch(id) { $0.isLoading = false } // TabLoadEnded
+        case 2: // TabLoadStarted
+            patch(id) { $0.isLoading = true }
+            refreshAdblock() // core reset the count at nav start → shows 0
+            refreshVaultMatches() // the host may have changed → re-match logins
+        case 3: // TabLoadEnded
+            patch(id) { $0.isLoading = false }
+            refreshAdblock() // final blocked count for the page
+            refreshVaultMatches()
         case 4: // TabFaviconChanged
             FaviconLoader.shared.invalidate(host: payload ?? "")
             patch(id) { $0.faviconVersion += 1 }
@@ -141,9 +182,11 @@ final class BrowserState: ObservableObject {
         let newFolders = snap.folders.map { FolderItem(id: $0.id, space: $0.space, name: $0.name) }
 
         // Spring the sidebar through structural changes (reorder / pin / create /
-        // close), but not the first population at launch — rows shouldn't fly in.
-        // Only SwiftUI observers (the sidebar list) animate; the CEF view swap is
-        // AppKit-driven and unaffected.
+        // close / select), but not the first population at launch — rows shouldn't
+        // fly in — and not under Reduce Motion (style §7). Only SwiftUI observers
+        // (the sidebar list) animate; the CEF view swap is AppKit-driven and
+        // unaffected. This ambient spring also drives the rows' enter/exit
+        // transitions and the sliding active-tab highlight (`SidebarSelection`).
         let apply = {
             self.tabs = newTabs
             self.spaces = newSpaces
@@ -151,11 +194,72 @@ final class BrowserState: ObservableObject {
             self.activeSpaceId = snap.activeSpace
             self.activeTabId = snap.activeTab
         }
-        if spaces.isEmpty {
+        if spaces.isEmpty || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             apply()
         } else {
             withAnimation(.spring(response: 0.32, dampingFraction: 0.86), apply)
         }
+
+        refreshAdblock() // the active tab may have changed → re-read its shield state
+        refreshVaultMatches() // …and re-match logins for the new active host
+    }
+
+    // ─── Adblock ───────────────────────────────────────────────────────────
+
+    /// Re-read the global switch and the active tab's blocked count + per-site
+    /// state from the core. Cheap; driven off the event stream.
+    func refreshAdblock() {
+        adblockEnabled = browser_adblock_is_enabled()
+        adblockBlockedCount = Int(browser_adblock_active_blocked_count())
+        adblockSiteOff = browser_adblock_active_site_allowlisted()
+        consentEnabled = browser_consent_is_enabled()
+    }
+
+    // ─── Vault quick access ──────────────────────────────────────────────────
+
+    /// Re-read vault lock/configured state and the active tab's matching logins.
+    /// Cheap (an in-memory lookup); driven off the event stream next to
+    /// `refreshAdblock`, and on any lock-state change from the Passwords page.
+    func refreshVaultMatches() {
+        vaultConfigured = browser_vault_is_configured()
+        vaultLocked = browser_vault_is_locked()
+        let host = activeTab?.host ?? ""
+        vaultMatches = (vaultLocked || host.isEmpty) ? [] : Self.fetchMatches(host: host)
+    }
+
+    private static func fetchMatches(host: String) -> [VaultLogin] {
+        guard let raw = host.withCString({ browser_vault_lookup($0) }) else { return [] }
+        defer { browser_string_free(raw) }
+        let data = Data(String(cString: raw).utf8)
+        return (try? JSONDecoder().decode([VaultLogin].self, from: data)) ?? []
+    }
+
+    /// Fill the active tab's login form from vault login `id` — the popover's Fill
+    /// action. The secret crosses in the core on this gesture (ADR-0029); nothing
+    /// comes back. Main thread only.
+    func fillActiveTab(id: String) {
+        id.withCString { browser_vault_fill_active_tab($0) }
+    }
+
+    /// Toggle cookie-consent handling (menu "Block Cookie Notices"). The core
+    /// reloads the active tab so reject + hide apply on screen (ADR-0026).
+    func toggleCookieConsent() {
+        browser_consent_set_enabled(!consentEnabled)
+        consentEnabled = browser_consent_is_enabled()
+    }
+
+    /// Toggle blocking globally (menu "Block Ads and Trackers"). The core reloads
+    /// the active tab; the resulting load events refresh the count.
+    func toggleAdblockGlobal() {
+        browser_adblock_set_enabled(!adblockEnabled)
+        refreshAdblock()
+    }
+
+    /// Turn blocking off/on for the active tab's site (the shield toggle / menu
+    /// "Block Ads on This Site"). The core reloads the tab so it applies on screen.
+    func toggleAdblockForSite() {
+        browser_adblock_set_active_site_allowlisted(!adblockSiteOff)
+        refreshAdblock()
     }
 
     private static let decoder: JSONDecoder = {
@@ -175,12 +279,70 @@ final class BrowserState: ObservableObject {
         isSidebarRevealed = false
     }
 
-    // ─── History surface ───────────────────────────────────────────────────
+    // ─── App-UI surfaces (History / Passwords) ─────────────────────────────
+    // A native content-area surface and a tab are mutually exclusive: opening one
+    // deselects the tab (visually — the core keeps its active tab, so dismissing
+    // returns to it, ADR-0010), and the two surfaces are exclusive with each
+    // other (only one covers the canvas). `selectTab` is the reverse entry point:
+    // a sidebar tab click dismisses the surface and returns to the page.
 
-    func toggleHistory() { isHistoryOpen.toggle() }
+    /// True while any app-UI surface covers the content area. The sidebar hides
+    /// its active-tab highlight while this holds, so no tab reads as selected.
+    var isSurfaceOpen: Bool { isHistoryOpen || isVaultOpen }
+
+    func toggleHistory() { isHistoryOpen ? closeHistory() : openHistory() }
+    func toggleVault() { isVaultOpen ? closeVault() : openVault() }
+
+    /// Show a surface, closing the other one first — only one covers the canvas.
+    /// Goes straight to the booleans (not through `close*`) so switching between
+    /// surfaces never bounces focus down to the web view in between.
+    func openHistory() {
+        isVaultOpen = false
+        isHistoryOpen = true
+    }
+
+    func openVault() {
+        isHistoryOpen = false
+        isVaultOpen = true
+    }
 
     func closeHistory() {
-        if isHistoryOpen { isHistoryOpen = false }
+        guard isHistoryOpen else { return }
+        isHistoryOpen = false
+        restoreWebFocus()
+    }
+
+    func closeVault() {
+        guard isVaultOpen else { return }
+        isVaultOpen = false
+        restoreWebFocus()
+    }
+
+    /// Dismiss whichever surface is showing — used by ⌘W and by paths that need
+    /// the canvas back (opening a new tab, reopening a closed one).
+    func closeSurfaces() {
+        closeHistory()
+        closeVault()
+    }
+
+    /// Select a tab from the sidebar. A tab and a surface are mutually exclusive,
+    /// so dismiss any open surface and hand keyboard focus back to the page. The
+    /// core already refocuses when the *visible tab changes* (`tabs::set_visible`);
+    /// the explicit focus call covers re-selecting the tab already active behind
+    /// the surface, where the visible tab doesn't change. Main thread only.
+    func selectTab(_ id: Int32) {
+        let hadSurface = isSurfaceOpen
+        isHistoryOpen = false
+        isVaultOpen = false
+        browser_tab_select(id)
+        if hadSurface { browser_focus_active_tab() }
+    }
+
+    /// Return keyboard focus to the active tab's web view once no surface covers
+    /// it (no-op in the empty state). Surface-to-surface switches go through
+    /// `open*`, which never calls this, so focus stays on the incoming surface.
+    private func restoreWebFocus() {
+        if !isSurfaceOpen { browser_focus_active_tab() }
     }
 
     /// Hover-reveal the collapsed sidebar. `RootView` owns the dismissal timing —
@@ -190,6 +352,21 @@ final class BrowserState: ObservableObject {
     func revealSidebar() {
         guard !isSidebarPinned, !isSidebarRevealed else { return }
         isSidebarRevealed = true
+    }
+
+    /// The canvas is empty: no active tab and nothing covering it. With nothing on
+    /// the canvas the collapsed sidebar auto-floats (Arc) — the only way to reach a
+    /// saved tab. A History/Vault panel counts as covering it, so it isn't empty.
+    var isEmptyCanvas: Bool {
+        activeTabId == nil && !isHistoryOpen && !isVaultOpen
+    }
+
+    /// Whether the floating (unpinned) sidebar is on-screen. The single rule:
+    /// unpinned, and either hover-revealed or floating over an empty canvas. A pure
+    /// function of state — no stored copy to keep in sync, no override. `RootView`
+    /// animates the floating host to match this.
+    var isFloatingSidebarShown: Bool {
+        !isSidebarPinned && (isSidebarRevealed || isEmptyCanvas)
     }
 }
 

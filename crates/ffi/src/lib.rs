@@ -353,7 +353,8 @@ pub extern "C" fn browser_zoom_reset() {
 
 /// Toggle DevTools for the current page: open it in its own window, or close it
 /// if already open. Backs the ⌘⌥I menu item (F12 is handled inside the core's
-/// keyboard handler). Call on the main thread.
+/// keyboard handler). DevTools opens as a separate window; inline docking isn't
+/// feasible under CEF 149's Chrome bootstrap (ADR-0021). Call on the main thread.
 #[no_mangle]
 pub extern "C" fn browser_toggle_dev_tools() {
     browser_core::embed::toggle_dev_tools();
@@ -536,6 +537,387 @@ pub unsafe extern "C" fn browser_free_bytes(ptr: *mut u8, len: usize) {
     }
     let slice = std::slice::from_raw_parts_mut(ptr, len);
     drop(Box::from_raw(slice as *mut [u8]));
+}
+
+// --- Password vault (browser_vault_*, ADR-0016) ---
+//
+// Thin glue over `browser_core::vault::service` (which owns the one global
+// `VaultManager`). Every returned string is heap-allocated by Rust and the caller
+// **must** free it with [`browser_string_free`]. The fallible calls return a JSON
+// envelope — `{"ok":true}` / `{"ok":true,"imported":N}` / `{"ok":false,"error":"…"}`.
+// The networked/heavy calls (`unlock_*`, `import_*`) block: **call them off the
+// main thread.**
+
+/// JSON envelope for a fallible no-data op.
+fn vault_ok_or_err(result: Result<(), String>) -> *mut c_char {
+    let value = match result {
+        Ok(()) => serde_json::json!({ "ok": true }),
+        Err(error) => serde_json::json!({ "ok": false, "error": error }),
+    };
+    vault_string(value.to_string())
+}
+
+/// JSON envelope for an online unlock/setup attempt: `{"ok":true}` on success,
+/// `{"ok":false,"two_factor":"email"}` when a second factor is needed (the UI
+/// then re-submits with the code + that tag), or `{"ok":false,"error":"…"}`.
+fn vault_unlock_envelope(outcome: browser_core::vault::service::UnlockOutcome) -> *mut c_char {
+    use browser_core::vault::service::UnlockOutcome;
+    let value = match outcome {
+        UnlockOutcome::Unlocked => serde_json::json!({ "ok": true }),
+        UnlockOutcome::TwoFactorRequired { provider_tag } => {
+            serde_json::json!({ "ok": false, "two_factor": provider_tag })
+        }
+        UnlockOutcome::Failed(error) => serde_json::json!({ "ok": false, "error": error }),
+    };
+    vault_string(value.to_string())
+}
+
+/// JSON envelope for an import (returns a count on success).
+fn vault_count_or_err(result: Result<usize, String>) -> *mut c_char {
+    let value = match result {
+        Ok(count) => serde_json::json!({ "ok": true, "imported": count }),
+        Err(error) => serde_json::json!({ "ok": false, "error": error }),
+    };
+    vault_string(value.to_string())
+}
+
+fn vault_string(s: String) -> *mut c_char {
+    CString::new(s)
+        .map(CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Initialize the global vault for `server_url` (empty ⇒ the default Bitwarden
+/// cloud; otherwise a self-hosted base URL), caching under `cache_dir`.
+///
+/// # Safety
+/// Both pointers must be null or valid NUL-terminated UTF-8 C strings.
+#[no_mangle]
+pub unsafe extern "C" fn browser_vault_init(server_url: *const c_char, cache_dir: *const c_char) {
+    browser_core::vault::service::init(&cstr(server_url), &cstr(cache_dir));
+}
+
+/// True when the vault is locked or was never initialized.
+#[no_mangle]
+pub extern "C" fn browser_vault_is_locked() -> bool {
+    browser_core::vault::service::is_locked()
+}
+
+/// Whether the vault has been set up on this machine (a server/account is
+/// configured) — the UI shows the setup screen when this is false.
+#[no_mangle]
+pub extern "C" fn browser_vault_is_configured() -> bool {
+    browser_core::vault::service::is_configured()
+}
+
+/// First-run setup: point the vault at `server` (**empty ⇒ the default Bitwarden
+/// cloud**; otherwise a self-hosted base URL), log in with `email`/`password`,
+/// and (on success) persist the config so later launches auto-init. `code` empty
+/// ⇒ first attempt; a `{"two_factor":"…"}` envelope means re-call with the code
+/// and that same `provider` tag. Blocks — call off the main thread. JSON
+/// envelope; free with [`browser_string_free`].
+///
+/// # Safety
+/// All pointers must be null or valid NUL-terminated UTF-8 C strings.
+#[no_mangle]
+pub unsafe extern "C" fn browser_vault_setup(
+    server: *const c_char,
+    email: *const c_char,
+    password: *const c_char,
+    code: *const c_char,
+    provider: *const c_char,
+) -> *mut c_char {
+    vault_unlock_envelope(browser_core::vault::service::setup(
+        &cstr(server),
+        &cstr(email),
+        &cstr(password),
+        &cstr(code),
+        &cstr(provider),
+    ))
+}
+
+/// Online unlock. `code` empty ⇒ no second factor supplied yet; a
+/// `{"two_factor":"…"}` envelope means re-call with the code + that `provider`
+/// tag. Blocks — call off the main thread. JSON envelope; free with
+/// [`browser_string_free`].
+///
+/// # Safety
+/// The pointers must be null or valid NUL-terminated UTF-8 C strings.
+#[no_mangle]
+pub unsafe extern "C" fn browser_vault_unlock_online(
+    email: *const c_char,
+    password: *const c_char,
+    code: *const c_char,
+    provider: *const c_char,
+) -> *mut c_char {
+    vault_unlock_envelope(browser_core::vault::service::unlock_online(
+        &cstr(email),
+        &cstr(password),
+        &cstr(code),
+        &cstr(provider),
+    ))
+}
+
+/// Re-dispatch the login two-factor email (the "Resend code" affordance). Blocks
+/// (network + KDF) — call off the main thread. JSON envelope; free with
+/// [`browser_string_free`].
+///
+/// # Safety
+/// The pointers must be null or valid NUL-terminated UTF-8 C strings.
+#[no_mangle]
+pub unsafe extern "C" fn browser_vault_send_email_code(
+    email: *const c_char,
+    password: *const c_char,
+) -> *mut c_char {
+    vault_ok_or_err(browser_core::vault::service::send_email_code(
+        &cstr(email),
+        &cstr(password),
+    ))
+}
+
+/// Offline unlock from cache. Blocks (KDF) — call off the main thread.
+///
+/// # Safety
+/// `password` must be null or a valid NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_vault_unlock_offline(password: *const c_char) -> *mut c_char {
+    vault_ok_or_err(browser_core::vault::service::unlock_offline(&cstr(
+        password,
+    )))
+}
+
+/// Lock the vault (wipes the in-memory key).
+#[no_mangle]
+pub extern "C" fn browser_vault_lock() {
+    browser_core::vault::service::lock();
+}
+
+/// Logins matching `host` as a JSON array (metadata only, no passwords). Empty
+/// array when locked. Free with [`browser_string_free`].
+///
+/// # Safety
+/// `host` must be null or a valid NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_vault_lookup(host: *const c_char) -> *mut c_char {
+    let views = browser_core::vault::service::lookup(&cstr(host));
+    vault_string(serde_json::to_string(&views).unwrap_or_else(|_| "[]".to_string()))
+}
+
+/// All logins as a JSON array (metadata only). Free with [`browser_string_free`].
+#[no_mangle]
+pub extern "C" fn browser_vault_list() -> *mut c_char {
+    let views = browser_core::vault::service::list();
+    vault_string(serde_json::to_string(&views).unwrap_or_else(|_| "[]".to_string()))
+}
+
+/// The password for login `id` — the only path a secret leaves the core, on an
+/// explicit user gesture. Null when locked/unknown. Free with [`browser_string_free`].
+///
+/// # Safety
+/// `id` must be null or a valid NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_vault_password(id: *const c_char) -> *mut c_char {
+    match browser_core::vault::service::password_for(&cstr(id)) {
+        Some(password) => vault_string(password),
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Full detail for login `id` as JSON (incl. password + notes) for the edit form
+/// — a secret path, on an explicit gesture. Null when locked/unknown. Free with
+/// [`browser_string_free`].
+///
+/// # Safety
+/// `id` must be null or a valid NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_vault_login(id: *const c_char) -> *mut c_char {
+    match browser_core::vault::service::login_detail(&cstr(id)) {
+        Some(detail) => vault_string(serde_json::to_string(&detail).unwrap_or_default()),
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Fill the active tab's login form with vault login `id` — the button-driven
+/// autofill path (P2-34, ADR-0029). The credential enters the page on this
+/// explicit gesture; a lenient fill targets the current login fields (an email-
+/// only first step included). No-op when locked/unknown or no active tab. Call on
+/// the main thread.
+///
+/// # Safety
+/// `id` must be null or a valid NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_vault_fill_active_tab(id: *const c_char) {
+    browser_core::embed::vault_fill_active_tab(&cstr(id));
+}
+
+/// Import a CSV export. Blocks — call off the main thread. JSON envelope with an
+/// `imported` count; free with [`browser_string_free`].
+///
+/// # Safety
+/// `data` must be null or a valid NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_vault_import_csv(data: *const c_char) -> *mut c_char {
+    vault_count_or_err(browser_core::vault::service::import_csv(&cstr(data)))
+}
+
+/// Import a Bitwarden JSON export. Blocks — call off the main thread. JSON
+/// envelope with an `imported` count; free with [`browser_string_free`].
+///
+/// # Safety
+/// `data` must be null or a valid NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_vault_import_bitwarden_json(data: *const c_char) -> *mut c_char {
+    vault_count_or_err(browser_core::vault::service::import_bitwarden_json(&cstr(
+        data,
+    )))
+}
+
+/// Create a new login. Blocks — call off the main thread. JSON envelope.
+///
+/// # Safety
+/// All pointers must be null or valid NUL-terminated UTF-8 C strings.
+#[no_mangle]
+pub unsafe extern "C" fn browser_vault_add_login(
+    name: *const c_char,
+    username: *const c_char,
+    password: *const c_char,
+    uri: *const c_char,
+    totp: *const c_char,
+    notes: *const c_char,
+) -> *mut c_char {
+    vault_ok_or_err(browser_core::vault::service::add_login(
+        &cstr(name),
+        &cstr(username),
+        &cstr(password),
+        &cstr(uri),
+        &cstr(totp),
+        &cstr(notes),
+    ))
+}
+
+/// Update login `id`. Blocks — call off the main thread. JSON envelope.
+///
+/// # Safety
+/// All pointers must be null or valid NUL-terminated UTF-8 C strings.
+#[no_mangle]
+pub unsafe extern "C" fn browser_vault_update_login(
+    id: *const c_char,
+    name: *const c_char,
+    username: *const c_char,
+    password: *const c_char,
+    uri: *const c_char,
+    totp: *const c_char,
+    notes: *const c_char,
+) -> *mut c_char {
+    vault_ok_or_err(browser_core::vault::service::update_login(
+        &cstr(id),
+        &cstr(name),
+        &cstr(username),
+        &cstr(password),
+        &cstr(uri),
+        &cstr(totp),
+        &cstr(notes),
+    ))
+}
+
+/// Delete login `id`. Blocks — call off the main thread. JSON envelope.
+///
+/// # Safety
+/// `id` must be null or a valid NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_vault_delete_login(id: *const c_char) -> *mut c_char {
+    vault_ok_or_err(browser_core::vault::service::delete_login(&cstr(id)))
+}
+
+// --- CDP automation surface (P0-4) ---
+
+/// Enable/disable the consent-gated CDP surface. Persisted; **takes effect on the
+/// next launch** (the debugging port is a Chromium startup switch).
+#[no_mangle]
+pub extern "C" fn browser_cdp_set_enabled(enabled: bool) {
+    browser_core::cdp::set_enabled(enabled);
+}
+
+/// Whether CDP is enabled (the persisted choice / what the next launch will do).
+#[no_mangle]
+pub extern "C" fn browser_cdp_is_enabled() -> bool {
+    browser_core::cdp::is_enabled()
+}
+
+// --- Adblock (ADR-0020, spec §11) ---
+
+/// Whether ad-blocking is globally enabled (on by default).
+#[no_mangle]
+pub extern "C" fn browser_adblock_is_enabled() -> bool {
+    browser_core::adblock::is_enabled()
+}
+
+/// Toggle ad-blocking globally (persisted); reloads the active tab so it applies
+/// on screen. Main thread.
+#[no_mangle]
+pub extern "C" fn browser_adblock_set_enabled(enabled: bool) {
+    browser_core::embed::adblock_set_enabled(enabled);
+}
+
+/// Count of requests blocked on the active tab since its last navigation — the
+/// sidebar shield's badge. Main thread.
+#[no_mangle]
+pub extern "C" fn browser_adblock_active_blocked_count() -> u64 {
+    browser_core::embed::adblock_active_blocked_count()
+}
+
+/// Whether blocking is turned **off** for the active tab's site (the shield /
+/// "Block Ads on This Site" toggle state). Main thread.
+#[no_mangle]
+pub extern "C" fn browser_adblock_active_site_allowlisted() -> bool {
+    browser_core::embed::adblock_active_site_allowlisted()
+}
+
+/// Turn blocking off (`true`) / back on (`false`) for the active tab's site
+/// (persisted); reloads the tab so it applies on screen. Main thread.
+#[no_mangle]
+pub extern "C" fn browser_adblock_set_active_site_allowlisted(allowlisted: bool) {
+    browser_core::embed::adblock_set_active_site_allowlisted(allowlisted);
+}
+
+// --- Cookie-consent (ADR-0026) ---
+
+/// Whether cookie-consent handling (reject + hide) is on (on by default).
+#[no_mangle]
+pub extern "C" fn browser_consent_is_enabled() -> bool {
+    browser_core::consent::is_enabled()
+}
+
+/// Toggle cookie-consent handling (persisted); reloads the active tab so it
+/// applies on screen. Main thread.
+#[no_mangle]
+pub extern "C" fn browser_consent_set_enabled(enabled: bool) {
+    browser_core::embed::consent_set_enabled(enabled);
+}
+
+// --- Appearance / color scheme (ADR-0030) ---
+
+/// The appearance preference the browser applies to web content and native
+/// chrome: `0` System, `1` Light, `2` Dark. Read to drive the View → Appearance
+/// menu checkmarks and `NSApp.appearance`.
+#[no_mangle]
+pub extern "C" fn browser_theme_preference() -> i32 {
+    browser_core::theme::preference().to_i32()
+}
+
+/// Set the appearance preference (`0` System, `1` Light, `2` Dark); persisted and
+/// applied live to open tabs via the global request context. Main thread.
+#[no_mangle]
+pub extern "C" fn browser_theme_set_preference(preference: i32) {
+    browser_core::theme::set_preference(browser_core::theme::ThemePreference::from_i32(preference));
+}
+
+/// The host forwards the current OS appearance (launch + every OS theme change).
+/// In System mode the resolved light/dark scheme follows this; ignored under a
+/// fixed Light/Dark preference. Main thread.
+#[no_mangle]
+pub extern "C" fn browser_theme_set_system_dark(is_dark: bool) {
+    browser_core::theme::set_system_dark(is_dark);
 }
 
 /// Tear down CEF. Call after [`browser_run_message_loop`] returns.

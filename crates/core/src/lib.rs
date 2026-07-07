@@ -13,16 +13,23 @@
 /// Crate version surfaced for FFI / diagnostics.
 pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod adblock;
 pub mod app;
+pub mod cdp;
 pub mod client;
+pub mod consent;
 pub mod embed;
 pub mod fuzzy;
 pub mod history;
+pub mod inject;
 pub mod mac;
 pub mod native_shell;
+pub mod redirect_selftest;
 pub mod resources;
 pub mod session;
 pub mod tabs;
+pub mod theme;
+pub mod vault;
 
 use cef::{
     api_hash, args::Args, execute_process, initialize, run_message_loop, shutdown, sys,

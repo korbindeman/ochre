@@ -171,11 +171,14 @@ surface**. `⬜ (post-MVP)` = spec'd but out of MVP1 scope — listed so the sur
 | Capability | Class | macOS | Win | Linux | Defined in |
 |---|:---:|:---:|:---:|:---:|---|
 | Passkeys / WebAuthn (needs signed bundle) | Inv | ⬜ | ⬜ | ⬜ | spec §6 · mvp |
-| Adblock — request-path + cosmetic + UI toggle | Inv | ⬜ | ⬜ | ⬜ | spec §11 · mvp |
+| Adblock — request-path + cosmetic + UI toggle | Inv | 🚧 (network + shield UI + cosmetic element-hiding; procedural/generic/scriptlets/subframe follow-ups) | ⬜ | ⬜ | spec §11 · mvp · ADR-0020 |
+| Cookie-consent (reject + hide, own toggle) | Inv | 🚧 (reject OneTrust/Cookiebot/Didomi + Tier-A hide, View-menu toggle; main + same-origin frames; full lists + more CMPs + TCF → P2-26; cross-origin iframes → P2-24/ADR-0027) | ⬜ | ⬜ | ADR-0026 · rm §3.1 |
+| Appearance — OS color scheme → web content + Light/Dark/System (chrome + content) | Inv | ✅ (global request context; View → Appearance menu + `NSApp.appearance`; System tracks OS live) | ⬜ | ⬜ | ADR-0030 · style §18 |
 | DevTools (popup; Cmd/Ctrl+Opt+I) | Inv | ✅ | ⬜ | ⬜ | spec §13 · style §9 |
 | CDP automation surface (loopback, consent-gated) | Inv | ⬜ | ⬜ | ⬜ | spec §13 |
 | Tweaks — Snip / Restyle / Script (picker · editor · manager · safety UX) | Inv | ⬜ | ⬜ | ⬜ | style §14 · spec §20 · ADR-0002 |
-| Password vault autofill | Inv | ⬜ (post-MVP) | ⬜ | ⬜ | spec §10 |
+| Password vault UI (setup · unlock · list/search · reveal · add/edit/delete · import · sidebar access) | Inv | 🚧 (settings · registration pending) | ⬜ | ⬜ | spec §10 · ADR-0010/0016 |
+| Password vault autofill | Inv | 🚧 (substrate + in-page multi-match picker + URL-bar quick-access button [Fill/Copy]; SPA/two-step detection → P2-28/29, native save banner → P2-23/M2) | ⬜ | ⬜ | spec §10 · ADR-0016/0017/0029 |
 | Sync | Inv | ⬜ (post-MVP) | ⬜ | ⬜ | spec §12 |
 | Downloads UI (beyond command-bar suggestions) | Inv | ⬜ (post-MVP) | ⬜ | ⬜ | mvp (out) |
 | Settings UI (beyond minimum) | Inv | ⬜ (post-MVP) | ⬜ | ⬜ | mvp (out) |

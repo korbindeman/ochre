@@ -38,3 +38,18 @@ rejected and why. Read here before reopening a settled choice.
 | [0013](0013-session-persistence-lazy-restore.md) | Session persistence — write-through JSON + lazy tab hydration, core tab ids decoupled from CEF | Accepted |
 | [0014](0014-inline-sidebar-url-editing.md) | Inline sidebar URL editing — the chip edits in place, not via the command bar | Accepted |
 | [0015](0015-tab-drag-reorder.md) | Tab drag-and-drop — implicit order, one relocation primitive, commit-on-drop | Accepted |
+| [0016](0016-password-vault-bitwarden-crypto-first.md) | Password vault — Bitwarden-compatible (rbw-derived) client, built core-crypto-first | Accepted |
+| [0017](0017-vault-autofill-injected-content-script.md) | Vault autofill — injected isolated-world content script + in-page picker, native save banner | Accepted |
+| [0018](0018-synthetic-focus-routing-selftest.md) | Focus-routing regression — in-process synthetic-input self-test (`--focus-selftest`) | Accepted |
+| [0019](0019-sidebar-glass-material-beside-content.md) | Sidebar glass — standard sidebar material beside content, not lensing over the CEF view | Accepted |
+| [0020](0020-adblock-request-path-engine.md) | Native ad-blocking — request-path engine, seed + hot-swap lists, per-site shield UI | Accepted |
+| [0021](0021-devtools-separate-window-not-inline.md) | DevTools opens as a separate window — inline docking isn't feasible under CEF 149 (Alloy tabs) | Accepted |
+| [0022](0022-surface-tab-mutual-exclusivity.md) | App-UI surfaces and tabs are mutually exclusive at the UI layer (highlight suppressed, close on select), not via a core deselect | Accepted |
+| [0023](0023-icon-button-feedback-style.md) | Chrome icon buttons share one `IconButtonStyle` — uniform hover + press feedback, replacing hand-rolled per-button highlights | Accepted |
+| [0024](0024-vault-email-two-factor-send-flow.md) | Email login 2FA — client-triggered `send-email-login`, provider tag carried UI→core, auto-send on challenge | Accepted |
+| [0025](0025-bitwarden-cloud-default-provider.md) | Bitwarden cloud is the default provider (no URL); self-hosted Vaultwarden behind a toggle; `for_input` host resolution | Accepted |
+| [0026](0026-cookie-consent-reject-first.md) | Cookie-consent — reject-first (Consent-O-Matic + TCF), hide as an honest long-tail fallback; forces an all-frames substrate extension | Accepted |
+| [0027](0027-oopif-injection-blocked-by-cef-devtools.md) | Cross-origin iframe (OOPIF) injection is blocked by CEF's DevTools observer (relays child-session results, not events); same-origin ships, OOPIF needs a render-process path (P2-24) | Accepted |
+| [0028](0028-pin-cef-148-subresource-redirect-regression.md) | Pin CEF to the 148 line — Chromium 149 drops subresource redirects (`ERR_INVALID_ARGUMENT`); broke the Google avatar | Accepted |
+| [0029](0029-core-initiated-main-world-fill.md) | Button-driven vault autofill fills via a core-initiated main-world evaluate (main frame, no context tracking); the isolated-world bridge stays reply-only | Accepted |
+| [0030](0030-appearance-color-scheme-forwarding.md) | Appearance — forward the color scheme to web content via the global request context; one Light/Dark/System setting drives web content + native chrome | Accepted |

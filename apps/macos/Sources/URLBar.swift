@@ -78,6 +78,8 @@ struct URLBar: View {
     @ObservedObject private var suggestions = URLBarModel.shared.suggestions
     @State private var hovering = false
     @State private var copied = false
+    @State private var showShield = false
+    @State private var showVault = false
 
     /// Fixed height, shared by the chip and the editor so the swap doesn't jump,
     /// and used to drop the results list just below the field.
@@ -105,9 +107,16 @@ struct URLBar: View {
         // nested action, so — like TabRow's ✕ — the row uses `onTapGesture`
         // rather than a Button to keep the inner button's tap unambiguous.
         HStack(spacing: 6) {
-            Image(systemName: isEmpty ? "magnifyingglass" : "globe")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
+            // Only the empty chip leads with an icon — the magnifying glass is a
+            // search affordance ("type here"). A loaded URL is self-evidently a web
+            // address, so a leading globe would just restate the text; the tab
+            // already carries the favicon for identity, and site status/security
+            // lives in the right-side shield. So the loaded chip displays flush.
+            if isEmpty {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
             Text(text)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -117,13 +126,17 @@ struct URLBar: View {
                 Button(action: { copyLink(url) }) {
                     Image(systemName: copied ? "checkmark" : "link")
                         .font(.system(size: 11, weight: .medium))
+                        .contentTransition(.symbolEffect(.replace))
                         .frame(width: 18, height: 18)
-                        .contentShape(.rect(cornerRadius: 5))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(IconButtonStyle(cornerRadius: 5, emphasizesLabel: false))
                 .foregroundStyle(copied ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
                 .help("Copy Link")
             }
+            if vaultButtonVisible {
+                VaultKeyButton(host: tab?.host ?? "", isPresented: $showVault)
+            }
+            if shieldVisible { shield }
         }
         .font(.system(size: 13))
         .padding(.horizontal, 10)
@@ -132,6 +145,7 @@ struct URLBar: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(.quaternary)
                 .opacity(hovering ? 0.7 : 0.4)
+                .hoverFade(hovering)
         )
         .contentShape(.rect(cornerRadius: 8))
         .onTapGesture(perform: activate)
@@ -157,6 +171,103 @@ struct URLBar: View {
             try? await Task.sleep(for: .seconds(1))
             copied = false
         }
+    }
+
+    // ─── Adblock shield (ADR-0020, style §16) ────────────────────────────────
+
+    /// A real web page (not the empty new-tab chip / internal surfaces).
+    private var isWebPage: Bool { (tab?.url.hasPrefix("http")) ?? false }
+
+    /// Show the vault key when the vault is set up and either this site has saved
+    /// logins (always worth surfacing) or the user is reaching for it (hover / the
+    /// popover is open, so it doesn't vanish mid-interaction) — mirroring the
+    /// shield's "has something to say, else reachable on hover" rule (P2-34).
+    private var vaultButtonVisible: Bool {
+        guard isWebPage, state.vaultConfigured else { return false }
+        return !state.vaultMatches.isEmpty || hovering || showVault
+    }
+
+    /// Show the shield when there's a page and it has something to say — a block
+    /// count, blocking turned off here, or on hover (so it's always reachable).
+    /// Keep it up while its popover is open so the popover never dismisses itself.
+    private var shieldVisible: Bool {
+        isWebPage && (state.adblockBlockedCount > 0 || state.adblockSiteOff || hovering || showShield)
+    }
+
+    private var shieldActivelyBlocking: Bool {
+        state.adblockEnabled && !state.adblockSiteOff && state.adblockBlockedCount > 0
+    }
+
+    private var shieldIcon: String {
+        (!state.adblockEnabled || state.adblockSiteOff) ? "shield.slash" : "checkmark.shield.fill"
+    }
+
+    private var shieldTint: AnyShapeStyle {
+        if !state.adblockEnabled { return AnyShapeStyle(.tertiary) }
+        if state.adblockSiteOff { return AnyShapeStyle(.secondary) }
+        if state.adblockBlockedCount > 0 { return AnyShapeStyle(Color.accentColor) }
+        return AnyShapeStyle(.secondary)
+    }
+
+    private var shield: some View {
+        Button { showShield.toggle() } label: {
+            HStack(spacing: 3) {
+                Image(systemName: shieldIcon)
+                    .font(.system(size: 12, weight: .semibold))
+                    .contentTransition(.symbolEffect(.replace))
+                if shieldActivelyBlocking {
+                    Text("\(state.adblockBlockedCount)")
+                        .font(.system(size: 11, weight: .semibold))
+                        .monospacedDigit()
+                }
+            }
+            .foregroundStyle(shieldTint)
+            .frame(height: 18)
+            .padding(.horizontal, 2)
+        }
+        .buttonStyle(IconButtonStyle(cornerRadius: 5, emphasizesLabel: false))
+        .help(state.adblockSiteOff ? "Ad blocking off for this site" : "Ad & tracker blocking")
+        .popover(isPresented: $showShield, arrowEdge: .bottom) { shieldPopover }
+    }
+
+    private var shieldCountText: String {
+        if !state.adblockEnabled { return "Ad and tracker blocking is off." }
+        if state.adblockSiteOff { return "Blocking is turned off for this site." }
+        switch state.adblockBlockedCount {
+        case 0: return "No ads or trackers blocked yet."
+        case 1: return "1 request blocked on this page."
+        default: return "\(state.adblockBlockedCount) requests blocked on this page."
+        }
+    }
+
+    private var shieldPopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(tab?.host.isEmpty == false ? tab!.host : "This site")
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Label {
+                Text(shieldCountText)
+            } icon: {
+                Image(systemName: shieldIcon).foregroundStyle(shieldTint)
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            Divider()
+            Toggle("Block ads and trackers on this site", isOn: Binding(
+                get: { !state.adblockSiteOff },
+                set: { _ in state.toggleAdblockForSite() }
+            ))
+            .toggleStyle(.switch)
+            .disabled(!state.adblockEnabled)
+            if !state.adblockEnabled {
+                Text("Ad blocking is off. Turn it on from the Shield menu.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(width: 268)
     }
 
     // ─── Inline editor ─────────────────────────────────────────────────────────
@@ -206,12 +317,12 @@ struct URLBar: View {
                 AutocompleteList(controller: suggestions, onChoose: { model.choose($0) })
                     .padding(6)
                     .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
                             .fill(Color(nsColor: .windowBackgroundColor))
                             .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
                             .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
                     )
                     .fixedSize(horizontal: false, vertical: true)

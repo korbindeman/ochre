@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 /// Owns the app's single window. The window's content is an AppKit skeleton
@@ -9,7 +8,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
     private var rootView: RootView?
     private let commandBar = CommandBarController()
-    private var cancellables: Set<AnyCancellable> = []
+    /// The ⌘F find bar. Non-private so `browserFindResultCallback` can reach it.
+    let findBar = FindBarController()
+    /// KVO on `NSApp.effectiveAppearance` — forwards OS light/dark changes to the
+    /// core so `System` appearance tracks the OS live (ADR-0030). Held for the
+    /// app's lifetime.
+    private var appearanceObserver: NSKeyValueObservation?
 
     func makeWindow() {
         // Install the menu bar first: it owns every app-level shortcut (⌘T, ⌘R,
@@ -17,6 +21,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // starts receiving key events.
         let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Browser"
         NSApp.mainMenu = MainMenu.build(appName: appName, actions: self)
+
+        // Appearance (ADR-0030). Apply the persisted preference to the native
+        // shell (`NSApp.appearance`) before the window exists so it is created in
+        // the right look, forward the current OS appearance so the core themes web
+        // content before the first tab hydrates, and watch for OS theme changes so
+        // `System` mode tracks the OS live.
+        updateAppAppearance()
+        forwardSystemAppearance()
+        appearanceObserver = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.forwardSystemAppearance() }
+        }
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1180, height: 760),
@@ -46,25 +61,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         setNativeButtonsHidden(true)
 
         commandBar.parentWindow = window
+        findBar.parentWindow = window
+        // Drive the find bar's "n of m" counter from the core's find results.
+        browser_set_find_result_callback(browserFindResultCallback)
 
         // Stream tab/space changes from the core into the observable state that
         // drives the sidebar (ADR-0003). Registered before any tab exists.
         browser_set_event_callback(browserTabEventCallback)
+
+        // Sidebar state (pin / hover / empty-canvas float) drives the AppKit
+        // skeleton's animated layout. `RootView` owns those subscriptions — it
+        // holds the floating host and its geometry — and binds them in its init
+        // (before this initial snapshot pull), so the empty-session auto-float the
+        // pull may trigger is observed.
+
         // Pull the initial snapshot — the core already holds the restored
         // session (or the default empty space), and no event fires until the
         // first mutation. Publishing the restored active tab triggers RootView
         // to hydrate it (lazy session restore, ADR-0013).
         BrowserState.shared.reloadStructure()
 
-        // Sidebar state drives the AppKit skeleton's (animated) layout.
-        BrowserState.shared.$isSidebarPinned
-            .dropFirst()
-            .sink { [weak self] pinned in self?.rootView?.setSidebarPinned(pinned) }
-            .store(in: &cancellables)
-        BrowserState.shared.$isSidebarRevealed
-            .dropFirst()
-            .sink { [weak self] revealed in self?.rootView?.setSidebarRevealed(revealed) }
-            .store(in: &cancellables)
+        // Vault harness: open the Passwords surface at launch so it can be
+        // inspected without driving the menu — `BROWSER_VAULT_DEMO` (seeded, shows
+        // the list) or `BROWSER_VAULT_OPEN` (unseeded, shows setup/unlock).
+        // Delayed past the launch-time empty-state/session setup so it lands on top.
+        let env = ProcessInfo.processInfo.environment
+        if env["BROWSER_VAULT_DEMO"] != nil || env["BROWSER_VAULT_OPEN"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                BrowserState.shared.isVaultOpen = true
+                // `BROWSER_VAULT_EDIT` also opens the editor for the seeded login.
+                if env["BROWSER_VAULT_EDIT"] != nil {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        VaultModel.shared.editing = EditorTarget(detail: VaultModel.shared.loginDetail(id: "demo"))
+                    }
+                }
+            }
+        }
+
+        // History harness: open the History surface at launch so it can be
+        // inspected/screenshotted without driving the ⌘Y menu. Mirrors the vault
+        // hook; the surface reads whatever the seeded `history.sqlite` holds.
+        if env["BROWSER_HISTORY_OPEN"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                BrowserState.shared.openHistory()
+            }
+        }
+
+        // Command-bar harness: present the ⌘T command bar at launch so its
+        // (otherwise transient) glass surface can be inspected/screenshotted
+        // without synthesizing a keystroke. Symmetric with the vault demo hook.
+        // Pinned so it survives resigning key (a background-launched app never
+        // becomes active) without stealing focus, so the panel can be captured
+        // by window id while occluded.
+        if env["BROWSER_COMMANDBAR_DEMO"] != nil {
+            commandBar.keepPresentedForDemo = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                self.commandBar.show()
+            }
+        }
     }
 
     /// Hide (or reveal) the real `NSWindow` traffic-light buttons. Hidden while
@@ -80,6 +134,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func reassertNativeButtons() {
         setNativeButtonsHidden(!BrowserState.shared.isFullscreen)
     }
+
+    // MARK: - Focus self-test hooks
+    //
+    // Minimal accessors the P0-1 focus regression (`--focus-selftest`,
+    // `FocusSelfTest.swift`) reaches into to drive and observe focus transitions.
+    // Kept here so the private window/rootView/commandBar stay private otherwise.
+
+    var focusTestWindow: NSWindow? { window }
+    var focusTestRootView: RootView? { rootView }
+    var focusTestCommandBar: CommandBarController { commandBar }
 
     // MARK: - Menu actions
     //
@@ -117,6 +181,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// tab (ADR-0010).
     @objc func showHistory() {
         BrowserState.shared.toggleHistory()
+    }
+
+    /// Show/hide the Passwords (vault) page — a native content-area surface
+    /// (ADR-0010/0016).
+    @objc func showVault() {
+        BrowserState.shared.toggleVault()
     }
 
     // Tab lifecycle. `openTab`/`closeTab` are called from the command bar,
@@ -269,29 +339,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Reopen the most recently closed tab (⌘⇧T). The core restores it into its
     /// original space/section and makes it active; `RootView` hydrates it on the
     /// resulting `StructureChanged`, exactly like a session-restored tab. Dismiss
-    /// the History surface (if up) so the reopened tab is actually visible — only
-    /// when a tab was in fact reopened.
+    /// any open app-UI surface (if up) so the reopened tab is actually visible —
+    /// only when a tab was in fact reopened.
     @objc func reopenClosedTab() {
         if browser_tab_reopen_closed() >= 0 {
-            BrowserState.shared.closeHistory()
+            BrowserState.shared.closeSurfaces()
         }
     }
 
     @objc func closeActiveTab(_ sender: Any?) {
-        // An open app-UI surface (History, …) intercepts ⌘W — close the surface,
-        // not the tab or window beneath it.
-        if BrowserState.shared.isHistoryOpen {
-            BrowserState.shared.closeHistory()
+        // An open app-UI surface (History / Passwords) intercepts ⌘W — close the
+        // surface, not the tab or window beneath it.
+        if BrowserState.shared.isSurfaceOpen {
+            BrowserState.shared.closeSurfaces()
             return
         }
         if let active = BrowserState.shared.activeTabId {
             rootView?.closeTab(active)
-        } else {
-            // No tabs to close — ⌘W falls back to closing the window, matching
-            // Chrome/Safari's ⌘W-on-last behaviour.
+            return
+        }
+        // No active tab. ⌘W only falls back to closing the window on the genuine
+        // no-tab screen: the browser holds no tabs in *any* space and nothing is
+        // being composed. `activeTabId == nil` alone isn't enough — an empty space
+        // with tabs in other spaces, or the New-Tab command bar open over the empty
+        // canvas, both read as nil but aren't "nothing to close", and closing the
+        // window there is the premature close we're avoiding. In those cases ⌘W is
+        // inert (Escape dismisses the command bar; the space switcher reaches the
+        // other tabs). `tabs` is the full cross-space list — the UI's own "is
+        // anything left" signal.
+        if BrowserState.shared.tabs.isEmpty && !commandBar.isVisible {
             window?.performClose(nil)
         }
     }
+
+    // Find-in-page (⌘F / ⌘G / ⇧⌘G). The bar owns the search state; these just
+    // open it and step matches. Find Next/Previous are gated in validateMenuItem.
+    @objc func performFind() { findBar.show() }
+    @objc func findNext() { findBar.findNext() }
+    @objc func findPrevious() { findBar.findPrevious() }
 
     @objc func reloadPage() { browser_reload() }
     @objc func forceReload() { browser_reload_ignore_cache() }
@@ -301,6 +386,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func zoomOut() { browser_zoom_out() }
     @objc func actualSize() { browser_zoom_reset() }
     @objc func toggleDevTools() { browser_toggle_dev_tools() }
+
+    // Adblock (ADR-0020). Global on/off and per-site off/on; the core reloads the
+    // active tab so the change applies on screen.
+    @objc func toggleAdblock() { BrowserState.shared.toggleAdblockGlobal() }
+    @objc func toggleAdblockForSite() { BrowserState.shared.toggleAdblockForSite() }
+    // Cookie-consent (ADR-0026): its own toggle governing reject + hide.
+    @objc func toggleCookieConsent() { BrowserState.shared.toggleCookieConsent() }
+
+    // Appearance (ADR-0030): one Light/Dark/System choice drives both web content
+    // (prefers-color-scheme, via the core) and the native chrome (NSApp.appearance).
+    @objc func setThemeSystem() { setThemePreference(0) }
+    @objc func setThemeLight() { setThemePreference(1) }
+    @objc func setThemeDark() { setThemePreference(2) }
+
+    /// Persist the appearance preference in the core (which re-themes open tabs),
+    /// then update the native shell's appearance and re-forward the OS appearance —
+    /// switching to `System` must set `NSApp.appearance = nil` first so the
+    /// re-forwarded value reflects the OS again, not the previously-pinned look.
+    private func setThemePreference(_ preference: Int32) {
+        browser_theme_set_preference(preference)
+        updateAppAppearance()
+        forwardSystemAppearance()
+    }
+
+    /// Point the native chrome at the chosen appearance: Light/Dark pin it, System
+    /// (`nil`) tracks the OS. SwiftUI materials and the traffic lights follow this.
+    private func updateAppAppearance() {
+        switch browser_theme_preference() {
+        case 1: NSApp.appearance = NSAppearance(named: .aqua)
+        case 2: NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: NSApp.appearance = nil
+        }
+    }
+
+    /// Tell the core whether the current effective appearance is dark. Only used by
+    /// the core in `System` mode; under a pinned Light/Dark preference the value is
+    /// ignored, so reading the (pinned) effective appearance here is harmless.
+    private func forwardSystemAppearance() {
+        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        browser_theme_set_system_dark(isDark)
+    }
 
     // Single-window app: both Close Window and Quit run the graceful CEF close
     // (see `windowShouldClose`), which is what ends the process.
@@ -314,6 +440,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case #selector(goBack): return browser_can_go_back()
         case #selector(goForward): return browser_can_go_forward()
         case #selector(reopenClosedTab): return browser_tab_can_reopen_closed()
+        case #selector(findNext), #selector(findPrevious): return findBar.hasActiveSearch
+        case #selector(toggleAdblock):
+            // Checkmark reflects the global switch; always available.
+            menuItem.state = BrowserState.shared.adblockEnabled ? .on : .off
+            return true
+        case #selector(toggleAdblockForSite):
+            // Checked when blocking is on for the active site; enabled only on a
+            // web page and when blocking is globally on.
+            let s = BrowserState.shared
+            let onWebPage = s.activeTab?.url.hasPrefix("http") ?? false
+            menuItem.state = (s.adblockEnabled && !s.adblockSiteOff) ? .on : .off
+            return s.adblockEnabled && onWebPage
+        case #selector(toggleCookieConsent):
+            // Checkmark reflects the cookie-consent switch; always available.
+            menuItem.state = BrowserState.shared.consentEnabled ? .on : .off
+            return true
+        case #selector(setThemeSystem):
+            menuItem.state = browser_theme_preference() == 0 ? .on : .off
+            return true
+        case #selector(setThemeLight):
+            menuItem.state = browser_theme_preference() == 1 ? .on : .off
+            return true
+        case #selector(setThemeDark):
+            menuItem.state = browser_theme_preference() == 2 ? .on : .off
+            return true
         default: return true
         }
     }

@@ -20,8 +20,8 @@ authors = ["Native-Chrome Browser Team"]
 # CEF bindings (tauri-apps/cef-rs) — published on crates.io.
 # The -sys crate downloads the prebuilt CEF binary distribution and builds
 # libcef_dll_wrapper via cmake at compile time.
-cef = { version = "149.3.0", default-features = false, features = ["sandbox", "build-util"] }
-cef-dll-sys = "149.3.0"
+cef = { version = "148.4.0", default-features = false, features = ["sandbox", "build-util"] }
+cef-dll-sys = "148.4.0"
 
 # macOS Objective-C interop
 objc2 = "0.6.3"
@@ -36,6 +36,39 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 anyhow = "1"
+
+# Password vault crypto (ADR-0016 / spec §10) — the Bitwarden key hierarchy and
+# EncString. Standard RustCrypto crates; all load-bearing for the scheme.
+pbkdf2 = "0.12"
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+hmac = "0.12"
+sha2 = "0.10"
+hkdf = "0.12"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+base64 = "0.22"
+getrandom = "0.2"
+zeroize = { version = "1", features = ["derive"] }
+# Vault auth/sync HTTP (ADR-0016 / spec §10). Blocking, rustls TLS — no async
+# runtime; vault calls run off the UI thread. `form_urlencoded` encodes the
+# OAuth token form (the base64 password hash needs correct `+`/`/`/`=` escaping).
+ureq = "3"
+form_urlencoded = "1"
+# Public Suffix List (compiled in, no runtime fetch) for correct registrable-domain
+# matching in `vault_lookup` — so creds match across subdomains but never leak
+# across a public suffix like `co.uk` (ADR-0016 / spec §10).
+psl = "2"
+# Correct RFC 4180 CSV parsing for credential import — a hand-rolled `split(',')`
+# would corrupt passwords containing commas/quotes/newlines (ADR-0016 / spec §10).
+csv = "1"
+# Native request-path ad-blocking (Brave's adblock-rust; powers Brave/Firefox) —
+# spec §11 / ADR-0019. `embedded-domain-resolver` off: we register a `psl`-backed
+# resolver (reusing the crate already compiled for the vault) instead of pulling
+# in adblock's separate `addr` public-suffix crate. `single-thread` off: the engine
+# is shared across the CEF IO thread and a background list-refresh thread behind
+# `RwLock<Arc<Engine>>`, which requires `Engine: Send + Sync` (asserted by the crate
+# only when `single-thread` is disabled).
+adblock = { version = "0.12.5", default-features = false, features = ["full-regex-handling"] }
 
 [profile.release]
 lto = "thin"

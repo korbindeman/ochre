@@ -31,6 +31,8 @@ final class RootView: NSView {
     /// The History page — a native content-area surface shown over the web
     /// content and dismissed back to it (ADR-0010), never a tab.
     private let historyHost = NSHostingView(rootView: HistoryView())
+    /// The Passwords (vault) page — another content-area surface (ADR-0010/0016).
+    private let vaultHost = NSHostingView(rootView: VaultView())
 
     /// One CEF host view per tab, keyed by tab id. Reconciled against
     /// `BrowserState.tabs`; the active one is shown, the rest hidden.
@@ -41,7 +43,10 @@ final class RootView: NSView {
     /// (the `$isSidebarPinned` observer drops the initial value — it only
     /// animates *changes*).
     private var sidebarPinned = BrowserState.shared.isSidebarPinned
-    private var sidebarRevealed = false
+    /// Whether the floating host is currently shown — mirrors the derived rule
+    /// `BrowserState.isFloatingSidebarShown`. Drives the floating card's geometry
+    /// in `applyLayout`; kept in step by `syncFloatingSidebar`.
+    private var floatingShown = false
 
     /// A divider drag is in progress — suspends the floating sidebar's hover
     /// dismissal so dragging its edge past the grace margin doesn't snap it shut.
@@ -103,6 +108,13 @@ final class RootView: NSView {
         historyHost.isHidden = true
         contentArea.addSubview(historyHost)
 
+        // The Passwords surface — same hidden-until-summoned model as History.
+        vaultHost.autoresizingMask = [.width, .height]
+        vaultHost.frame = contentArea.bounds
+        vaultHost.safeAreaRegions = []
+        vaultHost.isHidden = true
+        contentArea.addSubview(vaultHost)
+
         // The islands manage their own top insets (traffic-light clearance);
         // without this the hosting views also apply the window's safe area
         // and the content lands twice as low.
@@ -147,22 +159,71 @@ final class RootView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    /// Track the core-owned tab model: prune views for closed tabs and show the
-    /// active tab (or the empty state). The tab *list* and *active* tab are the
-    /// core's truth; this view is a projection of them.
+    /// Track the core-owned tab model and the sidebar state: prune views for
+    /// closed tabs, show the active tab (or the empty state), and keep the floating
+    /// sidebar in step with the derived rule (`BrowserState.isFloatingSidebarShown`).
+    /// The tab *list* and *active* tab are the core's truth; this view is a
+    /// projection of them. Every publisher the rule depends on — pin, hover, active
+    /// tab, the two surfaces — re-runs `syncFloatingSidebar`; the method is
+    /// idempotent, so redundant calls are free.
     private func observeState() {
-        BrowserState.shared.$tabs
+        let state = BrowserState.shared
+        state.$tabs
             .receive(on: RunLoop.main)
             .sink { [weak self] tabs in self?.pruneOrphanViews(liveIds: tabs.map(\.id)) }
             .store(in: &cancellables)
-        BrowserState.shared.$activeTabId
+        state.$activeTabId
             .receive(on: RunLoop.main)
-            .sink { [weak self] active in self?.showActive(active) }
+            .sink { [weak self] active in
+                self?.showActive(active)
+                self?.syncFloatingSidebar()
+            }
             .store(in: &cancellables)
-        BrowserState.shared.$isHistoryOpen
+        state.$isHistoryOpen
             .receive(on: RunLoop.main)
-            .sink { [weak self] open in self?.setHistoryOpen(open) }
+            .sink { [weak self] open in
+                self?.setHistoryOpen(open)
+                self?.syncFloatingSidebar()
+            }
             .store(in: &cancellables)
+        state.$isVaultOpen
+            .receive(on: RunLoop.main)
+            .sink { [weak self] open in
+                self?.setVaultOpen(open)
+                self?.syncFloatingSidebar()
+            }
+            .store(in: &cancellables)
+        // Pinning animates the chrome; the floating host follows the derived rule.
+        // `dropFirst` skips the seeded value — the initial layout already matches
+        // (`sidebarPinned` is seeded at declaration, before the first pass).
+        state.$isSidebarPinned
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] pinned in
+                self?.setSidebarPinned(pinned)
+                self?.syncFloatingSidebar()
+            }
+            .store(in: &cancellables)
+        // Hover reveal is one of the two causes of the floating host; it alone
+        // drives the pointer-dismissal monitor (the empty-canvas cause needs none).
+        state.$isSidebarRevealed
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] hovered in
+                guard let self else { return }
+                if hovered { self.startRevealDismissMonitor() }
+                else { self.stopRevealDismissMonitor() }
+                self.syncFloatingSidebar()
+            }
+            .store(in: &cancellables)
+    }
+
+    /// Test hook (P0-1 focus self-test, `--focus-selftest`): the CEF host view of
+    /// the active tab, if any. The self-test asserts keyboard focus lands on a
+    /// descendant of this view.
+    var activeCEFContainer: NSView? {
+        guard let id = BrowserState.shared.activeTabId else { return nil }
+        return tabViews[id]
     }
 
     // ─── Tab views ─────────────────────────────────────────────────────────
@@ -170,8 +231,8 @@ final class RootView: NSView {
     /// Open a new tab loading `url`: build its host view, hand it to the core
     /// (which creates the CEF browser and makes the tab active), and show it.
     func openNewTab(url: String) {
-        // Opening a tab dismisses the History surface if it was up.
-        BrowserState.shared.closeHistory()
+        // Opening a tab dismisses any app-UI surface (History / Passwords) if up.
+        BrowserState.shared.closeSurfaces()
         let container = CEFContainerView()
         container.autoresizingMask = [.width, .height]
         container.frame = contentArea.bounds
@@ -280,8 +341,41 @@ final class RootView: NSView {
             historyHost.isHidden = false
             HistoryModel.shared.reload()
             window?.makeFirstResponder(historyHost)
+            fadeInSurface(historyHost)
         } else {
             historyHost.isHidden = true
+        }
+    }
+
+    /// Show or hide the Passwords surface over the content region (mirrors
+    /// `setHistoryOpen`): raised to the front, reloaded from the core, key focus.
+    private func setVaultOpen(_ open: Bool) {
+        if open {
+            vaultHost.frame = contentArea.bounds
+            contentArea.addSubview(vaultHost, positioned: .above, relativeTo: nil)
+            vaultHost.isHidden = false
+            VaultModel.shared.reload()
+            window?.makeFirstResponder(vaultHost)
+            fadeInSurface(vaultHost)
+        } else {
+            vaultHost.isHidden = true
+        }
+    }
+
+    /// Fade a content surface in on show, mirroring the floating sidebar's reveal
+    /// so History/Passwords don't pop over the web view. A soft enter only; the
+    /// paired hide stays instant (the page behind is already composited). Instant
+    /// under Reduce Motion (style §7), matching the structure-reload gate.
+    private func fadeInSurface(_ view: NSView) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            view.alphaValue = 1
+            return
+        }
+        view.alphaValue = 0
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            view.animator().alphaValue = 1
         }
     }
 
@@ -320,7 +414,7 @@ final class RootView: NSView {
         let inset = floatingSidebarInset
         let floatingHeight = max(1, bounds.height - inset * 2)
         floatingHost.frame = NSRect(
-            x: sidebarRevealed ? inset : -sidebarWidth - 16,
+            x: floatingShown ? inset : -sidebarWidth - 16,
             y: inset,
             width: sidebarWidth,
             height: floatingHeight
@@ -330,7 +424,7 @@ final class RootView: NSView {
         // when pinned, the floating card's edge when revealed — and is hidden
         // otherwise so it never swallows clicks over the web content or the
         // reveal hot zone.
-        resizeHandle.isHidden = !(sidebarPinned || sidebarRevealed)
+        resizeHandle.isHidden = !(sidebarPinned || floatingShown)
         resizeHandle.frame = sidebarPinned
             ? NSRect(x: chrome - resizeHandleWidth / 2, y: 0,
                      width: resizeHandleWidth, height: bounds.height)
@@ -370,10 +464,12 @@ final class RootView: NSView {
     }
 
     private func tickRevealDismiss() {
-        guard sidebarRevealed else { stopRevealDismissMonitor(); return }
-        // Suspend dismissal while resizing, or while editing the URL inline — the
-        // pointer leaves the hover zone to reach the results, and collapsing the
-        // sidebar mid-edit would yank the field away.
+        guard BrowserState.shared.isSidebarRevealed else { stopRevealDismissMonitor(); return }
+        // Suspend dismissal while resizing the sidebar (the pointer roams past the
+        // edge to drag it) or editing the URL inline (the pointer leaves the hover
+        // zone to reach the autocomplete results, and collapsing mid-edit would
+        // yank the field away). The empty-canvas float needs no such guard — it
+        // isn't hover-driven, so this monitor never runs for it.
         if isResizingSidebar || URLBarModel.shared.isEditing { return }
         guard let window else { return }
 
@@ -397,7 +493,9 @@ final class RootView: NSView {
         return NSRect(x: frame.minX, y: frame.minY, width: width, height: frame.height)
     }
 
-    func setSidebarPinned(_ pinned: Bool) {
+    /// Animate the chrome as the sidebar pins/unpins (the pinned column slides in
+    /// or out). The floating host is handled separately by `syncFloatingSidebar`.
+    private func setSidebarPinned(_ pinned: Bool) {
         guard pinned != sidebarPinned else { return }
         sidebarPinned = pinned
         NSAnimationContext.runAnimationGroup { context in
@@ -408,24 +506,26 @@ final class RootView: NSView {
         }
     }
 
-    func setSidebarRevealed(_ revealed: Bool) {
-        guard revealed != sidebarRevealed else { return }
-        sidebarRevealed = revealed
-        if revealed {
-            floatingHost.isHidden = false
-            startRevealDismissMonitor()
-        } else {
-            stopRevealDismissMonitor()
-        }
+    /// Animate the floating sidebar host in/out to match the derived rule
+    /// (`BrowserState.isFloatingSidebarShown`): unpinned, and either hover-revealed
+    /// or floating over an empty canvas. The single place the host is shown/hidden —
+    /// it reads the rule rather than storing a copy, so it can't drift. Idempotent
+    /// (guards on the current state), so the several publishers that feed it in
+    /// `observeState` can all call it freely.
+    private func syncFloatingSidebar() {
+        let shown = BrowserState.shared.isFloatingSidebarShown
+        guard shown != floatingShown else { return }
+        floatingShown = shown
+        if shown { floatingHost.isHidden = false }
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.24
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             context.allowsImplicitAnimation = true
             applyLayout()
-            floatingHost.animator().alphaValue = revealed ? 1 : 0
+            floatingHost.animator().alphaValue = shown ? 1 : 0
         }, completionHandler: { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, !self.sidebarRevealed else { return }
+                guard let self, !self.floatingShown else { return }
                 self.floatingHost.isHidden = true
             }
         })

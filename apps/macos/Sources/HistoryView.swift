@@ -49,6 +49,15 @@ struct HistoryView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            // The floating glass toolbar (`safeAreaBar`) has no bar material
+            // behind it by design (style §247), so content is fed to the scroll
+            // edge effect to fade it out under the title instead of letting rows
+            // read through the header. The bottom inset lets the last row scroll
+            // clear of the window edge instead of hugging it — note
+            // `contentMargins(.scrollContent)` is a no-op on `List`, so this uses
+            // `safeAreaPadding`, which reserves the bottom scroll inset.
+            .scrollEdgeEffectStyle(.soft, for: .top)
+            .safeAreaPadding(.bottom, 20)
         }
     }
 
@@ -69,26 +78,40 @@ private struct Toolbar: View {
     @ObservedObject var model: HistoryModel
 
     var body: some View {
-        HStack(spacing: 12) {
-            Text("History")
-                .font(.system(size: 24, weight: .bold))
-            Spacer(minLength: 16)
-            SearchField(text: $model.query)
-                .frame(maxWidth: 280)
-            Menu("Clear") {
-                Button("Clear Last Hour") { model.clear(withinLast: 3600) }
-                Button("Clear Today") { model.clearToday() }
-                Divider()
-                Button("Clear All History", role: .destructive) { model.clear(since: 0) }
+        // Group the glass controls in one container so they share a sampling
+        // region and blend as a single material (never stack glass on glass).
+        GlassEffectContainer {
+            HStack(spacing: 12) {
+                // Leading dismiss — a surface is exclusive with the tabs (ADR-0010),
+                // so ✕ returns to the page (Escape also works). Kept clear of the
+                // trailing Clear control so it isn't fired by accident.
+                Button { BrowserState.shared.closeHistory() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .help("Close")
+                Text("History")
+                    .font(.system(size: 24, weight: .bold))
+                Spacer(minLength: 16)
+                SearchField(text: $model.query)
+                    .frame(maxWidth: 280)
+                Menu("Clear") {
+                    Button("Clear Last Hour") { model.clear(withinLast: 3600) }
+                    Button("Clear Today") { model.clearToday() }
+                    Divider()
+                    Button("Clear All History", role: .destructive) { model.clear(since: 0) }
+                }
+                .menuStyle(.button)
+                .buttonStyle(.glass)
+                .fixedSize()
+                .disabled(model.entries.isEmpty && model.query.isEmpty)
             }
-            .menuStyle(.button)
-            .buttonStyle(.glass)
-            .fixedSize()
-            .disabled(model.entries.isEmpty && model.query.isEmpty)
+            .padding(.horizontal, 24)
+            .padding(.top, 20)
+            .padding(.bottom, 14)
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 20)
-        .padding(.bottom, 14)
     }
 }
 
@@ -149,10 +172,8 @@ private struct HistoryRow: View {
                     Image(systemName: "xmark")
                         .font(.system(size: 10, weight: .bold))
                         .frame(width: 22, height: 22)
-                        .contentShape(.rect(cornerRadius: 6))
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .buttonStyle(IconButtonStyle(cornerRadius: 6))
                 .help("Remove from History")
             } else {
                 Text(timeLabel(entry.lastVisit))
@@ -167,6 +188,7 @@ private struct HistoryRow: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(.quaternary)
                 .opacity(hovering ? 0.6 : 0)
+                .hoverFade(hovering)
         )
         .contentShape(.rect)
         .onTapGesture(perform: onOpen)
@@ -179,27 +201,6 @@ private struct HistoryRow: View {
             }
             Divider()
             Button("Remove", role: .destructive, action: onDelete)
-        }
-    }
-}
-
-/// A host's favicon (captured store → web service via `FaviconLoader`), with a
-/// globe fallback. Mirrors the sidebar's `TabFavicon`, minus the load spinner.
-private struct HostFavicon: View {
-    let host: String
-    @State private var image: NSImage?
-
-    var body: some View {
-        Group {
-            if let image {
-                Image(nsImage: image).resizable()
-            } else {
-                Image(systemName: "globe").foregroundStyle(.secondary)
-            }
-        }
-        .frame(width: 18, height: 18)
-        .task(id: host) {
-            image = host.isEmpty ? nil : await FaviconLoader.shared.icon(for: host)
         }
     }
 }

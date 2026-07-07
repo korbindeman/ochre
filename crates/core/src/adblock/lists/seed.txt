@@ -1,0 +1,69 @@
+! Built-in adblock seed list (ADR-0020, spec §11).
+!
+! Compiled into the binary via include_str! so the request-path blocker is
+! effective on the very first launch, offline, before the background fetch of
+! the full EasyList + EasyPrivacy lists completes and hot-swaps the engine.
+!
+! Deliberately small and conservative: a curated set of well-known,
+! unambiguous ad-serving and analytics/tracking hosts in EasyList network-rule
+! syntax (`||host^`). The full lists (fetched at runtime) supersede this.
+!
+! Not user-editable. Keep additions high-confidence — a false positive here
+! ships in the binary and breaks a site until the full list is fetched.
+
+! ── Google ad / analytics / tag infrastructure ──
+||doubleclick.net^
+||googlesyndication.com^
+||googleadservices.com^
+||google-analytics.com^
+||googletagmanager.com^
+||googletagservices.com^
+||adservice.google.com^
+||pagead2.googlesyndication.com^
+||partner.googleadservices.com^
+
+! ── Major ad exchanges / SSPs ──
+||adnxs.com^
+||rubiconproject.com^
+||pubmatic.com^
+||openx.net^
+||criteo.com^
+||criteo.net^
+||taboola.com^
+||outbrain.com^
+||amazon-adsystem.com^
+||adform.net^
+||smartadserver.com^
+||casalemedia.com^
+||3lift.com^
+||moatads.com^
+||serving-sys.com^
+||bidswitch.net^
+||sharethrough.com^
+
+! ── Analytics / tracking / telemetry ──
+||scorecardresearch.com^
+||quantserve.com^
+||quantcount.com^
+||hotjar.com^
+||mixpanel.com^
+||segment.com^
+||segment.io^
+||fullstory.com^
+||mouseflow.com^
+||chartbeat.com^
+||newrelic.com^$third-party
+||nr-data.net^
+||branch.io^
+||amplitude.com^
+||heap.io^
+||optimizely.com^
+
+! ── Social / cross-site trackers ──
+||connect.facebook.net^
+||facebook.com/tr^
+||analytics.tiktok.com^
+||ads.linkedin.com^
+||ads-twitter.com^
+||bat.bing.com^
+||snap.licdn.com^

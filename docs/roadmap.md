@@ -346,8 +346,15 @@ per-tab CEF memory policy.
   private window, clear browsing data, per-site permission prompts, zoom, fullscreen, background-audio+mute,
   web push.
 - **Content:** inline PDF (verify pdfium), print / Save-as-PDF.
-- **Credentials:** native **password vault** + autofill (rbw-derived per spec §10) *or* a clean deferral to
-  iCloud Keychain/1Password — plus OTP + **passkey** prompts (needs the signed bundle from Phase 0).
+- **Credentials:** native **password vault** + autofill — fork **resolved to a Bitwarden-compatible,
+  rbw-derived client** (spec §10; ADR-0016), pulled forward and built core-crypto-first; plus OTP +
+  **passkey** prompts (needs the signed bundle from Phase 0). Autofill's bar is **real-world robustness,
+  not just the static form present at load**: SPA / dynamically-injected forms, **two-step email-first
+  flows** (Google/Microsoft/Okta), shadow-DOM-hosted forms, **TOTP / one-time-code** fill, framework-input
+  fill fidelity, and **save/update capture** (backlog P2-28…P2-33) — plus a **URL-bar quick-access button**
+  (Fill/Copy for the current site), the detection-independent manual path where Copy always works (P2-34, done;
+  ADR-0029). Two situations stay gated: cross-origin **iframe** logins ("Sign in with X" embeds) need the
+  render-process path (P2-24, ADR-0027), and the native **save-password banner** needs the M2 chrome (P2-23).
 - **Native-absorb (§3.1):** ad/tracker block matured; native dark/reader mode; **Tweaks** — Snip (element
   remover) + per-site CSS, with the userscript (Script) tier in beta (spec §20).
 
@@ -388,6 +395,14 @@ a blocking gap. **Risks:** the password-vault build; import fidelity; and the mo
   (native `OnCertificateError`) — a concrete point of *superiority* over Chrome's regressed cert flow.
 - **Tweaks** (GA) — the page-customization surface: Snip (element remover), per-site CSS (Restyle), and the
   **userscript engine** (Script tier) + custom CSS/JS injection (spec §20).
+- **Built-in visual inspect/design tools** — a lightweight layer *beside* full DevTools: an **eyedropper**
+  color picker (native OS sampler), a **measure/guides** ruler (element-to-element distances), **element peek**
+  (box-model + styles on hover), a **font inspector** (rendered family/metrics + `@font-face` source), a
+  **palette/type extractor**, and a small **encoder scratchpad** (base64/JWT/URL/timestamp/regex/JSON
+  pretty-print) + **QR-for-URL** hand-off. Split across two mechanisms already built — native overlays
+  (eyedropper, capture) and the document-start injection substrate (ADR-0017, the DOM-aware tools). The
+  native-absorb answer to the DevTools-adjacent extensions (ColorZilla, page rulers, font inspectors, VisBug)
+  — backlog P3-1…P3-12.
 
 **Scope — the 1.0 bar (non-feature):** sync v1 (E2E, §3.4); stability hardening; docs; a real community;
 a funding channel live (§7); reproducible-builds as a stated goal (§8.3).

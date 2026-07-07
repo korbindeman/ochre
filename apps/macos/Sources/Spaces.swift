@@ -8,6 +8,9 @@ import SwiftUI
 struct SpaceContents: View {
     @ObservedObject private var state = BrowserState.shared
     @StateObject private var drag = TabDragModel()
+    /// Namespace for the sliding active-tab highlight, shared across the loose,
+    /// today, and folder rows so the selection can animate between any of them.
+    @Namespace private var selection
 
     var body: some View {
         let folders = state.activeFolders
@@ -16,7 +19,7 @@ struct SpaceContents: View {
 
         VStack(alignment: .leading, spacing: 4) {
             ForEach(folders) { folder in
-                FolderRow(folder: folder, drag: drag)
+                FolderRow(folder: folder, drag: drag, selection: selection)
             }
             sectionRows(loose, section: .loosePinned)
             // Separate the persistent section from the today section.
@@ -47,12 +50,16 @@ struct SpaceContents: View {
     func tabRow(_ tab: TabItem, section: TabSection, next: Int32?) -> some View {
         TabRow(
             tab: tab,
-            isActive: tab.id == state.activeTabId,
-            onSelect: { browser_tab_select(tab.id) },
+            // A tab and a native surface are mutually exclusive — no tab reads as
+            // active while History/Passwords covers the canvas.
+            isActive: tab.id == state.activeTabId && !state.isSurfaceOpen,
+            selection: selection,
+            onSelect: { state.selectTab(tab.id) },
             onClose: { (NSApp.delegate as? AppDelegate)?.closeTab(tab.id) }
         )
         .contextMenu { TabMenu(tab: tab, folders: state.activeFolders) }
         .tabRowDrag(tab: tab, section: section, next: next, drag: drag)
+        .transition(SidebarSelection.rowTransition)
     }
 }
 
@@ -66,7 +73,6 @@ private struct NewTabRow: View {
     let firstToday: Int32?
     @ObservedObject var drag: TabDragModel
 
-    @State private var hovering = false
     @State private var height: CGFloat = 36
 
     var body: some View {
@@ -84,16 +90,9 @@ private struct NewTabRow: View {
             .font(.system(size: 13, weight: .medium))
             .padding(.horizontal, 10)
             .padding(.vertical, 9)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(.quaternary)
-                    .opacity(hovering ? 0.45 : 0)
-            )
-            .contentShape(.rect(cornerRadius: 8))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(IconButtonStyle(cornerRadius: 8, emphasizesLabel: false))
         .foregroundStyle(.secondary)
-        .onHover { hovering = $0 }
         .background(
             GeometryReader { geo in
                 Color.clear.preference(key: RowHeightKey.self, value: geo.size.height)
@@ -150,6 +149,9 @@ struct FolderRow: View {
     let folder: FolderItem
     @ObservedObject private var state = BrowserState.shared
     @ObservedObject var drag: TabDragModel
+    /// Shared with the rest of the sidebar so the active-tab highlight can slide
+    /// between a folder tab and a loose/today tab.
+    let selection: Namespace.ID
     @State private var collapsed = false
 
     private var app: AppDelegate? { NSApp.delegate as? AppDelegate }
@@ -164,6 +166,7 @@ struct FolderRow: View {
             HStack(spacing: 6) {
                 Image(systemName: collapsed ? "chevron.right" : "chevron.down")
                     .font(.system(size: 10, weight: .semibold))
+                    .contentTransition(.symbolEffect(.replace))
                     .foregroundStyle(.tertiary)
                     .frame(width: 12)
                 Image(systemName: "folder")
@@ -173,6 +176,7 @@ struct FolderRow: View {
                 Spacer(minLength: 0)
                 Text("\(tabs.count)")
                     .font(.system(size: 11))
+                    .monospacedDigit()
                     .foregroundStyle(.tertiary)
             }
             .font(.system(size: 13, weight: .medium))
@@ -199,8 +203,9 @@ struct FolderRow: View {
                 ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
                     TabRow(
                         tab: tab,
-                        isActive: tab.id == state.activeTabId,
-                        onSelect: { browser_tab_select(tab.id) },
+                        isActive: tab.id == state.activeTabId && !state.isSurfaceOpen,
+                        selection: selection,
+                        onSelect: { state.selectTab(tab.id) },
                         onClose: { app?.closeTab(tab.id) }
                     )
                     .contextMenu { TabMenu(tab: tab, folders: state.activeFolders) }
@@ -211,6 +216,7 @@ struct FolderRow: View {
                         drag: drag
                     )
                     .padding(.leading, 16)
+                    .transition(SidebarSelection.rowTransition)
                 }
             }
         }
@@ -222,12 +228,22 @@ struct FolderRow: View {
 /// tooltip; rename/icon/delete live in the context menu.
 struct SpaceSwitcher: View {
     @ObservedObject private var state = BrowserState.shared
-    @State private var hoveringNew = false
 
     private var app: AppDelegate? { NSApp.delegate as? AppDelegate }
 
     var body: some View {
         HStack(spacing: 6) {
+            // Passwords (vault) — the sidebar entry point to the manager (also in
+            // the app menu). Leading utility button; spaces scroll to its right.
+            Button { app?.showVault() } label: {
+                Image(systemName: "key.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 26, height: 26)
+            }
+            .buttonStyle(IconButtonStyle(cornerRadius: 7, isActive: state.isVaultOpen, emphasizesLabel: false))
+            .foregroundStyle(state.isVaultOpen ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+            .help("Passwords")
+
             ScrollView(.horizontal) {
                 HStack(spacing: 6) {
                     ForEach(state.spaces) { space in
@@ -246,16 +262,8 @@ struct SpaceSwitcher: View {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .semibold))
                     .frame(width: 26, height: 26)
-                    .background(
-                        RoundedRectangle(cornerRadius: 7)
-                            .fill(.quaternary)
-                            .opacity(hoveringNew ? 0.45 : 0)
-                    )
-                    .contentShape(.rect(cornerRadius: 7))
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .onHover { hoveringNew = $0 }
+            .buttonStyle(IconButtonStyle(cornerRadius: 7))
             .help("New Space")
         }
     }
@@ -270,8 +278,6 @@ private struct SpacePill: View {
     let canDemote: Bool
     let canDelete: Bool
 
-    @State private var hovering = false
-
     private var app: AppDelegate? { NSApp.delegate as? AppDelegate }
 
     var body: some View {
@@ -279,15 +285,8 @@ private struct SpacePill: View {
             Text(space.icon)
                 .font(.system(size: 13))
                 .frame(width: 26, height: 26)
-                .background(
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(.quaternary)
-                        .opacity(isActive ? 1 : (hovering ? 0.45 : 0))
-                )
-                .contentShape(.rect(cornerRadius: 7))
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
+        .buttonStyle(IconButtonStyle(cornerRadius: 7, isActive: isActive))
         .help(space.name)
         .contextMenu {
             if isActive {

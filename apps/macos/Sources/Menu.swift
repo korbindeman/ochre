@@ -22,7 +22,7 @@ enum MainMenu {
         let mainMenu = NSMenu()
         mainMenu.addItem(appMenu(appName: appName, actions: actions))
         mainMenu.addItem(fileMenu(actions: actions))
-        mainMenu.addItem(editMenu())
+        mainMenu.addItem(editMenu(actions: actions))
         mainMenu.addItem(viewMenu(actions: actions))
         mainMenu.addItem(historyMenu(actions: actions))
         mainMenu.addItem(windowMenu())
@@ -38,6 +38,11 @@ enum MainMenu {
             withTitle: "About \(appName)",
             action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
             keyEquivalent: "")
+        menu.addItem(.separator())
+
+        // Passwords (the vault surface) — a native app-UI page (ADR-0010/0016).
+        target(menu.addItem(withTitle: "Passwords…",
+                            action: #selector(AppDelegate.showVault), keyEquivalent: ""), actions)
         menu.addItem(.separator())
 
         let services = NSMenu()
@@ -105,7 +110,7 @@ enum MainMenu {
 
     // MARK: - Edit
 
-    private static func editMenu() -> NSMenuItem {
+    private static func editMenu(actions: AppDelegate) -> NSMenuItem {
         let menu = NSMenu(title: "Edit")
         menu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
         let redo = menu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
@@ -116,7 +121,24 @@ enum MainMenu {
         menu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         menu.addItem(withTitle: "Delete", action: #selector(NSText.delete(_:)), keyEquivalent: "")
         menu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Find", action: nil, keyEquivalent: "").submenu = findMenu(actions: actions)
         return submenu(menu)
+    }
+
+    /// The Find submenu (⌘F / ⌘G / ⇧⌘G). Find Next / Previous are enabled only
+    /// while a search is active — see `AppDelegate.validateMenuItem`.
+    private static func findMenu(actions: AppDelegate) -> NSMenu {
+        let menu = NSMenu(title: "Find")
+        target(menu.addItem(withTitle: "Find…",
+                            action: #selector(AppDelegate.performFind), keyEquivalent: "f"), actions)
+        target(menu.addItem(withTitle: "Find Next",
+                            action: #selector(AppDelegate.findNext), keyEquivalent: "g"), actions)
+        let prev = menu.addItem(withTitle: "Find Previous",
+                            action: #selector(AppDelegate.findPrevious), keyEquivalent: "g")
+        prev.keyEquivalentModifierMask = [.command, .shift]
+        target(prev, actions)
+        return menu
     }
 
     // MARK: - View
@@ -140,13 +162,46 @@ enum MainMenu {
         target(menu.addItem(withTitle: "Toggle Sidebar",
                             action: #selector(AppDelegate.toggleSidebar), keyEquivalent: "s"), actions)
         menu.addItem(.separator())
-        // Toggles the DevTools window (Chrome/Safari behaviour). F12 does the same
-        // via the core's keyboard handler; this owns the ⌘⌥I equivalent.
+        // Appearance (ADR-0030): one Light/Dark/System choice for the whole browser
+        // — native chrome and web content's prefers-color-scheme. Radio checkmarks
+        // via `AppDelegate.validateMenuItem`.
+        menu.addItem(withTitle: "Appearance", action: nil, keyEquivalent: "")
+            .submenu = appearanceMenu(actions: actions)
+        menu.addItem(.separator())
+        // Adblock (ADR-0020). The global toggle carries a checkmark for the on
+        // state; the per-site toggle is checked when blocking is on for the active
+        // site and disabled off a web page / when blocking is globally off — see
+        // `AppDelegate.validateMenuItem`.
+        target(menu.addItem(withTitle: "Block Ads and Trackers",
+                            action: #selector(AppDelegate.toggleAdblock), keyEquivalent: ""), actions)
+        target(menu.addItem(withTitle: "Block Ads on This Site",
+                            action: #selector(AppDelegate.toggleAdblockForSite), keyEquivalent: ""), actions)
+        // Cookie-consent: its own toggle governing reject + hide (ADR-0026),
+        // checkmark for the on state via `validateMenuItem`.
+        target(menu.addItem(withTitle: "Block Cookie Notices",
+                            action: #selector(AppDelegate.toggleCookieConsent), keyEquivalent: ""), actions)
+        menu.addItem(.separator())
+        // Toggles the DevTools window (separate window; inline docking isn't
+        // feasible under CEF 149 — ADR-0021). F12 does the same via the core's
+        // keyboard handler; this owns the ⌘⌥I equivalent.
         let devtools = menu.addItem(withTitle: "Developer Tools",
                                    action: #selector(AppDelegate.toggleDevTools), keyEquivalent: "i")
         devtools.keyEquivalentModifierMask = [.command, .option]
         target(devtools, actions)
         return submenu(menu)
+    }
+
+    /// The Appearance submenu (ADR-0030) — System / Light / Dark, shown as radio
+    /// checkmarks reflecting the current preference (`AppDelegate.validateMenuItem`).
+    private static func appearanceMenu(actions: AppDelegate) -> NSMenu {
+        let menu = NSMenu(title: "Appearance")
+        target(menu.addItem(withTitle: "System",
+                            action: #selector(AppDelegate.setThemeSystem), keyEquivalent: ""), actions)
+        target(menu.addItem(withTitle: "Light",
+                            action: #selector(AppDelegate.setThemeLight), keyEquivalent: ""), actions)
+        target(menu.addItem(withTitle: "Dark",
+                            action: #selector(AppDelegate.setThemeDark), keyEquivalent: ""), actions)
+        return menu
     }
 
     // MARK: - History

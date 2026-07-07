@@ -139,6 +139,8 @@ void browser_zoom_reset(void);
 
 // Toggle DevTools for the current page — open it in its own window, or close it
 // if already open. Backs the Cmd+Opt+I menu item (F12 is handled in the core).
+// DevTools opens as a separate window; inline docking isn't feasible under CEF
+// 149's Chrome bootstrap (ADR-0021).
 void browser_toggle_dev_tools(void);
 
 // Find-in-page. `find_next` is false for a fresh search, true when stepping to
@@ -191,6 +193,103 @@ bool browser_history_delete(const char *url);
 // Clear history entries last visited at or after `since` (Unix seconds); 0 clears
 // all history. Returns the number of rows removed. Main thread only.
 uint64_t browser_history_clear(int64_t since);
+
+// ─── Password vault surface (the native Passwords page) ─────────────────────
+// Thin C ABI over the vault service (ADR-0016/0017). Fallible calls return a JSON
+// envelope string ({"ok":true} / {"ok":true,"imported":N} / {"ok":false,"error":"…"});
+// every returned string is heap-allocated — free with browser_string_free. The
+// networked/heavy calls (unlock_*, import_*) BLOCK — call them off the main thread.
+
+// Initialize the global vault for `server_url` (empty ⇒ default Bitwarden cloud;
+// else a self-hosted base URL), caching under `cache_dir`.
+void browser_vault_init(const char *server_url, const char *cache_dir);
+// True when the vault is locked or was never initialized.
+bool browser_vault_is_locked(void);
+// Whether the vault has been set up (server/account configured). UI shows the
+// setup screen when false.
+bool browser_vault_is_configured(void);
+// First-run setup: point the vault at `server` (empty ⇒ default Bitwarden cloud),
+// log in, and persist the config so later launches auto-init. `code` empty ⇒ first
+// attempt; a {"two_factor":"…"} envelope means re-call with the code + that provider
+// tag. Blocks. JSON envelope.
+char *browser_vault_setup(const char *server, const char *email, const char *password,
+                          const char *code, const char *provider);
+// Online unlock. `code` empty ⇒ no second factor supplied yet; a {"two_factor":"…"}
+// envelope means re-call with the code + provider tag. Blocks. JSON envelope.
+char *browser_vault_unlock_online(const char *email, const char *password, const char *code,
+                                  const char *provider);
+// Re-dispatch the login two-factor email ("Resend code"). Blocks. JSON envelope.
+char *browser_vault_send_email_code(const char *email, const char *password);
+// Offline unlock from cache. Blocks (KDF). JSON envelope.
+char *browser_vault_unlock_offline(const char *password);
+// Lock the vault (wipes the in-memory key).
+void browser_vault_lock(void);
+// Logins matching `host` as a JSON array [{ "id","name","username","uris" }]
+// (metadata only, no passwords). Empty array when locked.
+char *browser_vault_lookup(const char *host);
+// All logins as a JSON array (metadata only).
+char *browser_vault_list(void);
+// The password for login `id` — the one path a secret leaves the core, on an
+// explicit user gesture. NULL when locked/unknown. Free with browser_string_free.
+char *browser_vault_password(const char *id);
+// Full detail for login `id` as JSON {id,name,username,password,uri,totp,notes}
+// for the edit form — a secret path, on an explicit gesture. NULL when
+// locked/unknown. Free with browser_string_free.
+char *browser_vault_login(const char *id);
+// Fill the active tab's login form with vault login `id` — the URL-bar vault
+// button's Fill action (P2-34/ADR-0029). The credential enters the page on this
+// gesture; a lenient fill targets the current login fields (works on a two-step
+// form's email-only first step too). No-op when locked/unknown or no active tab.
+// Main thread only.
+void browser_vault_fill_active_tab(const char *id);
+// Import a CSV export. Blocks. JSON envelope with an `imported` count.
+char *browser_vault_import_csv(const char *data);
+// Import a Bitwarden JSON export. Blocks. JSON envelope with `imported`.
+char *browser_vault_import_bitwarden_json(const char *data);
+// Create a new login. Blocks. JSON envelope. Empty fields → omitted.
+char *browser_vault_add_login(const char *name, const char *username, const char *password,
+                              const char *uri, const char *totp, const char *notes);
+// Update login `id`. Blocks. JSON envelope.
+char *browser_vault_update_login(const char *id, const char *name, const char *username,
+                                 const char *password, const char *uri, const char *totp,
+                                 const char *notes);
+// Delete login `id`. Blocks. JSON envelope.
+char *browser_vault_delete_login(const char *id);
+
+// ─── CDP automation surface (P0-4) ──────────────────────────────────────────
+// Enable/disable the consent-gated CDP surface; persisted, takes effect next launch.
+void browser_cdp_set_enabled(bool enabled);
+bool browser_cdp_is_enabled(void);
+
+// ─── Adblock (ADR-0020, spec §11) ───────────────────────────────────────────
+// Native request-path ad-blocking. The global switch and the per-site allowlist
+// are persisted; the shield reads the ACTIVE tab's state. Main thread only.
+// Whether blocking is globally enabled (on by default).
+bool browser_adblock_is_enabled(void);
+// Toggle blocking globally (persisted); reloads the active tab so it applies.
+void browser_adblock_set_enabled(bool enabled);
+// Requests blocked on the active tab since its last navigation (shield badge).
+uint64_t browser_adblock_active_blocked_count(void);
+// Whether blocking is turned OFF for the active tab's site (allowlisted).
+bool browser_adblock_active_site_allowlisted(void);
+// Turn blocking off (true) / back on (false) for the active tab's site
+// (persisted); reloads the tab so it applies on screen.
+void browser_adblock_set_active_site_allowlisted(bool allowlisted);
+
+// Cookie-consent handling (reject + hide) — its own toggle, persisted (ADR-0026).
+// Whether cookie-consent handling is on (on by default).
+bool browser_consent_is_enabled(void);
+// Toggle cookie-consent handling (persisted); reloads the active tab so it applies.
+void browser_consent_set_enabled(bool enabled);
+
+// Appearance / color scheme (ADR-0030). One preference drives web content
+// (prefers-color-scheme) and native chrome: 0 System, 1 Light, 2 Dark.
+// Current appearance preference (0 System / 1 Light / 2 Dark).
+int32_t browser_theme_preference(void);
+// Set the appearance preference (persisted); applied live to open tabs.
+void browser_theme_set_preference(int32_t preference);
+// Forward the current OS appearance (launch + on OS theme change); drives System mode.
+void browser_theme_set_system_dark(bool is_dark);
 
 // Tear down CEF. Call after browser_run_message_loop returns.
 void browser_shutdown(void);

@@ -31,6 +31,10 @@ path = "src/bin/bundle.rs"
 # configuration. Enable with `--features sandbox` once that wiring lands.
 default = []
 sandbox = ["cef/sandbox"]
+# Pulls the RSA/rand deps the ignored live-server harness needs to register a
+# fresh Vaultwarden account (see `tests/vault_live.rs`). Off by default so normal
+# `cargo test` / `just verify` never compiles them.
+live-tests = ["dep:rsa", "dep:rand"]
 
 [package.metadata.cef.bundle]
 helper_name = "browser_helper"
@@ -46,6 +50,29 @@ rusqlite = { workspace = true }
 serde = { workspace = true }
 # Session persistence — the tab/space/folder tree as JSON (see `src/session.rs`).
 serde_json = { workspace = true }
+# Password vault crypto (Bitwarden key hierarchy + EncString; ADR-0016, spec §10).
+pbkdf2 = { workspace = true }
+argon2 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hkdf = { workspace = true }
+aes = { workspace = true }
+cbc = { workspace = true }
+base64 = { workspace = true }
+getrandom = { workspace = true }
+zeroize = { workspace = true }
+# Vault auth/sync HTTP client + OAuth form encoding (ADR-0016, spec §10).
+ureq = { workspace = true }
+form_urlencoded = { workspace = true }
+# Registrable-domain matching for `vault_lookup` (ADR-0016, spec §10).
+psl = { workspace = true }
+# Credential-import CSV parsing (ADR-0016, spec §10).
+csv = { workspace = true }
+# Native request-path ad-blocking on the CEF resource path (ADR-0019, spec §11).
+adblock = { workspace = true }
+# Live-test-only (feature `live-tests`): RSA keypair for Vaultwarden registration.
+rsa = { version = "0.9", optional = true }
+rand = { version = "0.8", optional = true }
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true }
 objc2-app-kit = { workspace = true, features = [

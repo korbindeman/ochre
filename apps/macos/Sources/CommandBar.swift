@@ -19,6 +19,10 @@ final class CommandBarController {
     private var panel: KeyablePanel?
     private var isHiding = false
     private var keyMonitor: Any?
+    /// Demo/verification only: keep the bar presented even when its panel resigns
+    /// key, so it can be screenshotted without staying frontmost. Never set in
+    /// normal use — the resign-key dismissal is the correct product behaviour.
+    var keepPresentedForDemo = false
 
     /// The autocomplete engine, shared across presentations so the controller
     /// can observe it to resize the panel. Local providers (typed-URL row, then
@@ -88,10 +92,17 @@ final class CommandBarController {
             }
         installKeyMonitor()
 
+        // Hide the panel *before* it is ever placed on screen, then fade it in.
+        // A freshly-made panel defaults to alphaValue 1, so ordering it in first
+        // (as `addChildWindow` does) and lowering the alpha afterwards let its
+        // not-yet-composited-as-glass content present one opaque frame — the
+        // square that flashed under the bar on the *first* ⌘T only. Reused panels
+        // were already at alpha 0 from the previous fade-out, which is exactly why
+        // it never recurred; setting alpha 0 up front makes every presentation
+        // behave like a reused one. The content adds its own spring scale-in.
+        panel.alphaValue = 0
         positionPanel(height: fieldHeight)
         parent.addChildWindow(panel, ordered: .above)
-        // Fade the panel in; the content adds its own spring scale-in.
-        panel.alphaValue = 0
         panel.makeKeyAndOrderFront(nil)
         NSLog("[focus] commandbar opened → panel is key")
         NSAnimationContext.runAnimationGroup { context in
@@ -240,7 +251,10 @@ final class CommandBarController {
             object: panel,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.hide() }
+            MainActor.assumeIsolated {
+                guard let self, !self.keepPresentedForDemo else { return }
+                self.hide()
+            }
         }
         return panel
     }
@@ -266,21 +280,29 @@ private struct CommandBarView: View {
     @State private var appeared = false
 
     var body: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 12) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(.secondary)
-                AutocompleteField(controller: controller)
-            }
-            .padding(.horizontal, 24)
-            .frame(maxWidth: .infinity, minHeight: 60)
-            .glassEffect(.regular, in: .capsule)
+        // The field and its results are two glass surfaces stacked together, so
+        // group them in one container: they share a sampling region and blend as
+        // one material (Apple: never stack glass on glass).
+        GlassEffectContainer {
+            VStack(spacing: 8) {
+                HStack(spacing: 12) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 20, weight: .regular))
+                        .foregroundStyle(.secondary)
+                    // Larger than a default field so the placeholder / typed text
+                    // reads at Spotlight's scale, and matched to the icon weight so
+                    // the whole search line is one consistent size.
+                    AutocompleteField(controller: controller, font: .system(size: 22))
+                }
+                .padding(.horizontal, 24)
+                .frame(maxWidth: .infinity, minHeight: 60)
+                .glassEffect(.regular, in: .capsule)
 
-            if !controller.suggestions.isEmpty {
-                AutocompleteList(controller: controller, onChoose: onChoose)
-                    .padding(6)
-                    .glassEffect(.regular, in: .rect(cornerRadius: 16))
+                if !controller.suggestions.isEmpty {
+                    AutocompleteList(controller: controller, onChoose: onChoose)
+                        .padding(6)
+                        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+                }
             }
         }
         .scaleEffect(appeared ? 1 : 0.94, anchor: .top)

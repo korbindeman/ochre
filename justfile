@@ -53,6 +53,14 @@ run-native-shell: bundle
 bundle:
     cargo run --bin bundle
 
+# Subresource-redirect regression (ADR-0028): assembles the bundle and drives an
+# embedded browser at a hermetic in-process server whose <img> loads through a
+# same-origin 302, asserting the redirect is followed. Chromium 149 regressed this
+# (broke the Google avatar) so we pin CEF 148; re-run this after ANY CEF bump.
+# Exits non-zero on failure. Throwaway $HOME dodges Chromium's process singleton.
+redirect-selftest: bundle
+    HOME="$(mktemp -d)" ./target/bundle/browser.app/Contents/MacOS/browser --redirect-selftest
+
 # ── macOS app (SwiftUI) ─────────────────────────────────────────────
 # Requires XcodeGen + Xcode Command Line Tools.
 
@@ -63,6 +71,15 @@ gen-macos:
 # Build the macOS app without running it (generate project first if missing).
 build-macos: gen-macos
     cd apps/macos && xcodebuild -scheme Browser build
+
+# P0-1 focus-routing regression (ADR-0018): builds the app and runs the in-process
+# synthetic-input focus self-test, which drives page ↔ command-bar ↔ tab-switch ↔
+# ⌘L transitions and asserts the page reclaims keyboard focus each time. Exits
+# non-zero on any failure. Runs under a throwaway $HOME so it never collides with
+# a running Browser on Chromium's process singleton.
+focus-selftest: gen-macos
+    cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build
+    HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/Browser.app/Contents/MacOS/Browser --focus-selftest
 
 # ── Convenience ─────────────────────────────────────────────────────
 

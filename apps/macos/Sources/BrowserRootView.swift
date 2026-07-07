@@ -22,7 +22,7 @@ struct Sidebar: View {
     private var isVisible: Bool {
         switch variant {
         case .pinned: return state.isSidebarPinned
-        case .floating: return !state.isSidebarPinned && state.isSidebarRevealed
+        case .floating: return state.isFloatingSidebarShown
         }
     }
 
@@ -75,6 +75,10 @@ struct Sidebar: View {
 struct TabRow: View {
     let tab: TabItem
     let isActive: Bool
+    /// Shared namespace for the sliding active-tab highlight (`matchedGeometryEffect`):
+    /// the selection pill is a single element that animates from the old active row
+    /// to the new one on tab switch, rather than cross-fading in place.
+    let selection: Namespace.ID
     let onSelect: () -> Void
     let onClose: () -> Void
 
@@ -91,26 +95,51 @@ struct TabRow: View {
                 Button(action: onClose) {
                     Image(systemName: "xmark")
                         .font(.system(size: 10, weight: .bold))
-                        .frame(width: 18, height: 18)
-                        .contentShape(.rect(cornerRadius: 5))
+                        // Match the 16pt favicon height so the button never becomes
+                        // the tallest child and grows the row on hover; the 18pt
+                        // width keeps a comfortable horizontal hit target.
+                        .frame(width: 18, height: 16)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .buttonStyle(IconButtonStyle(cornerRadius: 5))
                 .help("Close Tab")
             }
         }
         .font(.system(size: 13, weight: .medium))
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
-        .background(
+        .background {
+            // The active pill is the single matched element (slides between rows).
+            // The hover highlight is a separate, always-present fill (opacity 0 when
+            // idle) so it fades rather than snaps and never joins the slide. Only one
+            // row is active at a time, so the pill has one source.
             RoundedRectangle(cornerRadius: 8)
                 .fill(.quaternary)
-                .opacity(isActive ? 1 : (hovering ? 0.45 : 0))
-        )
+                .opacity(!isActive && hovering ? 0.45 : 0)
+                .hoverFade(hovering)
+            if isActive {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(.quaternary)
+                    .matchedGeometryEffect(id: SidebarSelection.pill, in: selection)
+            }
+        }
         .contentShape(.rect(cornerRadius: 8))
         .onTapGesture(perform: onSelect)
         .onHover { hovering = $0 }
     }
+}
+
+/// Shared identifiers/curves for the sidebar's tab animations, so the tab list and
+/// the folder tree animate identically (they render `TabRow` from two files).
+enum SidebarSelection {
+    /// `matchedGeometryEffect` id for the sliding active-tab highlight.
+    static let pill = "sidebar.activeTab"
+
+    /// Enter/exit for a tab row: grow in from the favicon edge + fade; fade out on
+    /// close (the surrounding rows spring to close the gap via the list animation).
+    static let rowTransition: AnyTransition = .asymmetric(
+        insertion: .scale(scale: 0.96, anchor: .leading).combined(with: .opacity),
+        removal: .opacity
+    )
 }
 
 /// A tab's favicon, resolved asynchronously through `FaviconLoader` and keyed by
@@ -146,8 +175,6 @@ struct TabFavicon: View {
 /// New-Tab hint on an otherwise empty canvas (a new-tab *page* with suggestions
 /// is Phase 2).
 struct EmptyStateView: View {
-    @State private var hovering = false
-
     var body: some View {
         Button {
             (NSApp.delegate as? AppDelegate)?.toggleCommandBar()
@@ -165,11 +192,8 @@ struct EmptyStateView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
-            .background(RoundedRectangle(cornerRadius: 11).fill(.quaternary).opacity(hovering ? 0.5 : 0))
-            .contentShape(.rect(cornerRadius: 11))
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
+        .buttonStyle(IconButtonStyle(cornerRadius: 11, emphasizesLabel: false))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -198,36 +222,24 @@ struct FloatingSidebar: View {
 private struct NavButton: View {
     let symbol: String
     let help: String
-    /// Dims the glyph and blocks the action + hover highlight — used for the
+    /// Dims the glyph and blocks the action + hover/press highlight — used for the
     /// back/forward arrows when there's no history to move through.
     var disabled: Bool = false
     let action: () -> Void
-
-    @State private var hovering = false
-
-    /// Enabled glyph brightens on hover (secondary → primary); disabled stays
-    /// quaternary so the dead control reads as unavailable, not merely quiet.
-    private var tint: AnyShapeStyle {
-        if disabled { return AnyShapeStyle(.quaternary) }
-        return hovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary)
-    }
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 14, weight: .medium))
+                // Reload⇄stop (and any future symbol swap) cross-fades via Magic
+                // Replace; a no-op for the static back/forward/sidebar glyphs.
+                .contentTransition(.symbolEffect(.replace))
                 .frame(width: 30, height: 26)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(.quaternary)
-                        .opacity(hovering && !disabled ? 0.7 : 0)
-                )
-                .contentShape(.rect(cornerRadius: 6))
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(tint)
+        // Fill on hover, deeper on press; glyph secondary → primary, quaternary when
+        // disabled (dead control) with the fill suppressed — all via IconButtonStyle.
+        .buttonStyle(IconButtonStyle(cornerRadius: 6))
         .disabled(disabled)
-        .onHover { hovering = $0 }
         .help(help)
     }
 }

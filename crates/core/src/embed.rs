@@ -86,16 +86,32 @@ wrap_app! {
     pub struct EmbedApp;
 
     impl App {
-        // Debug builds use Chromium's in-memory mock keychain — see
-        // `BrowserApp::on_before_command_line_processing` for the rationale.
-        #[cfg(debug_assertions)]
         fn on_before_command_line_processing(
             &self,
-            _process_type: Option<&CefString>,
+            process_type: Option<&CefString>,
             command_line: Option<&mut CommandLine>,
         ) {
-            if let Some(command_line) = command_line {
-                command_line.append_switch(Some(&CefString::from("use-mock-keychain")));
+            let Some(command_line) = command_line else {
+                return;
+            };
+
+            // Debug builds use Chromium's in-memory mock keychain — see
+            // `BrowserApp::on_before_command_line_processing` for the rationale.
+            #[cfg(debug_assertions)]
+            command_line.append_switch(Some(&CefString::from("use-mock-keychain")));
+
+            // CDP automation surface (P0-4): browser process only (helpers ignore
+            // `--remote-debugging-port`), only when the user opted in, loopback-bound.
+            let is_browser_process = process_type
+                .map(|t| t.to_string().is_empty())
+                .unwrap_or(true);
+            if is_browser_process {
+                for (name, value) in crate::cdp::switches(&crate::cdp::config()) {
+                    command_line.append_switch_with_value(
+                        Some(&CefString::from(name)),
+                        Some(&CefString::from(value.as_str())),
+                    );
+                }
             }
         }
     }
@@ -119,6 +135,24 @@ pub fn initialize() -> bool {
         return false;
     }
 
+    // Read the persisted CDP consent before init — the switch is applied during
+    // `cef_initialize` (in `on_before_command_line_processing`).
+    crate::cdp::load_persisted();
+
+    // Bring up the adblock engine (seed synchronously, full lists in the
+    // background) before any browser is created, so the request-path filter is
+    // live from the first navigation (ADR-0020, spec §11). In debug, a
+    // `BROWSER_ADBLOCK_DEMO` env installs a stable engine with a localhost test
+    // cosmetic rule (no background refresh) so the P2-21 smoke is deterministic.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("BROWSER_ADBLOCK_DEMO").is_some() {
+        crate::adblock::init_demo("localhost##.ad-banner\nlocalhost###ad-box");
+    } else {
+        crate::adblock::init();
+    }
+    #[cfg(not(debug_assertions))]
+    crate::adblock::init();
+
     let mut app = EmbedApp::new();
     let settings = Settings {
         no_sandbox: !cfg!(feature = "sandbox") as _,
@@ -136,6 +170,45 @@ pub fn initialize() -> bool {
     // Open the history/favicon store next to the CEF cache. A failure here is
     // non-fatal — the browser just runs without autocomplete suggestions.
     crate::history::init(&format!("{}/history.sqlite", root_cache_dir()));
+
+    // Auto-initialize the vault from its persisted config (if set up before), so
+    // it is ready to unlock; a no-op on first run (the UI shows setup).
+    crate::vault::service::start();
+
+    // Register vault autofill as a rider on the injection substrate (P2-15,
+    // ADR-0017). Unconditional: the detect script is cheap and matches nothing
+    // while the vault is locked. This is the substrate's first production consumer.
+    crate::vault::autofill::register();
+
+    // Register cosmetic ad-block as a substrate rider too (P2-21, ADR-0020):
+    // element-hiding CSS injected at document-start, no flash.
+    crate::adblock::cosmetic::register();
+
+    // Register cookie-consent (P2-22/P2-25, ADR-0026): detect known CMPs and click
+    // "reject all", plus hide the long-tail banners — gated on its own toggle,
+    // whose persisted state loads here before the first browser.
+    crate::consent::load_persisted();
+    crate::consent::register();
+
+    // Load the appearance preference (Light/Dark/System, ADR-0030) before the
+    // first browser. It is *applied* once the host forwards the OS appearance
+    // (`browser_theme_set_system_dark`) early in window setup, so the global
+    // request context is themed before any tab hydrates.
+    crate::theme::load_persisted();
+
+    // Autofill end-to-end harness: seed an unlocked demo vault (debug only,
+    // overriding any configured vault for the demo).
+    #[cfg(debug_assertions)]
+    if std::env::var_os("BROWSER_VAULT_DEMO").is_some() {
+        crate::vault::service::seed_demo_vault();
+    }
+
+    // Injection-substrate end-to-end harness: register a demo consumer that
+    // exercises the isolated-world round-trip (debug only, P2-14/ADR-0017).
+    #[cfg(debug_assertions)]
+    if std::env::var_os("BROWSER_INJECT_DEMO").is_some() {
+        crate::inject::register_demo_consumer();
+    }
 
     // Create the tab/space model, restoring the persisted session (ADR-0013).
     // Restored tabs are suspended — the host hydrates each one (creating its
@@ -330,6 +403,29 @@ pub fn focus_active_tab() {
     host.set_focus(1);
 }
 
+/// Fill the active tab's login form from vault login `id` — the button-driven
+/// autofill path (P2-34, ADR-0029). The credential crosses into the page on this
+/// **explicit gesture** (the user picked the entry in the URL-bar popover), so we
+/// fetch it here and evaluate a self-contained, lenient fill into the main frame's
+/// main world. No-op when the vault is locked / `id` is unknown, or there is no
+/// active tab. Main thread only.
+pub fn vault_fill_active_tab(id: &str) {
+    let Some(detail) = crate::vault::service::login_detail(id) else {
+        return;
+    };
+    let Some(password) = detail.password else {
+        return;
+    };
+    let Some(browser) = main_browser() else {
+        return;
+    };
+    let Some(host) = browser.host() else {
+        return;
+    };
+    let expr = crate::vault::autofill::fill_expression(detail.username.as_deref(), &password);
+    crate::inject::evaluate_main_world(&host, &expr);
+}
+
 /// Close tab `id`: the tab model records it for reopen, removes it (repairing
 /// active), and routes its browser through CEF's close flow. Main thread only.
 pub fn close_tab(id: TabId) {
@@ -510,6 +606,52 @@ pub fn current_url() -> Option<String> {
     Some(CefString::from(&frame.url()).to_string())
 }
 
+// ─── Adblock, targeting the active tab (ADR-0020) ────────────────────────────
+//
+// The sidebar shield and the "this site" toggle act on the active tab — the one
+// whose URL the sidebar chip already shows — so these resolve the tab here
+// rather than translating core tab ids to CEF ids across the FFI. Main thread.
+
+/// The active tab's host, for per-site allowlist matching (registrable-domain
+/// resolution happens in [`crate::adblock`]).
+fn active_host() -> Option<String> {
+    crate::vault::lookup::host_from_uri(&current_url()?)
+}
+
+/// Requests blocked on the active tab since its last navigation — the shield count.
+pub fn adblock_active_blocked_count() -> u64 {
+    main_browser().map_or(0, |browser| {
+        crate::adblock::blocked_count(browser.identifier())
+    })
+}
+
+/// Is ad-blocking turned **off** for the active tab's site?
+pub fn adblock_active_site_allowlisted() -> bool {
+    active_host().is_some_and(|host| crate::adblock::is_site_allowlisted(&host))
+}
+
+/// Turn ad-blocking off/on for the active tab's site, then reload so the change
+/// applies to the page already on screen (matching Brave/Arc).
+pub fn adblock_set_active_site_allowlisted(allowlisted: bool) {
+    if let Some(host) = active_host() {
+        crate::adblock::set_site_allowlisted(&host, allowlisted);
+        reload();
+    }
+}
+
+/// Toggle blocking globally, then reload the active tab so it applies on screen.
+pub fn adblock_set_enabled(enabled: bool) {
+    crate::adblock::set_enabled(enabled);
+    reload();
+}
+
+/// Toggle cookie-consent handling (reject + hide), then reload the active tab so
+/// the change applies on screen (ADR-0026, P2-25).
+pub fn consent_set_enabled(enabled: bool) {
+    crate::consent::set_enabled(enabled);
+    reload();
+}
+
 /// Step the primary browser's zoom in / out / back to default. CEF owns the zoom
 /// stepping (matching Chromium), so the host just names the command. Main thread.
 pub fn zoom_in() {
@@ -533,7 +675,8 @@ fn zoom(command: ZoomCommand) {
 /// Toggle DevTools for the active tab: open it in its own window, or close it if
 /// already open. Backs the ⌘⌥I menu item; F12 is handled engine-side in the
 /// keyboard handler. Both funnel through [`crate::client::toggle_dev_tools`] so
-/// the shortcuts behave identically. Main thread only.
+/// the shortcuts behave identically. DevTools opens as a separate window — inline
+/// docking isn't feasible under CEF 149's Chrome bootstrap (ADR-0021). Main thread only.
 pub fn toggle_dev_tools() {
     if let Some(browser) = main_browser() {
         crate::client::toggle_dev_tools(&browser);
