@@ -106,12 +106,75 @@ wrap_display_handler! {
     }
 }
 
+/// Whether a window-open request should become an app tab instead of a bare CEF
+/// popup. `target="_blank"` and ordinary new-tab dispositions route here; sized
+/// `window.open` popups and same-tab navigations are left to CEF.
+fn should_open_as_tab(
+    disposition: WindowOpenDisposition,
+    features: Option<&PopupFeatures>,
+) -> bool {
+    if disposition == WindowOpenDisposition::CURRENT_TAB
+        || disposition == WindowOpenDisposition::SINGLETON_TAB
+        || disposition == WindowOpenDisposition::SWITCH_TO_TAB
+        || disposition == WindowOpenDisposition::SAVE_TO_DISK
+        || disposition == WindowOpenDisposition::OFF_THE_RECORD
+        || disposition == WindowOpenDisposition::IGNORE_ACTION
+        || disposition == WindowOpenDisposition::NEW_PICTURE_IN_PICTURE
+        || disposition == WindowOpenDisposition::NEW_SPLIT_VIEW
+    {
+        return false;
+    }
+    if disposition == WindowOpenDisposition::NEW_POPUP {
+        return features.is_none_or(|f| f.width_set == 0 && f.height_set == 0);
+    }
+    true
+}
+
+wrap_task! {
+    struct OpenTabTask {
+        url: String,
+        foreground: bool,
+    }
+
+    impl Task {
+        fn execute(&self) {
+            tabs::request_open_tab(&self.url, self.foreground);
+        }
+    }
+}
+
 wrap_life_span_handler! {
     pub struct BrowserLifeSpanHandler {
         inner: Arc<Mutex<BrowserHandler>>,
     }
 
     impl LifeSpanHandler {
+        fn on_before_popup(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            _popup_id: i32,
+            target_url: Option<&CefString>,
+            _target_frame_name: Option<&CefString>,
+            target_disposition: WindowOpenDisposition,
+            _user_gesture: i32,
+            popup_features: Option<&PopupFeatures>,
+            _window_info: Option<&mut WindowInfo>,
+            _client: Option<&mut Option<Client>>,
+            _settings: Option<&mut BrowserSettings>,
+            _extra_info: Option<&mut Option<DictionaryValue>>,
+            _no_javascript_access: Option<&mut i32>,
+        ) -> i32 {
+            if !should_open_as_tab(target_disposition, popup_features) {
+                return 0;
+            }
+            let url = target_url.map(CefString::to_string).unwrap_or_default();
+            let foreground = target_disposition != WindowOpenDisposition::NEW_BACKGROUND_TAB;
+            let mut task = OpenTabTask::new(url, foreground);
+            post_task(ThreadId::UI, Some(&mut task));
+            1
+        }
+
         fn on_after_created(&self, browser: Option<&mut Browser>) {
             // Attach the content-script injection substrate (a no-op unless a
             // consumer is registered) before the browser loads its first document
@@ -415,5 +478,54 @@ wrap_browser_view_delegate! {
         fn browser_runtime_style(&self) -> RuntimeStyle {
             self.runtime_style
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cef::*;
+
+    use super::should_open_as_tab;
+
+    #[test]
+    fn target_blank_dispositions_open_as_tab() {
+        assert!(should_open_as_tab(
+            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            None
+        ));
+        assert!(should_open_as_tab(
+            WindowOpenDisposition::NEW_BACKGROUND_TAB,
+            None
+        ));
+        assert!(should_open_as_tab(WindowOpenDisposition::NEW_WINDOW, None));
+    }
+
+    #[test]
+    fn unsized_popup_opens_as_tab_sized_popup_does_not() {
+        assert!(should_open_as_tab(
+            WindowOpenDisposition::NEW_POPUP,
+            Some(&PopupFeatures::default())
+        ));
+        let sized = PopupFeatures {
+            width_set: 1,
+            width: 640,
+            ..PopupFeatures::default()
+        };
+        assert!(!should_open_as_tab(
+            WindowOpenDisposition::NEW_POPUP,
+            Some(&sized)
+        ));
+    }
+
+    #[test]
+    fn same_tab_dispositions_stay_with_cef() {
+        assert!(!should_open_as_tab(
+            WindowOpenDisposition::CURRENT_TAB,
+            None
+        ));
+        assert!(!should_open_as_tab(
+            WindowOpenDisposition::SWITCH_TO_TAB,
+            None
+        ));
     }
 }

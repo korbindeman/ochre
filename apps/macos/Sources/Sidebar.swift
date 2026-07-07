@@ -56,16 +56,31 @@ struct Sidebar: View {
 
             // The active space's tree: pinned section (folders + loose pinned)
             // above New Tab + the today (ephemeral) tabs. Scrolls independently.
-            ScrollView {
-                SpaceContents()
+            // Fill the scroll viewport so empty list space is tappable — clicking
+            // it dismisses the inline URL editor (the field only resigns on its
+            // own when focus moves elsewhere, which bare sidebar chrome doesn't).
+            GeometryReader { proxy in
+                ScrollView {
+                    SpaceContents()
+                        .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .topLeading)
+                        .contentShape(.rect)
+                        .onTapGesture { URLBarModel.shared.endEditing() }
+                }
+                .scrollIndicators(.never)
             }
-            .scrollIndicators(.never)
+            .frame(maxHeight: .infinity)
 
             // Space switcher lives at the bottom, Arc-style.
             SpaceSwitcher()
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background {
+            Color.clear
+                .contentShape(.rect)
+                .onTapGesture { URLBarModel.shared.endEditing() }
+        }
     }
 }
 

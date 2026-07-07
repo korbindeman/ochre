@@ -63,6 +63,10 @@ enum Event {
     TabFaviconChanged = 4,  // payload = host
     StructureChanged = 5,   // no id / payload — host re-pulls snapshot
     TabNavStateChanged = 6, // payload = "bf": back/forward enablement as '0'/'1'
+    /// Host opens a tab loading `payload`. `id` is 1 for foreground (activate),
+    /// 0 for background — emitted when a link/window.open would otherwise spawn
+    /// a bare CEF popup (target="_blank" and friends).
+    OpenTabRequested = 7,
 }
 
 /// Host callback, invoked on the main (UI) thread. `payload` is owned by the
@@ -608,6 +612,13 @@ fn emit(event: Event, id: i32, payload: Option<&str>) {
 }
 
 // ─── Tab lifecycle ─────────────────────────────────────────────────────────
+
+/// Ask the host to open a tab loading `url` instead of a CEF popup window.
+/// `foreground` selects whether the new tab becomes active. Posted from
+/// `LifeSpanHandler::on_before_popup` after the popup is cancelled.
+pub fn request_open_tab(url: &str, foreground: bool) {
+    emit(Event::OpenTabRequested, i32::from(foreground), Some(url));
+}
 
 /// Add a freshly-created browser to the store as an **ephemeral** ("today") tab
 /// in the active space, and make it that space's active tab. Returns the new

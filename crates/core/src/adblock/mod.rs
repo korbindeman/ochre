@@ -91,6 +91,12 @@ fn counts() -> &'static Mutex<HashMap<i32, u64>> {
 
 // ─── Lifecycle ───────────────────────────────────────────────────────────────
 
+/// Build an adblock engine from filter-list text. Shared by adblock and the
+/// cookie-consent cosmetic list (P2-26).
+pub fn build_engine(rules: &str) -> Engine {
+    engine::build(rules)
+}
+
 /// Initialize the blocker. Call once at startup, before CEF creates browsers
 /// (from [`crate::embed::initialize`]). Loads persisted state, installs the
 /// synchronous seed engine (instant, offline), then kicks off the background

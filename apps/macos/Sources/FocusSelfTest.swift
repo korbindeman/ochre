@@ -189,6 +189,30 @@ final class FocusSelfTest {
             self.check("urlbar-dismiss-refocuses-page", self.pageHasFocus(),
                        "fr=\(self.firstResponderName())")
         }))
+
+        // ── Case F: empty sidebar click dismisses inline URL edit ──
+        steps.append(("urlbar-edit-open-for-sidebar-click", {
+            let routed = self.performShortcut("l", [.command])
+            self.check("cmd-l-opens-urlbar-for-sidebar-click",
+                       routed && URLBarModel.shared.isEditing,
+                       "routed=\(routed) editing=\(URLBarModel.shared.isEditing)")
+        }))
+        steps.append(("urlbar-sidebar-empty-click", {
+            if let window = self.app.focusTestWindow,
+               let sidebar = self.app.focusTestRootView?.focusTestSidebarHost {
+                // Lower tab-list chrome — below the URL field, clear of tab rows.
+                let point = NSPoint(x: sidebar.bounds.midX, y: sidebar.bounds.height * 0.35)
+                self.click(at: point, in: sidebar, window: window)
+            }
+        }))
+        steps.append(("assert-F-sidebar-click-dismisses-urlbar", {
+            self.check("sidebar-empty-click-dismisses-urlbar", !URLBarModel.shared.isEditing,
+                       "editing=\(URLBarModel.shared.isEditing)")
+        }))
+        steps.append(("assert-F-sidebar-click-refocuses-page", {
+            self.check("sidebar-empty-click-refocuses-page", self.pageHasFocus(),
+                       "fr=\(self.firstResponderName())")
+        }))
     }
 
     // ─── Synthesized input ───────────────────────────────────────────────────
@@ -217,8 +241,11 @@ final class FocusSelfTest {
     /// `NSApp.sendEvent` so it runs real hit-testing and first-responder handling
     /// — into CEF's view for the click-to-focus case.
     private func click(in view: NSView, window: NSWindow) {
-        let center = NSPoint(x: view.bounds.midX, y: view.bounds.midY)
-        let inWindow = view.convert(center, to: nil)
+        click(at: NSPoint(x: view.bounds.midX, y: view.bounds.midY), in: view, window: window)
+    }
+
+    private func click(at point: NSPoint, in view: NSView, window: NSWindow) {
+        let inWindow = view.convert(point, to: nil)
         for (type, pressure): (NSEvent.EventType, Float) in [(.leftMouseDown, 1), (.leftMouseUp, 0)] {
             if let event = NSEvent.mouseEvent(
                 with: type,

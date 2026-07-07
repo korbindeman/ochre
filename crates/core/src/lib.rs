@@ -27,6 +27,7 @@ pub mod native_shell;
 pub mod redirect_selftest;
 pub mod resources;
 pub mod session;
+pub mod settings;
 pub mod tabs;
 pub mod theme;
 pub mod vault;
@@ -107,6 +108,20 @@ fn run_browser_process(main_args: &MainArgs, cmd_line: &cef::CommandLine) {
     shutdown();
 }
 
+/// Application Support folder name for this build profile.
+///
+/// Debug (`just run`) and release (`just dogfood`) must not share CEF cache,
+/// session, history, vault, or any other persisted state — and separate
+/// directories also let both run at once without Chromium's process singleton
+/// colliding.
+pub(crate) fn profile_data_dir_name() -> &'static str {
+    if cfg!(debug_assertions) {
+        "Browser Dev"
+    } else {
+        "Browser"
+    }
+}
+
 /// Absolute directory CEF uses for its cache and the single-instance lock.
 ///
 /// CEF requires an absolute `root_cache_path`. Without one it falls back to a
@@ -116,7 +131,24 @@ fn run_browser_process(main_args: &MainArgs, cmd_line: &cef::CommandLine) {
 /// the same profile instead of racing the singleton.
 pub(crate) fn root_cache_dir() -> String {
     let home = std::env::var("HOME").expect("HOME environment variable is not set");
-    let dir = format!("{home}/Library/Application Support/Browser");
+    let dir = format!(
+        "{home}/Library/Application Support/{}",
+        profile_data_dir_name()
+    );
     std::fs::create_dir_all(&dir).expect("failed to create the CEF root cache directory");
     dir
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::profile_data_dir_name;
+
+    #[test]
+    fn profile_data_dir_matches_build_profile() {
+        if cfg!(debug_assertions) {
+            assert_eq!(profile_data_dir_name(), "Browser Dev");
+        } else {
+            assert_eq!(profile_data_dir_name(), "Browser");
+        }
+    }
 }

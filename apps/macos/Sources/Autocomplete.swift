@@ -24,6 +24,8 @@ struct Suggestion: Identifiable, Sendable {
     let title: String
     let subtitle: String?
     let run: @MainActor @Sendable () -> Void
+    /// Unified ranking score — higher rows float up after providers merge.
+    var score: Int = 0
     /// Character offsets in `title` / `subtitle` the query matched, for
     /// highlighting. Empty when the source has nothing to emphasise (a live
     /// search completion, say).
@@ -33,11 +35,13 @@ struct Suggestion: Identifiable, Sendable {
     /// is a page — the basis for inline autocomplete. `nil` for non-page rows
     /// (a web search).
     var displayURL: String? = nil
+    /// Key for cross-source deduplication (usually a normalized page URL).
+    var dedupeKey: String? = nil
 }
 
 /// How to draw a suggestion's leading icon.
 enum SuggestionIcon: Sendable {
-    /// A site favicon, resolved by `FaviconLoader` (captured → web service → globe).
+    /// A site favicon, resolved by `FaviconLoader` (captured → web fallback → globe).
     case favicon(host: String)
     /// An SF Symbol (e.g. "magnifyingglass" for a search row).
     case system(String)
@@ -98,20 +102,14 @@ final class SuggestionController: ObservableObject {
 
     /// Feed the latest query. `allowInline` is true only for forward typing, so
     /// the inline completion never re-appears while the user is deleting.
-    /// Cancels any in-flight lookups; an empty query clears everything.
+    /// Cancels any in-flight lookups. An empty query still fetches the zero-state
+    /// set (top sites, frecency history, open tabs).
     func update(query rawQuery: String, allowInline: Bool) {
         localTask?.cancel()
         remoteTask?.cancel()
         currentQuery = rawQuery
         self.allowInline = allowInline
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else {
-            localResults = []
-            suggestions = []
-            selection = nil
-            inline = nil
-            return
-        }
 
         // Local tier: instant. Publishes results + the inline completion.
         localTask = Task { [weak self] in
@@ -121,8 +119,9 @@ final class SuggestionController: ObservableObject {
             self.publishLocal(locals)
         }
 
-        // Remote tier: debounced, merged below the local rows.
-        guard !remoteProviders.isEmpty else { return }
+        // Remote tier: debounced. Skipped for an empty query — there is nothing
+        // to complete and the zero-state is entirely local.
+        guard !remoteProviders.isEmpty, !query.isEmpty else { return }
         remoteTask = Task { [weak self, debounce] in
             try? await Task.sleep(for: debounce)
             guard let self, !Task.isCancelled else { return }
@@ -130,6 +129,11 @@ final class SuggestionController: ObservableObject {
             guard !Task.isCancelled else { return }
             self.publishRemote(remotes)
         }
+    }
+
+    /// Populate the zero-state dropdown (⌘T with an empty field).
+    func showZeroState() {
+        update(query: "", allowInline: false)
     }
 
     /// Clear everything (e.g. when the host closes).
@@ -166,9 +170,9 @@ final class SuggestionController: ObservableObject {
     // ─── Publishing ────────────────────────────────────────────────────────
 
     private func publishLocal(_ locals: [Suggestion]) {
-        // Float the best host-prefix match to the top: it is the default match,
-        // the one the inline completion (and Return) target.
-        var ordered = locals
+        // Score-first merge across providers, then float the best URL-prefix
+        // match for inline autocomplete (and Return-without-selection).
+        var ordered = locals.sorted { $0.score > $1.score }
         if let idx = ordered.firstIndex(where: { prefixFill($0, currentQuery) != nil }), idx != 0 {
             ordered.insert(ordered.remove(at: idx), at: 0)
         }
@@ -179,7 +183,13 @@ final class SuggestionController: ObservableObject {
     }
 
     private func publishRemote(_ remotes: [Suggestion]) {
-        suggestions = dedupe(localResults + remotes)
+        // Live search suggestions sit above the fallback "Search for …" row but
+        // below page/tab/history matches.
+        let (tail, head) = localResults.reduce(into: ([Suggestion](), [Suggestion]())) { acc, row in
+            if row.score <= SuggestionScore.searchQuery { acc.0.append(row) } else { acc.1.append(row) }
+        }
+        let merged = head + remotes.sorted { $0.score > $1.score } + tail
+        suggestions = dedupe(merged)
         // Keep the current highlight if still valid; otherwise re-anchor to the
         // top. Never disturb the inline completion — remote rows never drive it.
         if let s = selection, !suggestions.indices.contains(s) {
@@ -204,7 +214,10 @@ final class SuggestionController: ObservableObject {
 
     private func dedupe(_ list: [Suggestion]) -> [Suggestion] {
         var seen = Set<String>()
-        return Array(list.filter { seen.insert($0.id).inserted }.prefix(maxResults))
+        return Array(list.filter { row in
+            let key = row.dedupeKey ?? row.id
+            return seen.insert(key).inserted
+        }.prefix(maxResults))
     }
 
     private func gather(_ providers: [any SuggestionProvider], _ query: String) async -> [Suggestion] {

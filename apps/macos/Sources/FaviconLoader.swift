@@ -1,50 +1,48 @@
 import AppKit
 
-/// Resolves a host's favicon, trying sources in order and caching the result:
+/// Resolves a host's favicon, trying sources in order:
 ///   1. **Captured** — the favicon the engine saved while browsing, via the
 ///      Rust store (`browser_favicon_png`). Instant, offline, exact.
-///   2. **Web service** — a favicon service keyed by host. Default is Google's
-///      (`s2/favicons`); swap `serviceURL` to use another (e.g. DuckDuckGo:
-///      `https://icons.duckduckgo.com/ip3/<host>.ico`).
+///   2. **Web fallback** (optional) — `https://<host>/favicon.ico`, then
+///      DuckDuckGo's icon proxy. Used only for offline surfaces (history, vault,
+///      autocomplete) where the host may never have been visited.
 ///   3. **None** — the caller falls back to a globe glyph.
 ///
-/// The pluggable `serviceURL` is what keeps the web fallback engine-agnostic
-/// while defaulting to Google, matching the search default.
+/// Tab rows pass `allowWebFallback: false` and show the globe until capture
+/// lands, so third-party compositors never paint a white plate behind icons.
 @MainActor
 final class FaviconLoader: ObservableObject {
     static let shared = FaviconLoader()
 
-    /// Maps a host to the favicon-service URL for the web fallback. Replace to
-    /// change providers globally.
-    var serviceURL: (String) -> URL? = { host in
-        URL(string: "https://www.google.com/s2/favicons?domain=\(host)&sz=32")
-    }
-
     private let cache = NSCache<NSString, NSImage>()
 
-    /// Drop any cached icon for `host` so the next `icon(for:)` re-resolves it.
-    /// Called when the engine captures a favicon (`TabFaviconChanged`), so the
-    /// exact captured PNG replaces any web-service fallback already cached.
+    /// Drop any cached icon for `host` so the next resolve re-reads the store.
+    /// Called when the engine captures a favicon (`TabFaviconChanged`).
     func invalidate(host: String) {
         guard !host.isEmpty else { return }
-        cache.removeObject(forKey: host as NSString)
+        cache.removeObject(forKey: cacheKey(host: host, allowWebFallback: false) as NSString)
+        cache.removeObject(forKey: cacheKey(host: host, allowWebFallback: true) as NSString)
     }
 
     /// The favicon for `host`, or nil if no source yields one.
-    func icon(for host: String) async -> NSImage? {
+    func icon(for host: String, allowWebFallback: Bool = true) async -> NSImage? {
         guard !host.isEmpty else { return nil }
-        if let cached = cache.object(forKey: host as NSString) {
+        let key = cacheKey(host: host, allowWebFallback: allowWebFallback) as NSString
+        if let cached = cache.object(forKey: key) {
             return cached
         }
-        // Captured favicon first (instant), then the web service.
         var image = capturedFavicon(host)
-        if image == nil {
-            image = await fetchFavicon(host)
+        if image == nil, allowWebFallback {
+            image = await fetchWebFallback(host)
         }
         if let image {
-            cache.setObject(image, forKey: host as NSString)
+            cache.setObject(image, forKey: key)
         }
         return image
+    }
+
+    private func cacheKey(host: String, allowWebFallback: Bool) -> String {
+        "\(host)#\(allowWebFallback ? "web" : "tab")"
     }
 
     /// Favicon PNG the engine captured for this host while browsing.
@@ -57,13 +55,24 @@ final class FaviconLoader: ObservableObject {
         return NSImage(data: Data(bytes: raw, count: length))
     }
 
-    /// Favicon fetched from the configured web service.
-    private func fetchFavicon(_ host: String) async -> NSImage? {
-        guard let url = serviceURL(host),
-              let (data, _) = try? await URLSession.shared.data(from: url)
+    /// Direct site ICO, then DuckDuckGo's transparent proxy.
+    private func fetchWebFallback(_ host: String) async -> NSImage? {
+        if let image = await fetchImage(from: URL(string: "https://\(host)/favicon.ico")) {
+            return image
+        }
+        return await fetchImage(from: URL(string: "https://icons.duckduckgo.com/ip3/\(host).ico"))
+    }
+
+    private func fetchImage(from url: URL?) async -> NSImage? {
+        guard let url,
+              let (data, response) = try? await URLSession.shared.data(from: url),
+              let http = response as? HTTPURLResponse,
+              (200 ..< 300).contains(http.statusCode),
+              let image = NSImage(data: data),
+              image.isValid
         else {
             return nil
         }
-        return NSImage(data: data)
+        return image
     }
 }

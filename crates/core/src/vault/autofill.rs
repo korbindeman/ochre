@@ -23,9 +23,10 @@
 //! the password now crosses on the *selection* gesture, not on focus.
 //!
 //! The **save-password banner** is native (Safari-style) and split to P2-23 — it
-//! needs the M2 chrome. Dynamically-injected (SPA) login forms appearing after
-//! `DOMContentLoaded` aren't detected yet (a `MutationObserver` refinement) —
-//! filed, not silent.
+//! needs the M2 chrome. Detection is continuous (P2-28/29): a debounced
+//! `MutationObserver` + SPA-navigation hooks re-scan for fields injected after
+//! load, pierce open shadow roots, and offer on username-only steps (Google's
+//! email screen) as well as full login forms.
 
 use crate::inject::{register as register_consumer, Consumer, Message};
 use crate::vault::service::{self, LoginView};
@@ -78,42 +79,118 @@ fn password_reply(password: Option<String>) -> serde_json::Value {
     serde_json::json!({ "password": password })
 }
 
-/// The content script (isolated world, document-start). Defers detection to
-/// `DOMContentLoaded`, asks the core for matches, and on gesture-focus of a login
-/// field opens an inline picker (shadow DOM). Selecting an entry requests that
-/// login's password and fills the form via the native value setter + `input`/
-/// `change` events (so framework-managed inputs register the change).
+/// The content script (isolated world, document-start). Continuously scans for
+/// login fields (debounced `MutationObserver` + SPA-navigation hooks, shadow-DOM
+/// piercing), asks the core for matches, and on gesture-focus opens an inline
+/// picker (shadow DOM). Selecting an entry requests that login's password and
+/// fills via the native value setter + a framework-compatible event sequence.
 const DETECT_SCRIPT: &str = r##"(function () {
   if (!window.__browserCore || window.__vaultAutofill) return;
   window.__vaultAutofill = true;
 
   var HOST_ID = '__vault_autofill_picker';
+  var SCAN_MS = 200;
+  var activePicker = null;
+  var scanTimer = null;
+  var lastUrl = location.href;
+  var wired = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
 
   function visible(el) {
     return el.offsetParent !== null || el.getClientRects().length > 0;
   }
-  function findFields() {
-    var pw = Array.prototype.slice
-      .call(document.querySelectorAll('input[type=password]'))
-      .filter(visible)[0];
-    if (!pw) return null;
-    var users = Array.prototype.slice
-      .call(document.querySelectorAll('input[type=text],input[type=email],input[type=tel],input:not([type])'))
-      .filter(visible)
-      .filter(function (i) {
-        return pw.compareDocumentPosition(i) & Node.DOCUMENT_POSITION_PRECEDING;
-      });
-    return { user: users[users.length - 1] || null, pw: pw };
+  function loginCandidate(el) {
+    if (!el || el.disabled || el.readOnly || el.type === 'hidden') return false;
+    if (el.type === 'search') return false;
+    var ac = (el.getAttribute('autocomplete') || '').toLowerCase();
+    if (ac === 'off' || ac.indexOf('search') >= 0) return false;
+    if (el.getAttribute('role') === 'searchbox') return false;
+    return true;
   }
+  // Pierce open shadow roots when scanning (P2-28).
+  function allInputs(root) {
+    root = root || document;
+    var out = [];
+    try {
+      var nodes = root.querySelectorAll('input');
+      for (var i = 0; i < nodes.length; i++) out.push(nodes[i]);
+    } catch (e) {}
+    var els = root.querySelectorAll ? root.querySelectorAll('*') : [];
+    for (var j = 0; j < els.length; j++) {
+      if (els[j].shadowRoot) out = out.concat(allInputs(els[j].shadowRoot));
+    }
+    return out;
+  }
+  function fieldHint(el) {
+    return ((el.getAttribute('autocomplete') || '') + ' ' + (el.name || '') + ' ' +
+      (el.id || '') + ' ' + (el.getAttribute('aria-label') || '')).toLowerCase();
+  }
+  function userScore(el) {
+    var ac = (el.getAttribute('autocomplete') || '').toLowerCase();
+    if (ac.indexOf('username') >= 0) return 100;
+    if (ac === 'email') return 90;
+    if (el.type === 'email') return 80;
+    var h = fieldHint(el);
+    if (/email|user|login|identifier|account/.test(h)) return 70;
+    if (el.type === 'tel') return 50;
+    if (el.type === 'text' || !el.type) return 30;
+    return 0;
+  }
+  function pwScore(el) {
+    var ac = (el.getAttribute('autocomplete') || '').toLowerCase();
+    if (ac.indexOf('current-password') >= 0) return 100;
+    if (ac.indexOf('new-password') >= 0) return 90;
+    if (el.type === 'password') return 80;
+    var h = fieldHint(el);
+    if (/pass|pwd|password/.test(h)) return 70;
+    return 0;
+  }
+  function bestOf(list, score) {
+    var best = null, bestS = 0;
+    for (var i = 0; i < list.length; i++) {
+      var s = score(list[i]);
+      if (s > bestS) { bestS = s; best = list[i]; }
+    }
+    return best;
+  }
+  // Classify login fields — username-only, password-only, or both (P2-29).
+  function findFields() {
+    var inputs = allInputs().filter(visible).filter(loginCandidate);
+    var users = [], pws = [];
+    for (var i = 0; i < inputs.length; i++) {
+      var el = inputs[i];
+      if (el.type === 'password' || pwScore(el) >= 70) pws.push(el);
+      else if (userScore(el) > 0) users.push(el);
+    }
+    var pw = bestOf(pws, pwScore);
+    var user = null;
+    if (pw) {
+      var before = users.filter(function (u) {
+        return pw.compareDocumentPosition(u) & Node.DOCUMENT_POSITION_PRECEDING;
+      });
+      user = bestOf(before, userScore) || before[before.length - 1] || null;
+    } else if (users.length) {
+      user = bestOf(users, userScore);
+    }
+    if (!user && !pw) return null;
+    return { user: user, pw: pw };
+  }
+  // Framework-compatible fill sequence (P2-30).
   function setValue(el, v) {
     if (!el) return;
+    try { el.focus(); } catch (e) {}
+    el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true }));
     var d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
     if (d && d.set) { d.set.call(el, v); } else { el.value = v; }
+    try {
+      el.dispatchEvent(new InputEvent('beforeinput', {
+        bubbles: true, cancelable: true, inputType: 'insertText', data: v
+      }));
+    } catch (e) {}
     el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
+    try { el.blur(); } catch (e) {}
   }
-  // Only surface the picker / release a password on a genuine user gesture —
-  // never on the page's own autofocus. userActivation is sticky once interacted.
   function userActivated() {
     return !navigator.userActivation || navigator.userActivation.hasBeenActive;
   }
@@ -143,15 +220,11 @@ const DETECT_SCRIPT: &str = r##"(function () {
     var self = this;
     this.onScroll = function () { if (self.host) self.position(); };
     this.onDown = function (e) {
-      // A pointer press anywhere outside our menu dismisses it.
       if (self.host && e.composedPath && e.composedPath().indexOf(self.menu) === -1) {
         self.dismiss();
       }
     };
     this.onKey = function (e) { self.key(e); };
-    [fields.user, fields.pw].forEach(function (el) {
-      if (el) el.addEventListener('focusin', function () { self.open(el); });
-    });
   }
   Picker.prototype.open = function (anchor) {
     if (!userActivated()) return;
@@ -188,14 +261,14 @@ const DETECT_SCRIPT: &str = r##"(function () {
     if (m.username) row.setAttribute('data-user', m.username);
     var u = document.createElement('div');
     u.className = 'u';
-    u.textContent = m.username || '(no username)'; // textContent: never inject vault data as HTML
+    u.textContent = m.username || '(no username)';
     var n = document.createElement('div');
     n.className = 'n';
     n.textContent = m.name || '';
     row.appendChild(u);
     if (m.name) row.appendChild(n);
     row.addEventListener('mousemove', function () { self.select(i); });
-    row.addEventListener('mousedown', function (e) { e.preventDefault(); }); // keep field focus
+    row.addEventListener('mousedown', function (e) { e.preventDefault(); });
     row.addEventListener('click', function () { self.choose(i); });
     return row;
   };
@@ -216,13 +289,11 @@ const DETECT_SCRIPT: &str = r##"(function () {
   Picker.prototype.choose = function (i) {
     var self = this;
     var m = this.matches[i];
-    // The explicit selection gesture — request the secret now, then fill.
     window.__browserCore.send('autofill', { type: 'password', id: m.id }).then(function (r) {
       self.dismiss();
       var pw = r && r.password;
-      if (!pw) return;
-      if (m.username) setValue(self.fields.user, m.username);
-      setValue(self.fields.pw, pw);
+      if (m.username && self.fields.user) setValue(self.fields.user, m.username);
+      if (pw && self.fields.pw) setValue(self.fields.pw, pw);
     });
   };
   Picker.prototype.position = function () {
@@ -248,20 +319,64 @@ const DETECT_SCRIPT: &str = r##"(function () {
     this.host = this.root = this.menu = null;
   };
 
-  function start() {
+  function wireField(el) {
+    if (!el) return;
+    if (wired && wired.has(el)) return;
+    if (wired) wired.add(el);
+    el.addEventListener('focusin', function () {
+      if (activePicker) activePicker.open(el);
+    });
+  }
+  function teardownPicker() {
+    if (activePicker) { activePicker.dismiss(); activePicker = null; }
+  }
+  function setupPicker(fields, matches) {
+    teardownPicker();
+    activePicker = new Picker(fields, matches);
+    wireField(fields.user);
+    wireField(fields.pw);
+  }
+  function scan() {
+    if (location.href !== lastUrl) lastUrl = location.href;
     var fields = findFields();
-    if (!fields) return;
+    if (!fields) { teardownPicker(); return; }
     window.__browserCore.send('autofill', { type: 'lookup', host: location.hostname })
       .then(function (res) {
         var matches = (res && res.matches) || [];
-        if (matches.length) new Picker(fields, matches);
+        if (!matches.length) { teardownPicker(); return; }
+        setupPicker(fields, matches);
       });
   }
+  function scheduleScan() {
+    if (scanTimer) clearTimeout(scanTimer);
+    scanTimer = setTimeout(scan, SCAN_MS);
+  }
+  function onNav() {
+    if (location.href === lastUrl) return;
+    lastUrl = location.href;
+    teardownPicker();
+    scheduleScan();
+  }
 
+  // SPA same-document navigations (P2-28).
+  var _push = history.pushState;
+  var _replace = history.replaceState;
+  history.pushState = function () { _push.apply(this, arguments); onNav(); };
+  history.replaceState = function () { _replace.apply(this, arguments); onNav(); };
+  window.addEventListener('popstate', onNav);
+
+  // Continuous re-detection for late-injected forms (P2-28).
+  try {
+    new MutationObserver(scheduleScan).observe(document.documentElement, {
+      childList: true, subtree: true, attributes: true, attributeFilter: ['type', 'autocomplete']
+    });
+  } catch (e) {}
+
+  function boot() { scheduleScan(); }
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start);
+    document.addEventListener('DOMContentLoaded', boot);
   } else {
-    start();
+    boot();
   }
 })();"##;
 
@@ -283,10 +398,19 @@ const FILL_FN: &str = r##"(function (u, p) {
   function vis(el) { return el && (el.offsetParent !== null || el.getClientRects().length > 0); }
   function setVal(el, v) {
     if (!el) return;
+    try { el.focus(); } catch (e) {}
+    el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true }));
     var d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
     if (d && d.set) { d.set.call(el, v); } else { el.value = v; }
+    try {
+      el.dispatchEvent(new InputEvent('beforeinput', {
+        bubbles: true, cancelable: true, inputType: 'insertText', data: v
+      }));
+    } catch (e) {}
     el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
+    try { el.blur(); } catch (e) {}
   }
   var all = function (s) { return Array.prototype.slice.call(document.querySelectorAll(s)); };
   var USER = 'input[autocomplete=username],input[type=email],input[type=text],input[type=tel],input:not([type])';
@@ -431,8 +555,14 @@ mod tests {
         assert!(!DETECT_SCRIPT.contains("password:")); // no baked-in secret
                                                        // Gesture-gated: guarded by user activation.
         assert!(DETECT_SCRIPT.contains("userActivation"));
-        // Detection waits for the DOM (document-start runs before the form exists).
-        assert!(DETECT_SCRIPT.contains("DOMContentLoaded"));
+        // Continuous detection (P2-28/29): SPA hooks + MutationObserver, not one-shot.
+        assert!(DETECT_SCRIPT.contains("MutationObserver"));
+        assert!(DETECT_SCRIPT.contains("pushState"));
+        assert!(DETECT_SCRIPT.contains("shadowRoot"));
+        // Username-only steps (Google email screen) don't require a password field.
+        assert!(DETECT_SCRIPT.contains("users.length"));
+        // Framework-compatible fill (P2-30).
+        assert!(DETECT_SCRIPT.contains("beforeinput"));
         // The picker: a shadow-root inline menu, keyboard-navigable.
         assert!(DETECT_SCRIPT.contains("attachShadow"));
         assert!(DETECT_SCRIPT.contains("ArrowDown"));

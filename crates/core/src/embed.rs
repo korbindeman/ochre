@@ -188,6 +188,7 @@ pub fn initialize() -> bool {
     // "reject all", plus hide the long-tail banners — gated on its own toggle,
     // whose persisted state loads here before the first browser.
     crate::consent::load_persisted();
+    crate::consent::init_lists();
     crate::consent::register();
 
     // Load the appearance preference (Light/Dark/System, ADR-0030) before the
@@ -195,6 +196,7 @@ pub fn initialize() -> bool {
     // (`browser_theme_set_system_dark`) early in window setup, so the global
     // request context is themed before any tab hydrates.
     crate::theme::load_persisted();
+    crate::settings::load_persisted();
 
     // Autofill end-to-end harness: seed an unlocked demo vault (debug only,
     // overriding any configured vault for the demo).

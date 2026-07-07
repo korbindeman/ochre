@@ -25,13 +25,12 @@ final class CommandBarController {
     var keepPresentedForDemo = false
 
     /// The autocomplete engine, shared across presentations so the controller
-    /// can observe it to resize the panel. Local providers (typed-URL row, then
-    /// history) run instantly on every keystroke and drive inline autocomplete;
-    /// live search suggestions (Google default) are the debounced remote tier,
-    /// merged in below.
+    /// can observe it to resize the panel. Local providers (typed URL, open tabs,
+    /// history, top sites, search fallback) run instantly; live search suggestions
+    /// are the debounced remote tier, merged above the fallback row.
     let suggestions = SuggestionController(
-        local: [URLProvider(), HistoryProvider()],
-        remote: [SearchSuggestProvider()]
+        local: OmniboxProviders.local,
+        remote: OmniboxProviders.remote
     )
     /// The SwiftUI hosting view, retained to measure its fitting height.
     var hosting: NSView?
@@ -58,6 +57,7 @@ final class CommandBarController {
         // surface (editing the current tab's URL is inline in the sidebar now —
         // ADR-0014), so commits always open a new tab and the field starts empty.
         suggestions.reset()
+        suggestions.showZeroState()
         Navigation.route = .newTab
 
         // Host the SwiftUI content pinned top/left/right at a fixed width, with

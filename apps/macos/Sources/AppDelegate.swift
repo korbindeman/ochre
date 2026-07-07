@@ -8,12 +8,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
     private var rootView: RootView?
     private let commandBar = CommandBarController()
+
+    private static let windowWidthKey = BrowserProfile.defaultsKey("windowWidth")
+    private static let windowHeightKey = BrowserProfile.defaultsKey("windowHeight")
+    private static let defaultWindowSize = NSSize(width: 1180, height: 760)
+    private static let minWindowSize = NSSize(width: 640, height: 480)
     /// The ⌘F find bar. Non-private so `browserFindResultCallback` can reach it.
     let findBar = FindBarController()
     /// KVO on `NSApp.effectiveAppearance` — forwards OS light/dark changes to the
     /// core so `System` appearance tracks the OS live (ADR-0030). Held for the
     /// app's lifetime.
     private var appearanceObserver: NSKeyValueObservation?
+
+    /// URLs handed to us before `makeWindow` finishes (cold launch from another app).
+    private var pendingExternalURLs: [URL] = []
 
     func makeWindow() {
         // Install the menu bar first: it owns every app-level shortcut (⌘T, ⌘R,
@@ -32,9 +40,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         appearanceObserver = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
             MainActor.assumeIsolated { self?.forwardSystemAppearance() }
         }
-
+        let windowSize = Self.loadWindowSize()
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1180, height: 760),
+            contentRect: NSRect(origin: .zero, size: windowSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -119,6 +127,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.commandBar.show()
             }
         }
+
+        if !pendingExternalURLs.isEmpty {
+            let urls = pendingExternalURLs
+            pendingExternalURLs.removeAll()
+            openExternalURLs(urls)
+        }
+    }
+
+    // MARK: - External URLs
+
+    /// Launch Services hands http/https links here — from Mail, Slack, `open`, etc.
+    func application(_ sender: NSApplication, open urls: [URL]) {
+        guard rootView != nil else {
+            pendingExternalURLs.append(contentsOf: urls)
+            return
+        }
+        openExternalURLs(urls)
+    }
+
+    /// Open each web URL in a new tab and bring the window forward.
+    private func openExternalURLs(_ urls: [URL]) {
+        let webURLs = urls.filter { url in
+            guard let scheme = url.scheme?.lowercased() else { return false }
+            return scheme == "http" || scheme == "https"
+        }
+        guard !webURLs.isEmpty else { return }
+
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+
+        for url in webURLs {
+            openTab(url: url.absoluteString)
+        }
+    }
+
+    private static func loadWindowSize() -> NSSize {
+        let defaults = UserDefaults.standard
+        let width = defaults.double(forKey: windowWidthKey)
+        let height = defaults.double(forKey: windowHeightKey)
+        guard width > 0, height > 0 else { return defaultWindowSize }
+        return NSSize(
+            width: max(minWindowSize.width, width),
+            height: max(minWindowSize.height, height)
+        )
+    }
+
+    /// Persist the windowed content size. Skipped while fullscreen — AppKit owns
+    /// that geometry and restores the pre-fullscreen frame on exit.
+    private func persistWindowSize() {
+        guard let window, !BrowserState.shared.isFullscreen else { return }
+        let size = window.contentRect(forFrameRect: window.frame).size
+        UserDefaults.standard.set(Double(size.width), forKey: Self.windowWidthKey)
+        UserDefaults.standard.set(Double(size.height), forKey: Self.windowHeightKey)
     }
 
     /// Hide (or reveal) the real `NSWindow` traffic-light buttons. Hidden while
@@ -188,6 +249,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// (ADR-0010/0016).
     @objc func showVault() {
         BrowserState.shared.toggleVault()
+    }
+
+    /// Show/hide the Settings page — a native content-area surface (ADR-0010).
+    @objc func showSettings() {
+        BrowserState.shared.toggleSettings()
+    }
+
+    /// Register this app as the system default http/https handler. When the OS
+    /// rejects the programmatic request (unsigned dev builds), fall back to the
+    /// System Settings picker.
+    @objc func setAsDefaultBrowser() {
+        if DefaultBrowser.setAsDefault() {
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Set Default Browser"
+        alert.informativeText = "Choose Browser in System Settings → Desktop & Dock → Default web browser."
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        DefaultBrowser.openSystemSettings()
     }
 
     // Tab lifecycle. `openTab`/`closeTab` are called from the command bar,
@@ -349,8 +431,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc func closeActiveTab(_ sender: Any?) {
-        // An open app-UI surface (History / Passwords) intercepts ⌘W — close the
-        // surface, not the tab or window beneath it.
+        // An open app-UI surface (History / Passwords / Settings) intercepts ⌘W —
+        // close the surface, not the tab or window beneath it.
         if BrowserState.shared.isSurfaceOpen {
             BrowserState.shared.closeSurfaces()
             return
@@ -466,6 +548,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case #selector(setThemeDark):
             menuItem.state = browser_theme_preference() == 2 ? .on : .off
             return true
+        case #selector(setAsDefaultBrowser):
+            menuItem.state = DefaultBrowser.isDefault ? .on : .off
+            return !DefaultBrowser.isDefault
         default: return true
         }
     }
@@ -482,6 +567,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowDidExitFullScreen(_ notification: Notification) {
         BrowserState.shared.isFullscreen = false
         setNativeButtonsHidden(true)
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        persistWindowSize()
     }
 
     // AppKit can restore the standard buttons when the window changes key/main
@@ -504,6 +593,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // (`main.swift` then shuts CEF down and the process exits). The view
     // hierarchy outlives the window, so the detach must be explicit.
     func windowWillClose(_ notification: Notification) {
+        persistWindowSize()
+        browser_settings_lock_vault_on_shutdown()
         rootView?.detachAllCEFViews()
         window = nil
         rootView = nil

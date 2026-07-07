@@ -28,6 +28,7 @@ bool browser_initialize(void);
 //   4  TabFaviconChanged payload = host (fetch the PNG via browser_favicon_png)
 //   5  StructureChanged  no id / payload — re-pull browser_structure_json
 //   6  TabNavStateChanged payload = "bf" — back/forward enablement as '0'/'1'
+//   7  OpenTabRequested   payload = url; id = 1 foreground / 0 background
 
 // Register (or clear, with NULL) the tab/space event callback. Invoked on the
 // main thread. `payload` is owned by the core and valid only during the call.
@@ -172,6 +173,11 @@ bool browser_request_close_all(void);
 // browser_string_free (declared above).
 char *browser_query_suggestions(const char *query);
 
+// Fuzzy-match `query` against `text` using the core omnibox scorer. Returns a
+// JSON object {"score":…,"indices":[…]} on success, or the literal "null" when
+// there is no match. Heap-allocated by Rust — free with browser_string_free.
+char *browser_fuzzy_match(const char *query, const char *text);
+
 // Captured favicon PNG bytes for `host`, or NULL if none is cached. On success
 // *out_len holds the byte length; free the buffer with browser_free_bytes.
 uint8_t *browser_favicon_png(const char *host, size_t *out_len);
@@ -281,6 +287,13 @@ void browser_adblock_set_active_site_allowlisted(bool allowlisted);
 bool browser_consent_is_enabled(void);
 // Toggle cookie-consent handling (persisted); reloads the active tab so it applies.
 void browser_consent_set_enabled(bool enabled);
+
+// Browser settings — vault auto-lock policy (0 Never / 1 OnBrowserClose /
+// 2 OnRestart / 3 OnPasswordUse).
+int32_t browser_settings_vault_auto_lock(void);
+void browser_settings_set_vault_auto_lock(int32_t policy);
+// Lock the vault on graceful shutdown when the policy requires it.
+void browser_settings_lock_vault_on_shutdown(void);
 
 // Appearance / color scheme (ADR-0030). One preference drives web content
 // (prefers-color-scheme) and native chrome: 0 System, 1 Light, 2 Dark.

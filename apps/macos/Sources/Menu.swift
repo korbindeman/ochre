@@ -43,6 +43,10 @@ enum MainMenu {
         // Passwords (the vault surface) — a native app-UI page (ADR-0010/0016).
         target(menu.addItem(withTitle: "Passwords…",
                             action: #selector(AppDelegate.showVault), keyEquivalent: ""), actions)
+        target(menu.addItem(withTitle: "Settings…",
+                            action: #selector(AppDelegate.showSettings), keyEquivalent: ","), actions)
+        target(menu.addItem(withTitle: "Make Default Browser",
+                            action: #selector(AppDelegate.setAsDefaultBrowser), keyEquivalent: ""), actions)
         menu.addItem(.separator())
 
         let services = NSMenu()

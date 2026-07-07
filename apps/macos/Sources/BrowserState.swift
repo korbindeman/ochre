@@ -65,7 +65,7 @@ final class BrowserState: ObservableObject {
     /// auto-float is a separate, derived cause — see `isFloatingSidebarShown`.
     @Published var isSidebarRevealed = false
 
-    private static let sidebarPinnedKey = "sidebarPinned"
+    private static let sidebarPinnedKey = BrowserProfile.defaultsKey("sidebarPinned")
 
     /// Mirrors the window's fullscreen state (set by `AppDelegate`) so the
     /// custom traffic lights step aside — in fullscreen the OS auto-hiding
@@ -82,6 +82,9 @@ final class BrowserState: ObservableObject {
     /// Whether the Passwords (vault) surface is showing (ADR-0010/0016). Same
     /// content-area-surface model as History (and same empty-canvas rule).
     @Published var isVaultOpen = false
+
+    /// Whether the Settings surface is showing (ADR-0010).
+    @Published var isSettingsOpen = false
 
     // ─── Adblock (ADR-0020) ────────────────────────────────────────────────
     // Mirrors the core's adblock state for the sidebar shield + menu items. The
@@ -146,6 +149,10 @@ final class BrowserState: ObservableObject {
                 $0.canGoBack = flags.first == "1"
                 $0.canGoForward = flags.dropFirst().first == "1"
             }
+        case 7: // OpenTabRequested — payload = url; id = 1 foreground / 0 background
+            guard let url = payload else { return }
+            // Background-tab opening isn't wired yet; foreground matches target="_blank".
+            (NSApp.delegate as? AppDelegate)?.openTab(url: url)
         default: break
         }
     }
@@ -197,7 +204,7 @@ final class BrowserState: ObservableObject {
         if spaces.isEmpty || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             apply()
         } else {
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.86), apply)
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.88), apply)
         }
 
         refreshAdblock() // the active tab may have changed → re-read its shield state
@@ -288,10 +295,11 @@ final class BrowserState: ObservableObject {
 
     /// True while any app-UI surface covers the content area. The sidebar hides
     /// its active-tab highlight while this holds, so no tab reads as selected.
-    var isSurfaceOpen: Bool { isHistoryOpen || isVaultOpen }
+    var isSurfaceOpen: Bool { isHistoryOpen || isVaultOpen || isSettingsOpen }
 
     func toggleHistory() { isHistoryOpen ? closeHistory() : openHistory() }
     func toggleVault() { isVaultOpen ? closeVault() : openVault() }
+    func toggleSettings() { isSettingsOpen ? closeSettings() : openSettings() }
 
     /// Show a surface, closing the other one first — only one covers the canvas.
     /// Goes straight to the booleans (not through `close*`) so switching between
@@ -299,13 +307,22 @@ final class BrowserState: ObservableObject {
     func openHistory() {
         URLBarModel.shared.endEditing()
         isVaultOpen = false
+        isSettingsOpen = false
         isHistoryOpen = true
     }
 
     func openVault() {
         URLBarModel.shared.endEditing()
         isHistoryOpen = false
+        isSettingsOpen = false
         isVaultOpen = true
+    }
+
+    func openSettings() {
+        URLBarModel.shared.endEditing()
+        isHistoryOpen = false
+        isVaultOpen = false
+        isSettingsOpen = true
     }
 
     func closeHistory() {
@@ -320,11 +337,18 @@ final class BrowserState: ObservableObject {
         restoreWebFocus()
     }
 
+    func closeSettings() {
+        guard isSettingsOpen else { return }
+        isSettingsOpen = false
+        restoreWebFocus()
+    }
+
     /// Dismiss whichever surface is showing — used by ⌘W and by paths that need
     /// the canvas back (opening a new tab, reopening a closed one).
     func closeSurfaces() {
         closeHistory()
         closeVault()
+        closeSettings()
     }
 
     /// Select a tab from the sidebar. A tab and a surface are mutually exclusive,
@@ -336,6 +360,7 @@ final class BrowserState: ObservableObject {
         let hadSurface = isSurfaceOpen
         isHistoryOpen = false
         isVaultOpen = false
+        isSettingsOpen = false
         browser_tab_select(id)
         if hadSurface { browser_focus_active_tab() }
     }
@@ -360,7 +385,7 @@ final class BrowserState: ObservableObject {
     /// the canvas the collapsed sidebar auto-floats (Arc) — the only way to reach a
     /// saved tab. A History/Vault panel counts as covering it, so it isn't empty.
     var isEmptyCanvas: Bool {
-        activeTabId == nil && !isHistoryOpen && !isVaultOpen
+        activeTabId == nil && !isHistoryOpen && !isVaultOpen && !isSettingsOpen
     }
 
     /// Whether the floating (unpinned) sidebar is on-screen. The single rule:

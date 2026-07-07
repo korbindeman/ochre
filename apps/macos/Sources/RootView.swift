@@ -33,6 +33,8 @@ final class RootView: NSView {
     private let historyHost = NSHostingView(rootView: HistoryView())
     /// The Passwords (vault) page — another content-area surface (ADR-0010/0016).
     private let vaultHost = NSHostingView(rootView: VaultView())
+    /// The Settings page — native content-area surface (ADR-0010).
+    private let settingsHost = NSHostingView(rootView: SettingsView())
 
     /// One CEF host view per tab, keyed by tab id. Reconciled against
     /// `BrowserState.tabs`; the active one is shown, the rest hidden.
@@ -43,6 +45,14 @@ final class RootView: NSView {
     /// (the `$isSidebarPinned` observer drops the initial value — it only
     /// animates *changes*).
     private var sidebarPinned = BrowserState.shared.isSidebarPinned
+    /// Bumped at each pin/unpin animation start so a stale completion handler
+    /// from an interrupted transition can't clear a newer one.
+    private var sidebarTransitionGeneration: UInt = 0
+    /// Drives CEF resizes from the content area's *presentation* bounds during
+    /// sidebar pin/unpin — at most once per display frame, not every layout pass.
+    private var sidebarTransitionTimer: Timer?
+    /// Skips redundant Chromium resizes when the animated bounds haven't moved.
+    private var lastSyncedCEFSize = NSSize.zero
     /// Whether the floating host is currently shown — mirrors the derived rule
     /// `BrowserState.isFloatingSidebarShown`. Drives the floating card's geometry
     /// in `applyLayout`; kept in step by `syncFloatingSidebar`.
@@ -60,7 +70,7 @@ final class RootView: NSView {
     private var sidebarWidth: CGFloat = RootView.loadSidebarWidth()
     private var chromeWidth: CGFloat { sidebarWidth + 1 } // sidebar + divider
 
-    private static let sidebarWidthKey = "sidebarWidth"
+    private static let sidebarWidthKey = BrowserProfile.defaultsKey("sidebarWidth")
     private static let defaultSidebarWidth: CGFloat = 224
     private static let minSidebarWidth: CGFloat = 180
     private static let maxSidebarWidth: CGFloat = 400
@@ -73,6 +83,7 @@ final class RootView: NSView {
     // how far past the right edge it may roam before the sidebar collapses.
     private let revealPollInterval = 0.05
     private let revealDismissGrace: CGFloat = 48
+    private let sidebarPinAnimationDuration = 0.18
 
     private static func clampSidebarWidth(_ width: CGFloat) -> CGFloat {
         min(maxSidebarWidth, max(minSidebarWidth, width))
@@ -95,6 +106,10 @@ final class RootView: NSView {
 
         // Content children fill the content area and follow its resizes.
         contentArea.autoresizesSubviews = true
+        contentArea.clipsToBounds = true
+        // Layer-backed so we can read `presentation()` while AppKit animates the
+        // frame and drive CEF resizes from the interpolated size.
+        contentArea.wantsLayer = true
         emptyStateHost.autoresizingMask = [.width, .height]
         emptyStateHost.frame = contentArea.bounds
         emptyStateHost.safeAreaRegions = []
@@ -114,6 +129,13 @@ final class RootView: NSView {
         vaultHost.safeAreaRegions = []
         vaultHost.isHidden = true
         contentArea.addSubview(vaultHost)
+
+        // The Settings surface — same hidden-until-summoned model as History.
+        settingsHost.autoresizingMask = [.width, .height]
+        settingsHost.frame = contentArea.bounds
+        settingsHost.safeAreaRegions = []
+        settingsHost.isHidden = true
+        contentArea.addSubview(settingsHost)
 
         // The islands manage their own top insets (traffic-light clearance);
         // without this the hosting views also apply the window's safe area
@@ -193,6 +215,13 @@ final class RootView: NSView {
                 self?.syncFloatingSidebar()
             }
             .store(in: &cancellables)
+        state.$isSettingsOpen
+            .receive(on: RunLoop.main)
+            .sink { [weak self] open in
+                self?.setSettingsOpen(open)
+                self?.syncFloatingSidebar()
+            }
+            .store(in: &cancellables)
         // Pinning animates the chrome; the floating host follows the derived rule.
         // `dropFirst` skips the seeded value — the initial layout already matches
         // (`sidebarPinned` is seeded at declaration, before the first pass).
@@ -225,6 +254,9 @@ final class RootView: NSView {
         guard let id = BrowserState.shared.activeTabId else { return nil }
         return tabViews[id]
     }
+
+    /// The pinned sidebar host — used by the focus self-test to click empty chrome.
+    var focusTestSidebarHost: NSView? { sidebarHost }
 
     // ─── Tab views ─────────────────────────────────────────────────────────
 
@@ -362,6 +394,20 @@ final class RootView: NSView {
         }
     }
 
+    /// Show or hide the Settings surface over the content region.
+    private func setSettingsOpen(_ open: Bool) {
+        if open {
+            settingsHost.frame = contentArea.bounds
+            contentArea.addSubview(settingsHost, positioned: .above, relativeTo: nil)
+            settingsHost.isHidden = false
+            SettingsModel.shared.reload()
+            window?.makeFirstResponder(settingsHost)
+            fadeInSurface(settingsHost)
+        } else {
+            settingsHost.isHidden = true
+        }
+    }
+
     /// Fade a content surface in on show, mirroring the floating sidebar's reveal
     /// so History/Passwords don't pop over the web view. A soft enter only; the
     /// paired hide stays instant (the page behind is already composited). Instant
@@ -373,7 +419,7 @@ final class RootView: NSView {
         }
         view.alphaValue = 0
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.16
+            context.duration = 0.12
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             view.animator().alphaValue = 1
         }
@@ -495,15 +541,89 @@ final class RootView: NSView {
 
     /// Animate the chrome as the sidebar pins/unpins (the pinned column slides in
     /// or out). The floating host is handled separately by `syncFloatingSidebar`.
+    /// CEF tracks the animated content bounds via `syncCEFDuringSidebarTransition`
+    /// (presentation-layer size, display-synced) so the page follows the sidebar
+    /// without resizing on every layout pass or jerking at the end.
     private func setSidebarPinned(_ pinned: Bool) {
         guard pinned != sidebarPinned else { return }
+        if case .sidebarTransition = CEFContainerView.sidebarLayout {
+            sidebarTransitionGeneration &+= 1
+            finishSidebarTransition()
+        }
+        CEFContainerView.sidebarLayout = .sidebarTransition
+        lastSyncedCEFSize = .zero
         sidebarPinned = pinned
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.28
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            finishSidebarTransition()
+            applyLayout()
+            return
+        }
+        startSidebarTransitionSync()
+        sidebarTransitionGeneration &+= 1
+        let generation = sidebarTransitionGeneration
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = sidebarPinAnimationDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             context.allowsImplicitAnimation = true
             applyLayout()
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.sidebarTransitionGeneration == generation else { return }
+                self.finishSidebarTransition()
+            }
+        })
+    }
+
+    private func startSidebarTransitionSync() {
+        stopSidebarTransitionSync()
+        sidebarTransitionTimer = Timer.scheduledTimer(
+            withTimeInterval: 1.0 / 60.0, repeats: true
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.syncCEFDuringSidebarTransition() }
         }
+        syncCEFDuringSidebarTransition()
+    }
+
+    private func stopSidebarTransitionSync() {
+        sidebarTransitionTimer?.invalidate()
+        sidebarTransitionTimer = nil
+    }
+
+    /// The content area's bounds as AppKit is currently *drawing* them — the
+    /// model `bounds` jump to the target immediately under implicit animation.
+    private func animatedContentSize() -> NSSize {
+        if let presentation = contentArea.layer?.presentation() {
+            return presentation.frame.size
+        }
+        return contentArea.bounds.size
+    }
+
+    /// Resize CEF to the animated content bounds, throttled to the display-sync
+    /// timer and skipping sub-pixel repeats.
+    private func syncCEFDuringSidebarTransition() {
+        guard case .sidebarTransition = CEFContainerView.sidebarLayout else { return }
+        let size = animatedContentSize()
+        guard size.width >= 1, size.height >= 1 else { return }
+        guard abs(size.width - lastSyncedCEFSize.width) >= 0.5
+            || abs(size.height - lastSyncedCEFSize.height) >= 0.5 else { return }
+        lastSyncedCEFSize = size
+        for container in tabViews.values {
+            container.applyCEFSize(size)
+        }
+    }
+
+    /// End the transition sync loop and hand layout back to the container.
+    private func finishSidebarTransition() {
+        guard case .sidebarTransition = CEFContainerView.sidebarLayout else { return }
+        stopSidebarTransitionSync()
+        CEFContainerView.sidebarLayout = .normal
+        let size = contentArea.bounds.size
+        for container in tabViews.values {
+            container.applyCEFSize(size)
+            container.needsLayout = true
+            container.layoutSubtreeIfNeeded()
+        }
+        lastSyncedCEFSize = .zero
     }
 
     /// Animate the floating sidebar host in/out to match the derived rule
@@ -518,7 +638,7 @@ final class RootView: NSView {
         floatingShown = shown
         if shown { floatingHost.isHidden = false }
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.24
+            context.duration = 0.16
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             context.allowsImplicitAnimation = true
             applyLayout()

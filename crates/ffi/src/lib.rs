@@ -439,6 +439,37 @@ pub unsafe extern "C" fn browser_query_suggestions(query: *const c_char) -> *mut
         .unwrap_or(std::ptr::null_mut())
 }
 
+/// Fuzzy-match `query` against `text` (the omnibox scorer in
+/// `browser_core::fuzzy`). Returns a heap-allocated JSON object
+/// `{"score":…,"indices":[…]}` on success, or the literal `"null"` when there is
+/// no match. Free with [`browser_string_free`].
+///
+/// # Safety
+/// Both pointers must be null or valid, NUL-terminated UTF-8 C strings.
+#[no_mangle]
+pub unsafe extern "C" fn browser_fuzzy_match(
+    query: *const c_char,
+    text: *const c_char,
+) -> *mut c_char {
+    let query = if query.is_null() {
+        ""
+    } else {
+        CStr::from_ptr(query).to_str().unwrap_or("")
+    };
+    let text = if text.is_null() {
+        ""
+    } else {
+        CStr::from_ptr(text).to_str().unwrap_or("")
+    };
+    let json = match browser_core::fuzzy::fuzzy_match(query, text) {
+        Some(m) => serde_json::json!({ "score": m.score, "indices": m.indices }).to_string(),
+        None => "null".to_string(),
+    };
+    CString::new(json)
+        .map(CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
 // ─── History surface (the native History page) ───────────────────────────
 
 /// History-page rows for `query`, as a JSON array string of
@@ -893,6 +924,28 @@ pub extern "C" fn browser_consent_is_enabled() -> bool {
 #[no_mangle]
 pub extern "C" fn browser_consent_set_enabled(enabled: bool) {
     browser_core::embed::consent_set_enabled(enabled);
+}
+
+// --- Browser settings ---
+
+/// Vault auto-lock policy: 0 Never, 1 OnBrowserClose, 2 OnRestart, 3 OnPasswordUse.
+#[no_mangle]
+pub extern "C" fn browser_settings_vault_auto_lock() -> i32 {
+    browser_core::settings::vault_auto_lock().to_i32()
+}
+
+/// Persist the vault auto-lock policy.
+#[no_mangle]
+pub extern "C" fn browser_settings_set_vault_auto_lock(policy: i32) {
+    browser_core::settings::set_vault_auto_lock(browser_core::settings::VaultAutoLock::from_i32(
+        policy,
+    ));
+}
+
+/// Lock the vault on graceful browser shutdown when the policy requires it.
+#[no_mangle]
+pub extern "C" fn browser_settings_lock_vault_on_shutdown() {
+    browser_core::vault::service::lock_on_shutdown();
 }
 
 // --- Appearance / color scheme (ADR-0030) ---

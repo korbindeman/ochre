@@ -40,10 +40,18 @@ else
 fi
 
 echo "[prebuild] building libbrowser_ffi.dylib (${CARGO_TARGET})"
-cargo build -p browser-ffi "${CARGO_PROFILE[@]}"
+if ((${#CARGO_PROFILE[@]})); then
+  cargo build -p browser-ffi "${CARGO_PROFILE[@]}"
+else
+  cargo build -p browser-ffi
+fi
 
 echo "[prebuild] pinning dylib install name to @rpath/libbrowser_ffi.dylib"
 install_name_tool -id @rpath/libbrowser_ffi.dylib "target/${CARGO_TARGET}/libbrowser_ffi.dylib"
 
 echo "[prebuild] assembling ${BUNDLE_DIR}/browser.app (CEF framework + helper)"
-cargo run --quiet --bin bundle -- "${BUNDLE_FLAG[@]}"
+if ((${#BUNDLE_FLAG[@]})); then
+  cargo run --quiet --bin bundle -- "${BUNDLE_FLAG[@]}"
+else
+  cargo run --quiet --bin bundle
+fi

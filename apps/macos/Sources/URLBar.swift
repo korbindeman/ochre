@@ -23,8 +23,8 @@ final class URLBarModel: ObservableObject {
     /// Same providers as the command bar: instant local rows (typed URL, history)
     /// drive inline autocomplete; debounced Google suggestions merge in below.
     let suggestions = SuggestionController(
-        local: [URLProvider(), HistoryProvider()],
-        remote: [SearchSuggestProvider()]
+        local: OmniboxProviders.local,
+        remote: OmniboxProviders.remote
     )
 
     /// The active tab's URL, captured when editing begins to seed the field.
@@ -88,12 +88,22 @@ struct URLBar: View {
 
     private var tab: TabItem? { state.activeTab }
     private var isEmpty: Bool { tab?.url.isEmpty ?? true }
-    /// History/Passwords covers the canvas — the chip reads as inert, not the
+    /// An app-UI surface covers the canvas — the chip reads as inert, not the
     /// active tab's address (ADR-0022 follow-up, P1-21).
     private var isNeutralized: Bool { state.isSurfaceOpen }
+    private var neutralIcon: String {
+        if state.isHistoryOpen { return "clock" }
+        if state.isSettingsOpen { return "gearshape" }
+        return "key"
+    }
+    private var neutralTitle: String {
+        if state.isHistoryOpen { return "History" }
+        if state.isSettingsOpen { return "Settings" }
+        return "Passwords"
+    }
     private var text: String {
         guard let tab, !tab.url.isEmpty else { return "Search or enter URL" }
-        return prettyURL(tab.url)
+        return displayDomain(tab.url)
     }
 
     var body: some View {
@@ -119,10 +129,10 @@ struct URLBar: View {
 
     private var neutralChip: some View {
         HStack(spacing: 6) {
-            Image(systemName: state.isHistoryOpen ? "clock" : "key")
+            Image(systemName: neutralIcon)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.tertiary)
-            Text(state.isHistoryOpen ? "History" : "Passwords")
+            Text(neutralTitle)
                 .lineLimit(1)
                 .foregroundStyle(.tertiary)
             Spacer(minLength: 0)
@@ -146,10 +156,9 @@ struct URLBar: View {
         // rather than a Button to keep the inner button's tap unambiguous.
         HStack(spacing: 6) {
             // Only the empty chip leads with an icon — the magnifying glass is a
-            // search affordance ("type here"). A loaded URL is self-evidently a web
-            // address, so a leading globe would just restate the text; the tab
-            // already carries the favicon for identity, and site status/security
-            // lives in the right-side shield. So the loaded chip displays flush.
+            // search affordance ("type here"). A loaded URL shows the domain only
+            // until focused (⌘L reveals the full address); no leading globe — the
+            // tab carries the favicon, and site status lives in the shield.
             if isEmpty {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 12, weight: .medium))
@@ -311,22 +320,20 @@ struct URLBar: View {
     // ─── Inline editor ─────────────────────────────────────────────────────────
 
     private var editor: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-            AutocompleteField(
-                controller: suggestions,
-                initialQuery: model.initialQuery,
-                font: .system(size: 13),
-                onFocusChange: { focused in
-                    // Clicking into the page (or elsewhere) resigns the field —
-                    // dismiss, matching the command bar losing key. Suggestion
-                    // taps don't take first responder, so they never trip this.
-                    if !focused { model.endEditing() }
-                }
-            )
-        }
+        // No leading icon — same as the loaded-URL chip. The magnifying glass is
+        // only for the empty new-tab chip; inline edit-in-place (⌘L) is address
+        // entry, not search.
+        AutocompleteField(
+            controller: suggestions,
+            initialQuery: model.initialQuery,
+            font: .system(size: 13),
+            onFocusChange: { focused in
+                // Clicking into the page (or elsewhere) resigns the field —
+                // dismiss, matching the command bar losing key. Suggestion
+                // taps don't take first responder, so they never trip this.
+                if !focused { model.endEditing() }
+            }
+        )
         .padding(.horizontal, 10)
         .frame(height: fieldHeight)
         .background(

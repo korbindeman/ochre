@@ -236,11 +236,22 @@ impl History {
     }
 
     /// The `limit` most-frecent pages, as suggestions with no highlight ranges
-    /// (there is no query to highlight).
+    /// (there is no query to highlight). Sorted by frecency — visit frequency
+    /// weighted by recency — so the zero-state omnibox surfaces pages the user
+    /// actually returns to, not merely the highest raw visit count.
     fn top_frecent(&self, limit: u32) -> rusqlite::Result<Vec<HistorySuggestion>> {
-        Ok(self
-            .candidates(limit)?
+        let now = now();
+        let mut rows = self.candidates(SCAN_LIMIT)?;
+        rows.sort_by(|a, b| {
+            let fa = frecency_bonus(a.visit_count, a.last_visit, now);
+            let fb = frecency_bonus(b.visit_count, b.last_visit, now);
+            fb.cmp(&fa)
+                .then(b.last_visit.cmp(&a.last_visit))
+                .then(b.visit_count.cmp(&a.visit_count))
+        });
+        Ok(rows
             .into_iter()
+            .take(limit as usize)
             .map(|c| HistorySuggestion {
                 display_url: display_url(&c.url),
                 url: c.url,

@@ -127,7 +127,7 @@ impl BrowserHandler {
 
     /// Download the current page's favicon and cache it under the page's host.
     /// CEF resolves the icon URL(s) from `<link rel="icon">`/`/favicon.ico`;
-    /// we take the first and let CEF decode it, then store the PNG.
+    /// we prefer raster formats (ICO/PNG) over SVG, then store the PNG.
     fn on_favicon_urlchange(
         &mut self,
         browser: Option<&mut Browser>,
@@ -143,7 +143,7 @@ impl BrowserHandler {
         else {
             return;
         };
-        let Some(icon_url) = icon_urls.and_then(favicon::first_icon_url) else {
+        let Some(icon_url) = icon_urls.and_then(|list| favicon::best_icon_url(list, &host)) else {
             return;
         };
         let Some(host_obj) = browser.and_then(|b| b.host()) else {

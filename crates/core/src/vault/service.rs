@@ -161,6 +161,11 @@ pub fn setup(
     outcome
 }
 
+/// Lock on graceful browser shutdown when the auto-lock policy requires it.
+pub fn lock_on_shutdown() {
+    crate::settings::lock_on_shutdown_if_needed(lock);
+}
+
 /// True when locked *or* never initialized (fail safe).
 pub fn is_locked() -> bool {
     with(|m| m.is_locked()).unwrap_or(true)
@@ -237,9 +242,10 @@ fn select_provider(providers: &[TwoFactorProvider]) -> TwoFactorProvider {
 
 /// Offline unlock from the cache. Blocks (KDF); call off the UI thread.
 pub fn unlock_offline(password: &str) -> Result<(), String> {
-    with(|m| m.unlock_offline(password))
+    let result = with(|m| m.unlock_offline(password))
         .ok_or_else(not_initialized)?
-        .map_err(render)
+        .map_err(render);
+    result
 }
 
 pub fn lock() {
@@ -269,13 +275,17 @@ pub fn list() -> Vec<LoginView> {
 /// The password for login `id` — the one path a secret crosses the boundary.
 /// `None` if locked or unknown.
 pub fn password_for(id: &str) -> Option<String> {
-    with(|m| {
+    let password = with(|m| {
         m.logins()
             .ok()
             .and_then(|logins| logins.iter().find(|l| l.id == id))
             .and_then(|l| l.password.clone())
     })
-    .flatten()
+    .flatten();
+    if password.is_some() {
+        crate::settings::lock_after_password_use_if_needed(lock);
+    }
+    password
 }
 
 /// A login's full detail — **includes the password** (an explicit gesture: the
@@ -293,7 +303,7 @@ pub struct LoginDetail {
 
 /// Full detail for login `id` (`None` when locked/unknown) — for the edit form.
 pub fn login_detail(id: &str) -> Option<LoginDetail> {
-    with(|m| {
+    let detail = with(|m| {
         m.logins().ok().and_then(|logins| {
             logins.iter().find(|l| l.id == id).map(|l| LoginDetail {
                 id: l.id.clone(),
@@ -306,7 +316,11 @@ pub fn login_detail(id: &str) -> Option<LoginDetail> {
             })
         })
     })
-    .flatten()
+    .flatten();
+    if detail.as_ref().is_some_and(|d| d.password.is_some()) {
+        crate::settings::lock_after_password_use_if_needed(lock);
+    }
+    detail
 }
 
 /// Import a CSV export → count uploaded. Blocks; call off the UI thread.

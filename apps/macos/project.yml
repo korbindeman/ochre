@@ -26,11 +26,18 @@ targets:
     platform: macOS
     sources:
       - path: Sources
+    info:
+      path: Info.plist
+      properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: Web site URL
+            CFBundleURLSchemes:
+              - http
+              - https
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.nativechrome.Browser
         PRODUCT_NAME: Browser
-        INFOPLIST_KEY_CFBundleDisplayName: Browser
+
         INFOPLIST_KEY_LSMinimumSystemVersion: "26.0"
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         # Link against the Rust C-ABI dylib (built by the pre-build script).
@@ -49,9 +56,13 @@ targets:
         CODE_SIGNING_ALLOWED: NO
       configs:
         Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.nativechrome.Browser.dev
           LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../target/debug
+          INFOPLIST_KEY_CFBundleDisplayName: Browser Dev
         Release:
+          PRODUCT_BUNDLE_IDENTIFIER: com.nativechrome.Browser
           LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../target/release
+          INFOPLIST_KEY_CFBundleDisplayName: Browser
           SWIFT_COMPILATION_MODE: wholemodule
           SWIFT_OPTIMIZATION_LEVEL: -O
     preBuildScripts:
