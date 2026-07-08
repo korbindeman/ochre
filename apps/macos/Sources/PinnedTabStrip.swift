@@ -6,29 +6,56 @@ import UniformTypeIdentifiers
 /// resident in memory (ADR-0032). A user close dismisses the icon only.
 struct PinnedTabStrip: View {
     @ObservedObject private var state = BrowserState.shared
-    @StateObject private var drag = TabDragModel()
+    @ObservedObject var drag: TabDragModel
     @Namespace private var selection
 
     private var app: AppDelegate? { NSApp.delegate as? AppDelegate }
 
+    private let rowHeight: CGFloat = 40
+    private let spacing: CGFloat = 6
+
+    private var isDraggingFavorite: Bool {
+        guard let id = drag.draggingId else { return false }
+        return state.tabs.first { $0.id == id }?.favorite ?? false
+    }
+
     var body: some View {
         let tabs = state.favoriteTabs
-        let dismissed = state.dismissedFavorites
-
-        HStack(spacing: 6) {
-            ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
-                pinnedButton(
-                    tab,
-                    next: index + 1 < tabs.count ? tabs[index + 1].id : nil
-                )
+        if tabs.isEmpty {
+            if drag.draggingId != nil, !isDraggingFavorite {
+                emptyPinDropZone
             }
-            stripDropTarget(isEmpty: tabs.isEmpty)
-            if !dismissed.isEmpty {
-                dismissedMenu(dismissed)
+        } else {
+            let layout = PinnedGridLayout.forCount(tabs.count)
+            VStack(alignment: .leading, spacing: spacing) {
+                ForEach(0..<layout.rows, id: \.self) { row in
+                    pinnedRow(row, layout: layout, tabs: tabs)
+                }
+            }
+            .padding(.vertical, 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .blocksWindowDragPassthrough()
+        }
+    }
+
+    @ViewBuilder
+    private func pinnedRow(_ row: Int, layout: PinnedGridLayout, tabs: [TabItem]) -> some View {
+        let items = Self.itemsInRow(row, columns: layout.columns, tabs: tabs)
+        let isLastRow = row == layout.rows - 1
+
+        HStack(spacing: spacing) {
+            ForEach(items, id: \.tab.id) { item in
+                pinnedButton(item.tab, next: item.nextId)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: rowHeight)
+            }
+            if isLastRow {
+                stripDropTarget()
+            }
+            if isLastRow, !state.dismissedFavorites.isEmpty {
+                dismissedMenu(state.dismissedFavorites)
             }
         }
-        .padding(.vertical, 2)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -37,31 +64,42 @@ struct PinnedTabStrip: View {
             tab: tab,
             isActive: tab.id == state.activeTabId && !state.isSurfaceOpen,
             selection: selection,
-            onSelect: { state.handleTabClick(tab.id) },
-            onClose: { app?.closeTab(tab.id) }
+            onSelect: { state.handleTabClick(tab.id) }
         )
         .contextMenu { PinnedTabMenu(tab: tab) }
         .pinnedTabDrag(tab: tab, next: next, drag: drag)
         .transition(SidebarSelection.rowTransition)
     }
 
-    /// Drop target at the strip's trailing edge — pins a dragged tab here and
-    /// appends it when the strip already has icons.
+    /// Full-width target when the strip is empty but a sidebar tab is mid-drag.
     @ViewBuilder
-    private func stripDropTarget(isEmpty: Bool) -> some View {
+    private var emptyPinDropZone: some View {
         Color.clear
-            .frame(width: isEmpty ? nil : 12, height: 40)
-            .frame(maxWidth: isEmpty ? .infinity : 12)
+            .frame(height: rowHeight)
+            .frame(maxWidth: .infinity)
+            .contentShape(.rect)
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                    .opacity(drag.slot == .endOf(.favorite) ? 1 : 0.35)
+            }
+            .onDrop(of: [.text], delegate: FavoriteStripDropDelegate(drag: drag))
+            .blocksWindowDragPassthrough()
+    }
+
+    /// Trailing drop target on the last row — pins a dragged tab at the end.
+    @ViewBuilder
+    private func stripDropTarget() -> some View {
+        Color.clear
+            .frame(width: 12, height: rowHeight)
             .contentShape(.rect)
             .overlay(alignment: .leading) {
-                if !isEmpty {
-                    VerticalInsertionIndicator()
-                        .opacity(drag.slot == .endOf(.favorite) ? 1 : 0)
-                }
+                VerticalInsertionIndicator()
+                    .opacity(drag.slot == .endOf(.favorite) ? 1 : 0)
             }
             .onDrop(
                 of: [.text],
-                delegate: FavoriteStripDropDelegate(isEmpty: isEmpty, drag: drag)
+                delegate: FavoriteStripDropDelegate(drag: drag)
             )
     }
 
@@ -75,54 +113,73 @@ struct PinnedTabStrip: View {
             Image(systemName: "ellipsis")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 28, height: 36)
+                .frame(width: 28, height: rowHeight)
         }
         .menuStyle(.borderlessButton)
         .help("Closed pinned tabs")
     }
+
+    /// One row's tabs in store order, each with its reorder successor.
+    private static func itemsInRow(
+        _ row: Int,
+        columns: Int,
+        tabs: [TabItem]
+    ) -> [(tab: TabItem, nextId: Int32?)] {
+        let start = row * columns
+        guard start < tabs.count else { return [] }
+        let end = min(start + columns, tabs.count)
+        return (start..<end).map { index in
+            let next = index + 1 < tabs.count ? tabs[index + 1].id : nil
+            return (tabs[index], next)
+        }
+    }
 }
 
-/// One pinned-tab icon — favicon-centered, close on hover, active pill.
+/// How many columns and rows the pinned strip uses for a given tab count.
+private struct PinnedGridLayout {
+    let columns: Int
+    let rows: Int
+
+    static func forCount(_ count: Int) -> PinnedGridLayout {
+        guard count > 0 else { return PinnedGridLayout(columns: 0, rows: 0) }
+        if count <= 3 {
+            return PinnedGridLayout(columns: count, rows: 1)
+        }
+        let columns = Int(ceil(sqrt(Double(count))))
+        let rows = Int(ceil(Double(count) / Double(columns)))
+        return PinnedGridLayout(columns: columns, rows: rows)
+    }
+}
+
+/// One pinned-tab icon — favicon-centered, active pill. Dismiss via drag-out or
+/// the context menu, not a hover close affordance.
 private struct PinnedTabButton: View {
     let tab: TabItem
     let isActive: Bool
     let selection: Namespace.ID
     let onSelect: () -> Void
-    let onClose: () -> Void
 
     @State private var hovering = false
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            TabFavicon(tab: tab)
-                .frame(width: 20, height: 20)
-                .frame(width: 40, height: 36)
-                .background {
+        TabFavicon(tab: tab)
+            .frame(width: 20, height: 20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(.quaternary)
+                    .opacity(!isActive && hovering ? 0.45 : 0)
+                    .hoverFade(hovering)
+                if isActive {
                     RoundedRectangle(cornerRadius: 10)
                         .fill(.quaternary)
-                        .opacity(!isActive && hovering ? 0.45 : 0)
-                        .hoverFade(hovering)
-                    if isActive {
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(.quaternary)
-                            .matchedGeometryEffect(id: SidebarSelection.pill, in: selection)
-                    }
+                        .matchedGeometryEffect(id: SidebarSelection.pill, in: selection)
                 }
-            if hovering {
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 8, weight: .bold))
-                        .frame(width: 14, height: 14)
-                }
-                .buttonStyle(IconButtonStyle(cornerRadius: 7))
-                .offset(x: 4, y: -4)
-                .help("Close Pinned Tab")
             }
-        }
-        .contentShape(.rect(cornerRadius: 10))
-        .onTapGesture(perform: onSelect)
-        .onHover { hovering = $0 }
-        .help(tab.displayTitle)
+            .contentShape(.rect(cornerRadius: 10))
+            .onTapGesture(perform: onSelect)
+            .onHover { hovering = $0 }
+            .help(tab.displayTitle)
     }
 }
 
@@ -175,13 +232,8 @@ private struct PinnedTabDrag: ViewModifier {
                 VerticalInsertionIndicator()
                     .opacity(next == nil && drag.slot == .endOf(.favorite) ? 1 : 0)
             }
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in drag.armWindowDragSuppression() }
-            )
             .onDrag {
                 let id = tab.id
-                drag.armWindowDragSuppression()
                 DispatchQueue.main.async { drag.begin(id) }
                 return NSItemProvider(object: String(id) as NSString)
             }
@@ -235,9 +287,8 @@ private struct PinnedTabDropDelegate: DropDelegate {
     }
 }
 
-/// Trailing (or full-width when empty) drop zone for pinning from other sections.
+/// Trailing drop zone on the last row for pinning from other sections.
 private struct FavoriteStripDropDelegate: DropDelegate {
-    let isEmpty: Bool
     let drag: TabDragModel
 
     func validateDrop(info: DropInfo) -> Bool { drag.draggingId != nil }

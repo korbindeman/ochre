@@ -242,10 +242,6 @@ struct URLBar: View {
             && (state.adblockBlockedCount > 0 || state.adblockSiteOff || hovering || showShield)
     }
 
-    private var shieldActivelyBlocking: Bool {
-        state.adblockEnabled && !state.adblockSiteOff && state.adblockBlockedCount > 0
-    }
-
     private var shieldIcon: String {
         (!state.adblockEnabled || state.adblockSiteOff) ? "shield.slash" : "checkmark.shield.fill"
     }
@@ -257,22 +253,15 @@ struct URLBar: View {
         return AnyShapeStyle(.secondary)
     }
 
-    private var shieldBadgeText: String {
-        let count = state.adblockBlockedCount
-        if count > 99 { return "99+" }
-        return "\(count)"
-    }
-
     private var shield: some View {
         Button {
             showShield.toggle()
         } label: {
-            ShieldIcon(
-                systemName: shieldIcon,
-                tint: shieldTint,
-                knockedOutCount: shieldActivelyBlocking ? shieldBadgeText : nil
-            )
-            .frame(width: 18, height: 18)
+            Image(systemName: shieldIcon)
+                .font(.system(size: 12, weight: .semibold))
+                .contentTransition(.symbolEffect(.replace))
+                .foregroundStyle(shieldTint)
+                .frame(width: 18, height: 18)
         }
         .buttonStyle(IconButtonStyle(cornerRadius: 5, emphasizesLabel: false))
         .help(state.adblockSiteOff ? "Ad blocking off for this site" : "Ad & tracker blocking")
@@ -403,41 +392,6 @@ struct URLBar: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .offset(y: fieldHeight + 6)
             }
-        }
-    }
-}
-
-/// Shield with optional glyph-shaped knock-outs. Canvas keeps punched areas
-/// transparent so the URL chip behind shows through — `compositingGroup` on
-/// `Image` cannot see that parent.
-private struct ShieldIcon: View {
-    let systemName: String
-    let tint: AnyShapeStyle
-    let knockedOutCount: String?
-
-    var body: some View {
-        Canvas { context, size in
-            let bounds = CGRect(origin: .zero, size: size)
-            guard let shield = context.resolveSymbol(id: 0) else { return }
-            context.draw(shield, in: bounds)
-
-            if let knockedOutCount {
-                context.drawLayer { layer in
-                    layer.blendMode = .destinationOut
-                    layer.draw(
-                        Text(knockedOutCount)
-                            .font(.system(size: 8, weight: .heavy))
-                            .monospacedDigit(),
-                        at: CGPoint(x: size.width - 1, y: 1),
-                        anchor: .topTrailing
-                    )
-                }
-            }
-        } symbols: {
-            Image(systemName: systemName)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(tint)
-                .tag(0)
         }
     }
 }

@@ -137,11 +137,11 @@ Goal (rm §5.1 / mvp): the Arc interaction model in native chrome, good enough f
 |----|------|--------|-----|------|------|
 | P1-M1 | Core tab model + multi-tab CEF (Rust core + FFI event stream) | done | ~90k | — | mvp M1 · ADR-0003 |
 | P1-6 | Empty state (zero-tab) UI + launch-to-empty | done | ~25k | P1-M1 | mvp (§new-tab); user request 2026-07-06 |
-| P1-M2 | SwiftUI shell + vertical-tab glass sidebar | wip | ~110k | P1-M1 · P0-1 (both done) | mvp M2 · ADR-0019 |
-| P1-M3 | Cmd+T command bar (Liquid Glass morph) | blocked | ~80k | P1-M2 | mvp M3 |
+| P1-M2 | SwiftUI shell + vertical-tab glass sidebar | done | ~110k | P1-M1 · P0-1 (both done) | mvp M2 · ADR-0019 · closed 2026-07-08 |
+| P1-M3 | Cmd+T command bar (Liquid Glass morph) | done | ~80k | P1-M2 | mvp M3 · closed 2026-07-08 |
 | P1-M4 | Spaces switcher + multi-space UX | done | ~60k | P1-M1 | mvp M4 · ADR-0005/0006 |
 | P1-7 | Tab folders + pinned/ephemeral split + folder↔space transform | done | ~110k | P1-M4 | ADR-0006; user request 2026-07-06 |
-| P1-M5 | Adblock integration + polish (shortcuts, tab suspension, animation) | blocked | ~70k | P1-M2 (P0-3 covers the request-path core) | mvp M5 |
+| P1-M5 | Adblock integration + polish (shortcuts, tab suspension, animation) | next | ~70k | P1-M2 (P0-3 covers the request-path core) | mvp M5 |
 | P1-8 | Split `client.rs` (727 L) → `client/{handlers,favicon,devtools}.rs` — one file mixes 8+ CEF handlers, favicon capture, DevTools, error-page HTML | done | ~20k | — | code §3 |
 | P1-9 | Split Swift view monoliths — `BrowserRootView.swift` (8+ view types) + `CommandBar.swift` (panel + key-handling + sizing) into per-component files | done | ~25k | — | code §3 |
 | P1-10 | Omnibox-grade command-bar autocomplete — core fuzzy ranking + match highlighting + inline autocomplete | done | ~55k | — | ADR-0011 · style §6 · spec §9; user request 2026-07-06 |
@@ -161,6 +161,17 @@ Goal (rm §5.1 / mvp): the Arc interaction model in native chrome, good enough f
 | P1-24 | Runtime tab suspension — auto-discard background CEF browsers (30 s grace on tab switch, immediate on space switch), favorites stay resident, `TabSuspended` event + sidebar dimming | done | ~45k | P1-15 | ADR-0033 · mvp risk #3; user request 2026-07-08 |
 | P1-25 | Tab suspension settings + manual controls — grace duration, disable auto-suspend, "Suspend Other Tabs" menu | next | ~25k | P1-24 | ADR-0033 consequences |
 | P1-26 | Session persist coalescing — debounce title/url write-through to `session.json` if profiling shows main-thread pressure | next | ~15k | P1-15 | ADR-0013 consequences |
+
+Notes (reconciled 2026-07-08):
+- **Landed 2026-07-08 (P1-M3 → done) — Cmd+T Liquid Glass morph (mvp M3).** Replaced the spring
+  `scaleEffect` entrance with the platform's `glassEffectID` morph inside a `GlassEffectContainer`:
+  present expands from a compact capsule to the full interactive field (`.regular.interactive()`),
+  suggestions growing the same glass surface morph smoothly. `CommandBarPresentation` (observable)
+  coordinates morph-out before panel teardown — `hide()` shrinks the glass, then fades/orders away.
+  Reduce Motion honored (SwiftUI env + `MotionPolicy` for panel timing). **Verified:** `just
+  build-macos` green; `just focus-selftest` — all command-bar cases PASS (open/close refocus +
+  bare-window regression). **Pending your eye:** morph stiffness/feel wants a `just run` pass (can't
+  be judged headless); parity expand-morph flipped to 🚧 until confirmed.
 
 Notes:
 - **Landed 2026-07-08 (P1-23 + P2-3) — tab multiselect, folder-from-selection, clear ephemeral.**

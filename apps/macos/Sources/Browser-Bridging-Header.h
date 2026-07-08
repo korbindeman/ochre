@@ -12,6 +12,9 @@
 // Call once, on the main thread, before creating any window.
 bool browser_initialize(void);
 
+// Write a local crash JSON payload for an uncaught ObjC/Swift exception.
+void browser_crash_report_swift_exception(const char *name, const char *reason);
+
 // ─── Tabs / folders / spaces: commands + the event stream ───────────────────
 //
 // The app owns one NSView per tab and drives the tree over these commands; the

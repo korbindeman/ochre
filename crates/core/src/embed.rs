@@ -127,6 +127,7 @@ wrap_app! {
 ///
 /// Must be called once, on the main thread, before the host creates any window.
 pub fn initialize() -> bool {
+    crate::crash_report::install();
     let loader = mac::load_cef_framework();
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     mac::setup_simple_application();

@@ -171,10 +171,17 @@ pub fn check_mac_restart_lock() {
     crate::settings::maybe_lock_for_mac_restart(lock);
 }
 
+/// True when locked *or* never initialized (fail safe), without evaluating the
+/// Mac-restart auto-lock policy. Used by that policy itself to avoid re-entering
+/// [`is_locked`].
+pub(crate) fn is_locked_direct() -> bool {
+    with(|m| m.is_locked()).unwrap_or(true)
+}
+
 /// True when locked *or* never initialized (fail safe).
 pub fn is_locked() -> bool {
     crate::settings::maybe_lock_for_mac_restart(lock);
-    with(|m| m.is_locked()).unwrap_or(true)
+    is_locked_direct()
 }
 
 /// Online unlock. `code` empty ⇒ no second factor supplied yet. On a two-factor

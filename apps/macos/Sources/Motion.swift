@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Shared UI-motion helpers for the chrome.
@@ -7,6 +8,13 @@ import SwiftUI
 /// `onHover` driving an animated state change. Everything here honors Reduce
 /// Motion (style §7): under it the animation is dropped so nothing moves, matching
 /// the Reduce-Motion gate the structure-reload spring already uses in `BrowserState`.
+
+enum MotionPolicy {
+    /// Whether the user has Reduce Motion enabled at the OS level.
+    static var reduceMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+}
 
 extension Animation {
     /// The chrome's hover / press cross-fade — a short (~120ms) ease-out, the native

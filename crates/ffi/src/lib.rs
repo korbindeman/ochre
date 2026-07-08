@@ -26,6 +26,29 @@ pub extern "C" fn browser_initialize() -> bool {
     browser_core::embed::initialize()
 }
 
+/// Write a crash payload for an uncaught Swift/ObjC exception. Call from
+/// `NSSetUncaughtExceptionHandler` before the process terminates.
+///
+/// # Safety
+/// `name` and `reason` must be null or valid, NUL-terminated UTF-8 C strings.
+#[no_mangle]
+pub unsafe extern "C" fn browser_crash_report_swift_exception(
+    name: *const c_char,
+    reason: *const c_char,
+) {
+    let name = if name.is_null() {
+        "NSException"
+    } else {
+        CStr::from_ptr(name).to_str().unwrap_or("NSException")
+    };
+    let reason = if reason.is_null() {
+        ""
+    } else {
+        CStr::from_ptr(reason).to_str().unwrap_or("")
+    };
+    browser_core::crash_report::report_swift_exception(name, reason);
+}
+
 // ─── Tabs: lifecycle commands + the event stream ─────────────────────────
 
 /// Register (or clear, with null) the tab/space event callback. It is invoked

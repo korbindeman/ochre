@@ -64,6 +64,10 @@ final class RootView: NSView {
     /// A divider drag is in progress — suspends the floating sidebar's hover
     /// dismissal so dragging its edge past the grace margin doesn't snap it shut.
     private var isResizingSidebar = false
+    /// Disables window-background drag before AppKit handles `mouseDown` in the
+    /// sidebar tab region (pinned strip + scroll list), so tab reorder stays put.
+    private var tabDragMouseDownMonitor: Any?
+    private var tabDragMouseUpMonitor: Any?
     /// Polls the pointer while the sidebar is hover-revealed (see the dismiss
     /// monitor); nil when pinned or collapsed.
     private var revealDismissTimer: Timer?
@@ -87,6 +91,12 @@ final class RootView: NSView {
     private let revealPollInterval = 0.05
     private let revealDismissGrace: CGFloat = 48
     private let sidebarPinAnimationDuration = 0.18
+    /// Y-from-top of the sidebar where the pinned strip / tab list begins (nav +
+    /// URL bar + VStack spacing). Matches `Sidebar.swift` layout constants.
+    private static let sidebarTabRegionTopInset: CGFloat = 91
+    /// Footer chrome below the tab list (space switcher or private label + padding).
+    private static let sidebarTabRegionBottomInset: CGFloat = 46
+    private static let privateSidebarTabRegionBottomInset: CGFloat = 40
 
     private static func clampSidebarWidth(_ width: CGFloat) -> CGFloat {
         min(maxSidebarWidth, max(minSidebarWidth, width))
@@ -185,6 +195,12 @@ final class RootView: NSView {
 
         applyLayout()
         observeState()
+        installSidebarTabDragWindowGuard()
+    }
+
+    deinit {
+        if let tabDragMouseDownMonitor { NSEvent.removeMonitor(tabDragMouseDownMonitor) }
+        if let tabDragMouseUpMonitor { NSEvent.removeMonitor(tabDragMouseUpMonitor) }
     }
 
     @available(*, unavailable)
@@ -728,6 +744,68 @@ final class RootView: NSView {
                     self.floatingHost.isHidden = true
                 }
             })
+    }
+
+    // MARK: - Sidebar tab drag vs window drag
+
+    /// Local `mouseDown` runs before AppKit dispatches the click — flip window
+    /// movability off early enough that tab drags never pick up the window.
+    private func installSidebarTabDragWindowGuard() {
+        tabDragMouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) {
+            [weak self] event in
+            guard let self else { return event }
+            MainActor.assumeIsolated { self.handleSidebarTabMouseDown(event) }
+            return event
+        }
+    }
+
+    private func handleSidebarTabMouseDown(_ event: NSEvent) {
+        guard let window = self.window ?? event.window else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        guard isPointInSidebarTabRegion(point) else { return }
+
+        window.isMovableByWindowBackground = false
+
+        if let tabDragMouseUpMonitor {
+            NSEvent.removeMonitor(tabDragMouseUpMonitor)
+        }
+        tabDragMouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) {
+            [weak self] event in
+            event.window?.isMovableByWindowBackground = true
+            if let monitor = self?.tabDragMouseUpMonitor {
+                NSEvent.removeMonitor(monitor)
+                self?.tabDragMouseUpMonitor = nil
+            }
+            return event
+        }
+    }
+
+    /// Pinned strip + scroll list in either sidebar host (pinned column or float).
+    private func isPointInSidebarTabRegion(_ point: NSPoint) -> Bool {
+        let bottomInset =
+            isPrivate ? Self.privateSidebarTabRegionBottomInset : Self.sidebarTabRegionBottomInset
+
+        if sidebarPinned {
+            let local = convert(point, to: sidebarHost)
+            if sidebarHost.bounds.contains(local),
+                local.y >= bottomInset,
+                local.y < sidebarHost.bounds.height - Self.sidebarTabRegionTopInset
+            {
+                return true
+            }
+        }
+
+        if floatingShown, !floatingHost.isHidden, floatingHost.alphaValue > 0 {
+            let local = convert(point, to: floatingHost)
+            if floatingHost.bounds.contains(local),
+                local.y >= bottomInset,
+                local.y < floatingHost.bounds.height - Self.sidebarTabRegionTopInset
+            {
+                return true
+            }
+        }
+
+        return false
     }
 }
 

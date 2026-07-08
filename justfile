@@ -117,6 +117,11 @@ dogfood: gen-macos
 
 # ── Convenience ─────────────────────────────────────────────────────
 
+# Path to the latest local crash payload JSON (debug builds use "Browser Dev").
+# Pass --print to dump the file contents.
+crash-latest *ARGS:
+    ./scripts/latest-crash.sh {{ARGS}}
+
 # Verify: build + test + lint — the full CI-style check.
 verify: build test lint fmt-check
     @echo "✓ Workspace verified: build, test, lint, fmt-check all passed."

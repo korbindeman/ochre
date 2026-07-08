@@ -7,7 +7,7 @@ import SwiftUI
 /// (ADR-0006).
 struct SpaceContents: View {
     @ObservedObject private var state = BrowserState.shared
-    @StateObject private var drag = TabDragModel()
+    @ObservedObject var drag: TabDragModel
     /// Namespace for the sliding active-tab highlight, shared across saved and
     /// open rows so the selection can animate between any of them.
     @Namespace private var selection
@@ -19,6 +19,9 @@ struct SpaceContents: View {
         let hasSaved = !folders.isEmpty || !loose.isEmpty
 
         VStack(alignment: .leading, spacing: 4) {
+            if isDraggingFavorite {
+                favoriteOutboundDropZone(open: open, loose: loose, folders: folders)
+            }
             ForEach(folders) { folder in
                 FolderRow(folder: folder, drag: drag, selection: selection)
             }
@@ -40,6 +43,37 @@ struct SpaceContents: View {
         }
     }
 
+    private var isDraggingFavorite: Bool {
+        guard let id = drag.draggingId else { return false }
+        return state.tabs.first { $0.id == id }?.favorite ?? false
+    }
+
+    /// Drop target at the top of the tree while a pinned tab is mid-drag — unpin
+    /// into the first sidebar section or the open list when it is empty.
+    @ViewBuilder
+    private func favoriteOutboundDropZone(
+        open: [TabItem],
+        loose: [TabItem],
+        folders: [FolderItem]
+    ) -> some View {
+        let anchor =
+            loose.first?.id
+            ?? folders.compactMap { state.tabs(inFolder: $0.id).first?.id }.first
+            ?? open.first?.id
+        let slot: DropSlot = anchor.map { .before($0) } ?? .endOf(.open)
+
+        Color.clear
+            .frame(height: 8)
+            .contentShape(.rect)
+            .overlay(alignment: .top) {
+                InsertionIndicator().opacity(drag.slot == slot ? 1 : 0)
+            }
+            .onDrop(
+                of: [.text],
+                delegate: FavoriteOutboundDropDelegate(slot: slot, drag: drag)
+            )
+    }
+
     /// A section's tabs in order, each wired for drag reordering with a pointer
     /// to its next sibling (nil when last) so a below-the-midpoint drop knows
     /// whether to insert before it or append to the section.
@@ -59,7 +93,7 @@ struct SpaceContents: View {
         TabRow(
             tab: tab,
             // A tab and a native surface are mutually exclusive — no tab reads as
-            // active while History/Passwords covers the canvas.
+            // active while History/Passwords/Settings covers the canvas.
             isActive: tab.id == state.activeTabId && !state.isSurfaceOpen,
             isMultiSelected: state.selectedTabIds.contains(tab.id),
             selection: selection,

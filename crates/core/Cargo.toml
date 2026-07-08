@@ -75,6 +75,7 @@ rsa = { version = "0.9", optional = true }
 rand = { version = "0.8", optional = true }
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true }
+libc = { workspace = true }
 objc2-app-kit = { workspace = true, features = [
     "NSApplication",
     "NSEvent",

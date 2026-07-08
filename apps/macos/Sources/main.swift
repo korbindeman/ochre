@@ -9,6 +9,14 @@ guard browser_initialize() else {
     exit(1)
 }
 
+// Uncaught ObjC exceptions (common in AppKit callbacks) bypass Rust's panic hook.
+NSSetUncaughtExceptionHandler { exception in
+    browser_crash_report_swift_exception(
+        exception.name.rawValue,
+        exception.reason ?? ""
+    )
+}
+
 // Top-level code in `main.swift` is not statically MainActor-isolated, but a
 // process entry point always runs on the main thread — assert that to call
 // the MainActor-bound app delegate. The returned reference is stored in a

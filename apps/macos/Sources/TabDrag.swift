@@ -39,34 +39,6 @@ final class TabDragModel: ObservableObject {
     @Published var draggingId: Int32?
     @Published var slot: DropSlot?
 
-    /// While a tab drag is in flight the window must stay put — the chrome uses
-    /// `isMovableByWindowBackground` (Arc-style sidebar drag), which otherwise
-    /// competes with SwiftUI's reorder drag. Suppressed on drag start, restored on
-    /// drop or mouse-up (covers cancelled drags that never call `commit`).
-    private var windowDragSuppressed = false
-    private var dragEndMonitor: Any?
-
-    func armWindowDragSuppression() {
-        guard !windowDragSuppressed else { return }
-        windowDragSuppressed = true
-        NSApp.keyWindow?.isMovableByWindowBackground = false
-        dragEndMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) {
-            [weak self] event in
-            Task { @MainActor in self?.releaseWindowDragSuppression() }
-            return event
-        }
-    }
-
-    func releaseWindowDragSuppression() {
-        guard windowDragSuppressed else { return }
-        windowDragSuppressed = false
-        NSApp.keyWindow?.isMovableByWindowBackground = true
-        if let dragEndMonitor {
-            NSEvent.removeMonitor(dragEndMonitor)
-            self.dragEndMonitor = nil
-        }
-    }
-
     func begin(_ id: Int32) {
         draggingId = id
         slot = nil
@@ -75,7 +47,6 @@ final class TabDragModel: ObservableObject {
     func end() {
         draggingId = nil
         slot = nil
-        releaseWindowDragSuppression()
     }
 
     /// Commit the current `slot` for the dragged tab as a single core move, then
@@ -160,17 +131,10 @@ struct TabRowDrag: ViewModifier {
                 InsertionIndicator()
                     .opacity(next == nil && drag.slot == .endOf(section) ? 1 : 0)
             }
-            // Arm before SwiftUI's `onDrag` threshold — otherwise the window's
-            // background-drag steals the gesture for the first few points.
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in drag.armWindowDragSuppression() }
-            )
             .onDrag {
-                // Defer marking the tab so the floating preview is snapshotted at
+                // Defer marking the drag so the floating preview is snapshotted at
                 // full opacity — the dim then applies only to the in-place row.
                 let id = tab.id
-                drag.armWindowDragSuppression()
                 DispatchQueue.main.async { drag.begin(id) }
                 return NSItemProvider(object: String(id) as NSString)
             }
@@ -282,6 +246,28 @@ struct BoundaryDropDelegate: DropDelegate {
     func dropExited(info: DropInfo) { drag.slot = nil }
     func performDrop(info: DropInfo) -> Bool {
         drag.slot = slot(info)
+        drag.commit()
+        return true
+    }
+}
+
+/// Drop target at the top of the sidebar tree while a pinned tab is being dragged
+/// out — lands in the first section or the open list.
+struct FavoriteOutboundDropDelegate: DropDelegate {
+    let slot: DropSlot
+    let drag: TabDragModel
+
+    func validateDrop(info: DropInfo) -> Bool { drag.draggingId != nil }
+    func dropEntered(info: DropInfo) { drag.slot = slot }
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        drag.slot = slot
+        return DropProposal(operation: .move)
+    }
+    func dropExited(info: DropInfo) {
+        if drag.slot == slot { drag.slot = nil }
+    }
+    func performDrop(info: DropInfo) -> Bool {
+        drag.slot = slot
         drag.commit()
         return true
     }

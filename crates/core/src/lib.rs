@@ -18,6 +18,7 @@ pub mod app;
 pub mod cdp;
 pub mod client;
 pub mod consent;
+pub mod crash_report;
 pub mod embed;
 pub mod favicon_selftest;
 pub mod fuzzy;
@@ -50,6 +51,7 @@ use cef::{
 /// 4. Initializes CEF with a SimpleApp handler.
 /// 5. Runs the message loop until shutdown.
 pub fn run() -> Result<(), &'static str> {
+    crash_report::install();
     let _library = load_cef();
 
     let args = Args::new();

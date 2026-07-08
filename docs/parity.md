@@ -106,7 +106,7 @@ focus-routing proof + polish pass that gates ✅ across the board.*
 | Invocation: Cmd/Ctrl+T (new) · Cmd/Ctrl+L (edit-in-place) | Inv | 🚧 | ⬜ | ⬜ | style §6 · spec §9 |
 | Unified ranked results (tabs · history · URL/search) | Inv | 🚧 | ⬜ | ⬜ | style §6 · spec §9 |
 | Keyboard-driven end to end (arrows/Enter/Escape) | Inv | 🚧 | ⬜ | ⬜ | style §6 |
-| Expand morph animation | Idiom | ⬜ | ⬜ | ⬜ | style §6 · spec §9 |
+| Expand morph animation | Idiom | 🚧 | ⬜ | ⬜ | style §6 · spec §9 |
 | Transient overlay (never a persistent full-width bar) | Inv | 🚧 | ⬜ | ⬜ | style §6,§13 |
 
 ## Navigation & history

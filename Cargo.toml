@@ -36,6 +36,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 anyhow = "1"
+libc = "0.2"
 
 # Password vault crypto (ADR-0016 / spec §10) — the Bitwarden key hierarchy and
 # EncString. Standard RustCrypto crates; all load-bearing for the scheme.

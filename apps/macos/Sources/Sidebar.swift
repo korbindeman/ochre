@@ -17,6 +17,8 @@ struct Sidebar: View {
     var variant: SidebarVariant = .pinned
     var isPrivate: Bool = false
     @ObservedObject private var state = BrowserState.shared
+    /// One drag session for the pinned strip and the tab list beneath it.
+    @StateObject private var tabDrag = TabDragModel()
 
     /// The on-screen instance: the pinned column when pinned, the floating copy
     /// when unpinned-and-revealed. Drives which sidebar owns the inline URL field.
@@ -56,7 +58,7 @@ struct Sidebar: View {
                 .zIndex(1)
 
             if !isPrivate {
-                PinnedTabStrip()
+                PinnedTabStrip(drag: tabDrag)
             }
 
             // The active space's tree: saved section (folders + loose saved)
@@ -66,7 +68,7 @@ struct Sidebar: View {
             // own when focus moves elsewhere, which bare sidebar chrome doesn't).
             GeometryReader { proxy in
                 ScrollView {
-                    SpaceContents()
+                    SpaceContents(drag: tabDrag)
                         .frame(
                             maxWidth: .infinity, minHeight: proxy.size.height,
                             alignment: .topLeading
@@ -80,6 +82,7 @@ struct Sidebar: View {
                 .scrollIndicators(.never)
             }
             .frame(maxHeight: .infinity)
+            .blocksWindowDragPassthrough()
 
             if isPrivate {
                 HStack(spacing: 6) {

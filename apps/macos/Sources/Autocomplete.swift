@@ -102,14 +102,22 @@ final class SuggestionController: ObservableObject {
 
     /// Feed the latest query. `allowInline` is true only for forward typing, so
     /// the inline completion never re-appears while the user is deleting.
-    /// Cancels any in-flight lookups. An empty query still fetches the zero-state
-    /// set (top sites, frecency history, open tabs).
-    func update(query rawQuery: String, allowInline: Bool) {
+    /// Cancels any in-flight lookups. An empty query clears the list unless
+    /// `zeroState` is true (explicit zero-state hosts only).
+    func update(query rawQuery: String, allowInline: Bool, zeroState: Bool = false) {
         localTask?.cancel()
         remoteTask?.cancel()
         currentQuery = rawQuery
         self.allowInline = allowInline
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !query.isEmpty || zeroState else {
+            localResults = []
+            suggestions = []
+            selection = nil
+            inline = nil
+            return
+        }
 
         // Local tier: instant. Publishes results + the inline completion.
         localTask = Task { [weak self] in
@@ -131,9 +139,10 @@ final class SuggestionController: ObservableObject {
         }
     }
 
-    /// Populate the zero-state dropdown (⌘T with an empty field).
+    /// Populate the zero-state dropdown (top sites, frecency history). No current
+    /// host calls this — omniboxes stay collapsed until the user types.
     func showZeroState() {
-        update(query: "", allowInline: false)
+        update(query: "", allowInline: false, zeroState: true)
     }
 
     /// Clear everything (e.g. when the host closes).
@@ -186,7 +195,11 @@ final class SuggestionController: ObservableObject {
         // Live search suggestions sit above the fallback "Search for …" row but
         // below page/tab/history matches.
         let (tail, head) = localResults.reduce(into: ([Suggestion](), [Suggestion]())) { acc, row in
-            if row.score <= SuggestionScore.searchQuery { acc.0.append(row) } else { acc.1.append(row) }
+            if row.score <= SuggestionScore.searchQuery {
+                acc.0.append(row)
+            } else {
+                acc.1.append(row)
+            }
         }
         let merged = head + remotes.sorted { $0.score > $1.score } + tail
         suggestions = dedupe(merged)
@@ -214,13 +227,16 @@ final class SuggestionController: ObservableObject {
 
     private func dedupe(_ list: [Suggestion]) -> [Suggestion] {
         var seen = Set<String>()
-        return Array(list.filter { row in
-            let key = row.dedupeKey ?? row.id
-            return seen.insert(key).inserted
-        }.prefix(maxResults))
+        return Array(
+            list.filter { row in
+                let key = row.dedupeKey ?? row.id
+                return seen.insert(key).inserted
+            }.prefix(maxResults))
     }
 
-    private func gather(_ providers: [any SuggestionProvider], _ query: String) async -> [Suggestion] {
+    private func gather(_ providers: [any SuggestionProvider], _ query: String) async
+        -> [Suggestion]
+    {
         // Run providers concurrently but keep results in provider order, so the
         // merged list is stable regardless of which source returns first.
         await withTaskGroup(of: (Int, [Suggestion]).self) { group in
@@ -248,7 +264,8 @@ struct AutocompleteList: View {
 
     var body: some View {
         VStack(spacing: 1) {
-            ForEach(Array(controller.suggestions.enumerated()), id: \.element.id) { index, suggestion in
+            ForEach(Array(controller.suggestions.enumerated()), id: \.element.id) {
+                index, suggestion in
                 SuggestionRow(suggestion: suggestion, isSelected: controller.selection == index)
                     .contentShape(.rect)
                     .onHover { hovering in
@@ -296,13 +313,20 @@ private struct SuggestionRow: View {
             SuggestionIconView(icon: suggestion.icon)
                 .frame(width: 18, height: 18)
 
-            Text(highlighted(suggestion.title, matches: suggestion.titleMatches, size: 14, dimUnmatched: false))
-                .lineLimit(1)
+            Text(
+                highlighted(
+                    suggestion.title, matches: suggestion.titleMatches, size: 14,
+                    dimUnmatched: false)
+            )
+            .lineLimit(1)
 
             if let subtitle = suggestion.subtitle, !subtitle.isEmpty {
-                Text(highlighted(subtitle, matches: suggestion.subtitleMatches, size: 13, dimUnmatched: true))
-                    .lineLimit(1)
-                    .layoutPriority(-1)
+                Text(
+                    highlighted(
+                        subtitle, matches: suggestion.subtitleMatches, size: 13, dimUnmatched: true)
+                )
+                .lineLimit(1)
+                .layoutPriority(-1)
             }
 
             Spacer(minLength: 0)
@@ -425,13 +449,15 @@ struct AutocompleteField: View {
     /// longer extends the current typed text.
     private func applyInline(_ fill: String?) {
         guard let fill,
-              fill != fieldText,
-              fill.count > userText.count,
-              fill.lowercased().hasPrefix(userText.lowercased())
+            fill != fieldText,
+            fill.count > userText.count,
+            fill.lowercased().hasPrefix(userText.lowercased())
         else { return }
         applyingInline = true
         fieldText = fill
-        if let tailStart = fill.index(fill.startIndex, offsetBy: userText.count, limitedBy: fill.endIndex) {
+        if let tailStart = fill.index(
+            fill.startIndex, offsetBy: userText.count, limitedBy: fill.endIndex)
+        {
             selection = TextSelection(range: tailStart..<fill.endIndex)
         }
     }
@@ -455,8 +481,14 @@ extension View {
         onCancel: @escaping () -> Void
     ) -> some View {
         self
-            .onKeyPress(.upArrow) { controller.moveSelection(by: -1); return .handled }
-            .onKeyPress(.downArrow) { controller.moveSelection(by: 1); return .handled }
+            .onKeyPress(.upArrow) {
+                controller.moveSelection(by: -1)
+                return .handled
+            }
+            .onKeyPress(.downArrow) {
+                controller.moveSelection(by: 1)
+                return .handled
+            }
             .onKeyPress(.return) {
                 if let selected = controller.selected() {
                     onChoose(selected)
@@ -465,6 +497,9 @@ extension View {
                 }
                 return .handled
             }
-            .onKeyPress(.escape) { onCancel(); return .handled }
+            .onKeyPress(.escape) {
+                onCancel()
+                return .handled
+            }
     }
 }

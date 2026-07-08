@@ -163,7 +163,7 @@ pub fn maybe_lock_for_mac_restart(lock: impl FnOnce()) {
     if vault_auto_lock() != VaultAutoLock::OnMacRestart {
         return;
     }
-    if crate::vault::service::is_locked() {
+    if crate::vault::service::is_locked_direct() {
         return;
     }
     let current_boot = SYSTEM_BOOT_SECS.load(Ordering::Relaxed);
@@ -377,6 +377,11 @@ mod tests {
             locked = true;
         }
         assert!(locked);
+
+        // Don't leak OnMacRestart + boot secs into later tests — `is_locked()`
+        // re-enters this policy and used to recurse forever.
+        SYSTEM_BOOT_SECS.store(0, Ordering::Relaxed);
+        *STATE.lock().unwrap() = SettingsState::default();
 
         let _ = std::fs::remove_dir_all(&dir);
     }
