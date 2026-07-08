@@ -4,11 +4,14 @@
 //! It is a tree (ADR-0006):
 //!
 //! * A **space** is a named container with its own remembered active tab. It is
-//!   rendered as a *pinned* section (folders + loose pinned tabs) above a *today*
-//!   section (ephemeral tabs).
-//! * A **folder** lives in a space's pinned section and holds pinned tabs.
-//! * A **tab** belongs to a space, is `pinned` or ephemeral, and — only when
-//!   pinned — may belong to a folder. New tabs are ephemeral ("today").
+//!   rendered as a *saved* section (folders + loose saved tabs) above an *open*
+//!   section (the working set).
+//! * A **folder** lives in a space's saved section and holds saved tabs.
+//! * A **tab** belongs to a space. The `pinned` flag means *saved* (persistent
+//!   in the sidebar's tree below New Tab). The `favorite` flag (ADR-0032) is the
+//!   Arc-style pinned icon strip below the URL bar — always resident, dismiss-
+//!   not-destroy on close. The two are mutually exclusive. Only saved tabs may
+//!   belong to a folder. New tabs start open.
 //!
 //! **Identity (ADR-0013).** [`TabId`] is core-assigned (a persisted counter),
 //! *not* CEF's browser identifier — CEF ids restart every session, and a
@@ -55,7 +58,7 @@ pub const NONE_ID: i32 = -1;
 /// payload; [`StructureChanged`](Event::StructureChanged) carries neither — the
 /// host re-pulls [`snapshot`] instead.
 #[repr(i32)]
-enum Event {
+pub(crate) enum Event {
     TabTitleChanged = 0,    // payload = title
     TabUrlChanged = 1,      // payload = url
     TabLoadStarted = 2,     // no payload
@@ -67,11 +70,16 @@ enum Event {
     /// 0 for background — emitted when a link/window.open would otherwise spawn
     /// a bare CEF popup (target="_blank" and friends).
     OpenTabRequested = 7,
+    /// A background tab's CEF browser was discarded; the host detaches its view
+    /// (ADR-0033). Re-show hydrates via `restore_tab`.
+    TabSuspended = 8,
 }
 
-/// Host callback, invoked on the main (UI) thread. `payload` is owned by the
-/// core and valid only for the duration of the call — copy out, don't retain.
-pub type EventCallback = extern "C" fn(event_type: i32, id: i32, payload: *const c_char);
+/// Host callback, invoked on the main (UI) thread. `window_id` is `0` for the
+/// normal window, `>= 1` for a private window. `payload` is owned by the core
+/// and valid only for the duration of the call — copy out, don't retain.
+pub type EventCallback =
+    extern "C" fn(event_type: i32, window_id: i32, id: i32, payload: *const c_char);
 
 static CALLBACK: Mutex<Option<EventCallback>> = Mutex::new(None);
 static STORE: Mutex<Option<TabStore>> = Mutex::new(None);
@@ -89,6 +97,10 @@ struct Tab {
     /// `Some` only when `pinned` — folders hold persistent tabs.
     folder: Option<FolderId>,
     pinned: bool,
+    /// Arc-style pinned icon strip (ADR-0032). `favorite ⇒ !pinned`.
+    favorite: bool,
+    /// Hidden from the strip after a user close; browser stays loaded.
+    dismissed: bool,
     /// The live CEF browser, or `None` for a *suspended* tab — restored from
     /// the persisted session and hydrated (via [`attach_browser`]) the first
     /// time it is shown.
@@ -110,6 +122,7 @@ struct ClosedTab {
     space: SpaceId,
     folder: Option<FolderId>,
     pinned: bool,
+    favorite: bool,
     url: String,
     title: String,
     /// The tab that immediately followed it in its section at close time, so
@@ -193,6 +206,44 @@ impl TabStore {
         self.tabs.iter().find(|t| t.space == space).map(|t| t.id)
     }
 
+    /// Whether `t` belongs to the same sidebar section as the destination triple.
+    fn same_section(
+        t: &Tab,
+        space: SpaceId,
+        favorite: bool,
+        pinned: bool,
+        folder: Option<FolderId>,
+    ) -> bool {
+        t.space == space && t.favorite == favorite && t.pinned == pinned && t.folder == folder
+    }
+
+    /// The next tab in `space` the user can activate — skips dismissed favorites.
+    fn next_selectable_in(&self, space: SpaceId) -> Option<TabId> {
+        self.tabs
+            .iter()
+            .find(|t| t.space == space && (!t.favorite || !t.dismissed))
+            .map(|t| t.id)
+    }
+
+    /// Hide a favorite from the strip without tearing down its browser.
+    fn dismiss_favorite(&mut self, id: TabId) {
+        let Some(pos) = self.tabs.iter().position(|t| t.id == id) else {
+            return;
+        };
+        if !self.tabs[pos].favorite {
+            return;
+        }
+        self.tabs[pos].dismissed = true;
+        let space = self.tabs[pos].space;
+        let was_active = self
+            .spaces
+            .iter()
+            .any(|s| s.id == space && s.active == Some(id));
+        if was_active {
+            self.set_space_active(space, self.next_selectable_in(space));
+        }
+    }
+
     /// Remove a tab, repairing its space's active pointer, and hand back its
     /// browser (if hydrated) so the caller can tear it down. Does *not* emit —
     /// callers run inside [`structural`].
@@ -205,8 +256,7 @@ impl TabStore {
             .iter()
             .any(|s| s.id == space && s.active == Some(id));
         if was_active {
-            let neighbor = self.first_tab_in(space);
-            self.set_space_active(space, neighbor);
+            self.set_space_active(space, self.next_selectable_in(space));
         }
         browser
     }
@@ -221,16 +271,17 @@ impl TabStore {
             space: tab.space,
             folder: tab.folder,
             pinned: tab.pinned,
+            favorite: tab.favorite,
             url: tab.url.clone(),
             title: tab.title.clone(),
-            // The next tab in this tab's own section (same space / pinned /
-            // folder) — the anchor reopen slots the tab back before.
+            // The next tab in this tab's own section (same space / favorite /
+            // pinned / folder) — the anchor reopen slots the tab back before.
             before: self
                 .tabs
                 .iter()
                 .skip_while(|t| t.id != id)
                 .skip(1)
-                .find(|t| t.space == tab.space && t.pinned == tab.pinned && t.folder == tab.folder)
+                .find(|t| Self::same_section(t, tab.space, tab.favorite, tab.pinned, tab.folder))
                 .map(|t| t.id),
         });
         if let Some(captured) = captured {
@@ -266,6 +317,7 @@ impl TabStore {
                 .iter()
                 .any(|f| f.id == *fid && f.space == space)
         });
+        let favorite = closed.favorite;
         let pinned = closed.pinned || folder.is_some();
         // Slot before the old sibling only if it still exists in the same
         // section; otherwise append to the section's end (mirrors relocate_tab).
@@ -273,13 +325,13 @@ impl TabStore {
             .before
             .and_then(|anchor| {
                 self.tabs.iter().position(|t| {
-                    t.id == anchor && t.space == space && t.pinned == pinned && t.folder == folder
+                    t.id == anchor && Self::same_section(t, space, favorite, pinned, folder)
                 })
             })
             .unwrap_or_else(|| {
                 self.tabs
                     .iter()
-                    .rposition(|t| t.space == space && t.pinned == pinned && t.folder == folder)
+                    .rposition(|t| Self::same_section(t, space, favorite, pinned, folder))
                     .map_or(self.tabs.len(), |p| p + 1)
             });
         self.tabs.insert(
@@ -289,6 +341,8 @@ impl TabStore {
                 space,
                 folder,
                 pinned,
+                favorite,
+                dismissed: false,
                 browser: None,
                 url: closed.url,
                 title: closed.title,
@@ -317,6 +371,7 @@ impl TabStore {
     fn relocate_tab(
         &mut self,
         id: TabId,
+        favorite: bool,
         pinned: bool,
         folder: Option<FolderId>,
         before: Option<TabId>,
@@ -325,17 +380,23 @@ impl TabStore {
             return;
         };
         let space = self.tabs[from].space;
-        let (pinned, folder) = match folder {
-            Some(fid) if self.folders.iter().any(|f| f.id == fid && f.space == space) => {
-                (true, Some(fid)) // folders hold persistent tabs
+        let (favorite, pinned, folder) = if favorite {
+            (true, false, None)
+        } else {
+            match folder {
+                Some(fid) if self.folders.iter().any(|f| f.id == fid && f.space == space) => {
+                    (false, true, Some(fid)) // folders hold persistent tabs
+                }
+                Some(_) => return, // folder isn't in this tab's space — reject
+                None => (false, pinned, None),
             }
-            Some(_) => return, // folder isn't in this tab's space — reject
-            None => (pinned, None),
         };
         {
             let tab = &mut self.tabs[from];
+            tab.favorite = favorite;
             tab.pinned = pinned;
             tab.folder = folder;
+            tab.dismissed = false;
         }
         // Pull the tab out, then re-insert it. Indices below are computed against
         // the post-removal Vec so they land where intended.
@@ -349,7 +410,7 @@ impl TabStore {
             // destination section's last member, i.e. the section's end.
             self.tabs
                 .iter()
-                .rposition(|t| t.space == space && t.pinned == pinned && t.folder == folder)
+                .rposition(|t| Self::same_section(t, space, favorite, pinned, folder))
                 .map_or(self.tabs.len(), |p| p + 1)
         });
         self.tabs.insert(index, tab);
@@ -413,11 +474,14 @@ impl TabStore {
                 let folder = t
                     .folder
                     .filter(|fid| folders.iter().any(|f| f.id == *fid && f.space == t.space));
+                let favorite = t.favorite;
                 Tab {
                     id: t.id,
                     space: t.space,
-                    pinned: t.pinned || folder.is_some(),
-                    folder,
+                    pinned: (t.pinned || folder.is_some()) && !favorite,
+                    folder: if favorite { None } else { folder },
+                    favorite,
+                    dismissed: t.dismissed,
                     browser: None,
                     url: t.url,
                     title: t.title,
@@ -492,6 +556,8 @@ impl TabStore {
                     space: t.space,
                     folder: t.folder,
                     pinned: t.pinned,
+                    favorite: t.favorite,
+                    dismissed: t.dismissed,
                     url: t.url.clone(),
                     title: t.title.clone(),
                 })
@@ -554,25 +620,41 @@ fn with_store<R>(f: impl FnOnce(&TabStore) -> R) -> Option<R> {
 /// here, after the lock drops. A suspended visible tab has no browser to
 /// reconcile; the host hydrates it in response to the event.
 fn structural<R>(f: impl FnOnce(&mut TabStore) -> R) -> Option<R> {
-    let (old, new, result) = {
+    let (old_visible, old_browser, new_visible, new_browser, old_space, new_space, result) = {
         let mut guard = STORE.lock().expect("tab store lock poisoned");
         let store = guard.as_mut()?;
-        let old = store
-            .visible_tab()
-            .and_then(|id| store.browser_of(id).map(|b| (id, b)));
+        let old_visible = store.visible_tab();
+        let old_space = store.active_space;
+        let old_browser = old_visible.and_then(|id| store.browser_of(id).map(|b| (id, b)));
         let result = f(store);
-        let new = store
-            .visible_tab()
-            .and_then(|id| store.browser_of(id).map(|b| (id, b)));
-        (old, new, result)
+        let new_visible = store.visible_tab();
+        let new_space = store.active_space;
+        let new_browser = new_visible.and_then(|id| store.browser_of(id).map(|b| (id, b)));
+        (
+            old_visible,
+            old_browser,
+            new_visible,
+            new_browser,
+            old_space,
+            new_space,
+            result,
+        )
     };
-    if old.as_ref().map(|(id, _)| *id) != new.as_ref().map(|(id, _)| *id) {
-        if let Some((_, browser)) = old {
+    if old_browser.as_ref().map(|(id, _)| *id) != new_browser.as_ref().map(|(id, _)| *id) {
+        if let Some((_, browser)) = old_browser {
             set_visible(&browser, false);
         }
-        if let Some((_, browser)) = new {
+        if let Some((_, browser)) = new_browser {
             set_visible(&browser, true);
         }
+    }
+    if old_visible != new_visible || old_space != new_space {
+        crate::tab_suspension::on_visibility_changed(
+            old_visible,
+            new_visible,
+            old_space,
+            new_space,
+        );
     }
     emit(Event::StructureChanged, 0, None);
     persist();
@@ -598,15 +680,20 @@ fn set_visible(browser: &Browser, visible: bool) {
 
 /// Push one event to the host. A no-op when no callback is registered.
 fn emit(event: Event, id: i32, payload: Option<&str>) {
+    emit_for_window(crate::private_window::NORMAL_WINDOW_ID, event, id, payload);
+}
+
+/// Push one event for window `window_id` (`0` = normal).
+pub(crate) fn emit_for_window(window_id: i32, event: Event, id: i32, payload: Option<&str>) {
     let callback = *CALLBACK.lock().expect("event callback lock poisoned");
     let Some(callback) = callback else {
         return;
     };
     match payload {
-        None => callback(event as i32, id, std::ptr::null()),
+        None => callback(event as i32, window_id, id, std::ptr::null()),
         Some(text) => match CString::new(text) {
-            Ok(c) => callback(event as i32, id, c.as_ptr()),
-            Err(_) => callback(event as i32, id, std::ptr::null()),
+            Ok(c) => callback(event as i32, window_id, id, c.as_ptr()),
+            Err(_) => callback(event as i32, window_id, id, std::ptr::null()),
         },
     }
 }
@@ -634,6 +721,8 @@ pub fn register_tab(browser: Browser, url: &str) -> TabId {
             space,
             folder: None,
             pinned: false,
+            favorite: false,
+            dismissed: false,
             browser: Some(browser),
             url: url.to_string(),
             title: String::new(),
@@ -657,6 +746,56 @@ pub fn suspended_url(id: TabId) -> Option<String> {
             .map(|t| t.url.clone())
     })
     .flatten()
+}
+
+/// Whether `id` is a favorite (resident strip — never auto-suspended, ADR-0032).
+pub fn is_favorite(id: TabId) -> bool {
+    with_store(|store| store.tab(id).is_some_and(|t| t.favorite)).unwrap_or(false)
+}
+
+/// Hydrated, non-favorite tabs in `space` that are not `keep_visible`.
+pub fn hydrated_background_in_space(space: SpaceId, keep_visible: Option<TabId>) -> Vec<TabId> {
+    with_store(|store| {
+        store
+            .tabs
+            .iter()
+            .filter(|t| {
+                t.space == space && t.browser.is_some() && !t.favorite && keep_visible != Some(t.id)
+            })
+            .map(|t| t.id)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Discard a background tab's CEF browser, keeping url/title in the model
+/// (ADR-0033). Returns `true` when the tab was suspended. Clears `browser`
+/// before closing so `on_before_close` does not remove the tab.
+pub fn suspend_tab(id: TabId) -> bool {
+    if SHUTTING_DOWN.load(Ordering::Relaxed) {
+        return false;
+    }
+    let browser = with_store_mut(|store| {
+        if store.visible_tab() == Some(id) {
+            return None;
+        }
+        let tab = store.tabs.iter_mut().find(|t| t.id == id)?;
+        if tab.browser.is_none() || tab.favorite {
+            return None;
+        }
+        let browser = tab.browser.take();
+        tab.loading = false;
+        tab.can_go_back = false;
+        tab.can_go_forward = false;
+        browser
+    });
+    let Some(browser) = browser else {
+        return false;
+    };
+    close_browser(Some(browser));
+    emit(Event::TabSuspended, id, None);
+    persist();
+    true
 }
 
 /// Hydrate a suspended tab with its freshly-created browser (the lazy-restore
@@ -688,10 +827,18 @@ pub fn select_tab(id: TabId) {
     });
 }
 
-/// Close a tab: record it for reopen (⌘⇧T), remove it from the store (repairing
-/// active), and route its browser through CEF's close flow.
+/// Close a tab. Favorites are dismissed from the strip (browser stays loaded);
+/// other tabs are recorded for reopen (⌘⇧T), removed, and torn down.
 pub fn close_tab(id: TabId) {
-    let browser = structural(|store| store.remove_tab_recording(id)).flatten();
+    let browser = structural(|store| {
+        if store.tab(id).is_some_and(|t| t.favorite) {
+            store.dismiss_favorite(id);
+            None
+        } else {
+            store.remove_tab_recording(id)
+        }
+    })
+    .flatten();
     close_browser(browser);
 }
 
@@ -728,15 +875,47 @@ pub fn can_reopen_closed() -> bool {
 // ─── Pinning & folders ─────────────────────────────────────────────────────
 
 /// Pin (persist) or unpin a tab. Unpinning returns it to "today" and clears any
-/// folder membership.
+/// folder membership. Saving clears the favorite strip.
 pub fn set_pinned(id: TabId, pinned: bool) {
     structural(|store| {
         if let Some(tab) = store.tabs.iter_mut().find(|t| t.id == id) {
             tab.pinned = pinned;
-            if !pinned {
+            if pinned {
+                tab.favorite = false;
+                tab.dismissed = false;
+            } else {
                 tab.folder = None;
             }
         }
+    });
+}
+
+/// Pin or unpin a tab in the Arc-style icon strip (ADR-0032). Pinning clears
+/// saved/folder membership; unpinning returns the tab to the open section.
+pub fn set_favorite(id: TabId, favorite: bool) {
+    structural(|store| {
+        if let Some(tab) = store.tabs.iter_mut().find(|t| t.id == id) {
+            tab.favorite = favorite;
+            tab.dismissed = false;
+            if favorite {
+                tab.pinned = false;
+                tab.folder = None;
+            }
+        }
+    });
+}
+
+/// Restore a dismissed favorite to the icon strip and make it active.
+pub fn restore_favorite(id: TabId) {
+    structural(|store| {
+        let Some(space) = store.tab(id).filter(|t| t.favorite).map(|t| t.space) else {
+            return;
+        };
+        if let Some(tab) = store.tabs.iter_mut().find(|t| t.id == id) {
+            tab.dismissed = false;
+        }
+        store.active_space = space;
+        store.set_space_active(space, Some(id));
     });
 }
 
@@ -761,6 +940,8 @@ pub fn move_to_folder(id: TabId, folder: Option<FolderId>) {
             tab.folder = folder;
             if folder.is_some() {
                 tab.pinned = true;
+                tab.favorite = false;
+                tab.dismissed = false;
             }
         }
     });
@@ -770,8 +951,14 @@ pub fn move_to_folder(id: TabId, folder: Option<FolderId>) {
 /// pinned/loose or a folder — positioned before `before` (or at the section's
 /// end when `None`). Re-parents (pin/unpin, file into/out of a folder) and
 /// reorders in one structural change. See [`TabStore::relocate_tab`].
-pub fn move_tab(id: TabId, pinned: bool, folder: Option<FolderId>, before: Option<TabId>) {
-    structural(|store| store.relocate_tab(id, pinned, folder, before));
+pub fn move_tab(
+    id: TabId,
+    favorite: bool,
+    pinned: bool,
+    folder: Option<FolderId>,
+    before: Option<TabId>,
+) {
+    structural(|store| store.relocate_tab(id, favorite, pinned, folder, before));
 }
 
 /// Create an empty folder in the active space. Returns its id (or -1).
@@ -788,6 +975,76 @@ pub fn create_folder(name: &str) -> FolderId {
         id
     })
     .unwrap_or(NONE_ID)
+}
+
+/// Create a folder in the active space and move `tab_ids` into it (auto-pins).
+/// Unknown ids and tabs in other spaces are skipped; relative store order among
+/// the moved tabs is preserved. Returns the new folder id (or -1 when `tab_ids`
+/// is empty or none are in the active space).
+pub fn create_folder_with_tabs(name: &str, tab_ids: &[TabId]) -> FolderId {
+    let folder_id = structural(|store| {
+        if tab_ids.is_empty() {
+            return None;
+        }
+        let space = store.active_space;
+        let wanted: std::collections::HashSet<TabId> = tab_ids
+            .iter()
+            .copied()
+            .filter(|id| store.tabs.iter().any(|t| t.id == *id && t.space == space))
+            .collect();
+        if wanted.is_empty() {
+            return None;
+        }
+        let folder_id = store.next_folder;
+        store.next_folder += 1;
+        store.folders.push(Folder {
+            id: folder_id,
+            space,
+            name: name.to_string(),
+        });
+        let ordered: Vec<TabId> = store
+            .tabs
+            .iter()
+            .filter(|t| wanted.contains(&t.id))
+            .map(|t| t.id)
+            .collect();
+        for id in ordered {
+            store.relocate_tab(id, false, true, Some(folder_id), None);
+        }
+        Some(folder_id)
+    })
+    .flatten();
+    folder_id.unwrap_or(NONE_ID)
+}
+
+/// Close ephemeral ("today") tabs in the active space except those in `keep`.
+/// When `keep` is empty, the active tab is kept. Bulk close — not reopenable.
+pub fn clear_ephemeral_tabs(keep: &[TabId]) {
+    let browsers = structural(|store| {
+        let space = store.active_space;
+        let keep_set: std::collections::HashSet<TabId> = if keep.is_empty() {
+            store.visible_tab().into_iter().collect()
+        } else {
+            keep.iter().copied().collect()
+        };
+        let victims: Vec<(TabId, Option<Browser>)> = store
+            .tabs
+            .iter()
+            .filter(|t| t.space == space && !t.pinned && !t.favorite && !keep_set.contains(&t.id))
+            .map(|t| (t.id, t.browser.clone()))
+            .collect();
+        for (id, _) in &victims {
+            store.remove_tab(*id);
+        }
+        victims
+            .into_iter()
+            .filter_map(|(_, b)| b)
+            .collect::<Vec<_>>()
+    })
+    .unwrap_or_default();
+    for browser in browsers {
+        close_browser(Some(browser));
+    }
 }
 
 /// Delete a folder, keeping its tabs (they drop to loose pinned — no tab loss).
@@ -928,6 +1185,8 @@ pub fn folder_to_space(folder_id: FolderId) -> SpaceId {
             tab.space = sid;
             tab.folder = None;
             tab.pinned = true;
+            tab.favorite = false;
+            tab.dismissed = false;
             first.get_or_insert(tab.id);
         }
         store.folders.retain(|f| f.id != folder_id);
@@ -976,6 +1235,8 @@ pub fn space_to_folder(space_id: SpaceId) -> FolderId {
             tab.space = target;
             tab.folder = Some(folder_id);
             tab.pinned = true;
+            tab.favorite = false;
+            tab.dismissed = false;
         }
         store.folders.retain(|f| f.space != space_id);
         store.spaces.retain(|s| s.id != space_id);
@@ -1093,6 +1354,16 @@ pub fn active_browser() -> Option<Browser> {
     with_store(|store| store.visible_tab().and_then(|id| store.browser_of(id))).flatten()
 }
 
+/// The visible tab's host, if any.
+pub fn active_tab_host() -> Option<String> {
+    with_store(|store| {
+        let id = store.visible_tab()?;
+        let url = store.tab(id)?.url.as_str();
+        crate::vault::lookup::host_from_uri(url)
+    })
+    .flatten()
+}
+
 /// Close a browser through CEF's (force) close flow, tolerating `None` / an
 /// already-invalid host.
 fn close_browser(browser: Option<Browser>) {
@@ -1132,6 +1403,11 @@ pub struct TabView {
     pub space: SpaceId,
     pub folder: Option<FolderId>,
     pub pinned: bool,
+    pub favorite: bool,
+    pub dismissed: bool,
+    /// `false` when the tab is suspended (`browser: None`) — runtime discard or
+    /// lazy session restore (ADR-0013 / ADR-0033).
+    pub hydrated: bool,
     pub url: String,
     pub title: String,
     pub loading: bool,
@@ -1171,6 +1447,9 @@ pub fn snapshot() -> Snapshot {
                 space: t.space,
                 folder: t.folder,
                 pinned: t.pinned,
+                favorite: t.favorite,
+                dismissed: t.dismissed,
+                hydrated: t.browser.is_some(),
                 url: t.url.clone(),
                 title: t.title.clone(),
                 loading: t.loading,
@@ -1228,6 +1507,8 @@ mod tests {
                     space,
                     folder,
                     pinned,
+                    favorite: false,
+                    dismissed: false,
                     url: format!("https://t{id}.example/"),
                     title: format!("t{id}"),
                 })
@@ -1349,7 +1630,16 @@ mod tests {
         store
             .tabs
             .iter()
-            .filter(|t| t.space == 1 && !t.pinned && t.folder.is_none())
+            .filter(|t| t.space == 1 && !t.pinned && !t.favorite && t.folder.is_none())
+            .map(|t| t.id)
+            .collect()
+    }
+
+    fn favorite_ids(store: &TabStore) -> Vec<TabId> {
+        store
+            .tabs
+            .iter()
+            .filter(|t| t.space == 1 && t.favorite && !t.dismissed)
             .map(|t| t.id)
             .collect()
     }
@@ -1367,10 +1657,10 @@ mod tests {
             ],
         ));
         // Drag tab 3 above tab 1.
-        store.relocate_tab(3, false, None, Some(1));
+        store.relocate_tab(3, false, false, None, Some(1));
         assert_eq!(today_ids(&store), vec![3, 1, 2]);
         // Drag tab 3 to the section's end (no anchor).
-        store.relocate_tab(3, false, None, None);
+        store.relocate_tab(3, false, false, None, None);
         assert_eq!(today_ids(&store), vec![1, 2, 3]);
     }
 
@@ -1383,7 +1673,7 @@ mod tests {
             vec![(2, 1, None, false)], // an ephemeral "today" tab
         ));
         // Drag today tab 2 onto folder 5: auto-pins and joins the folder.
-        store.relocate_tab(2, false, Some(5), None);
+        store.relocate_tab(2, false, false, Some(5), None);
         let t = store.tabs.iter().find(|t| t.id == 2).unwrap();
         assert!(t.pinned);
         assert_eq!(t.folder, Some(5));
@@ -1402,11 +1692,104 @@ mod tests {
             ],
         ));
         // Drag the folder tab down into the today section (no anchor → its end).
-        store.relocate_tab(2, false, None, None);
+        store.relocate_tab(2, false, false, None, None);
         let t = store.tabs.iter().find(|t| t.id == 2).unwrap();
         assert!(!t.pinned);
         assert_eq!(t.folder, None);
         assert_eq!(today_ids(&store), vec![3, 2]);
+    }
+
+    #[test]
+    fn create_folder_with_tabs_moves_in_store_order() {
+        let mut store = TabStore::from_saved(saved(
+            1,
+            vec![(1, None)],
+            vec![],
+            vec![(2, 1, None, false), (3, 1, None, true), (4, 1, None, false)],
+        ));
+        let folder_id = {
+            let id = store.next_folder;
+            store.next_folder += 1;
+            store.folders.push(Folder {
+                id,
+                space: 1,
+                name: "Batch".to_string(),
+            });
+            let ordered: Vec<TabId> = store
+                .tabs
+                .iter()
+                .filter(|t| [4, 2].contains(&t.id))
+                .map(|t| t.id)
+                .collect();
+            for tab_id in ordered {
+                store.relocate_tab(tab_id, false, true, Some(id), None);
+            }
+            id
+        };
+        assert_eq!(folder_id, 1);
+        let folder_tabs: Vec<TabId> = store
+            .tabs
+            .iter()
+            .filter(|t| t.folder == Some(folder_id))
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(folder_tabs, vec![2, 4]);
+        assert!(store.tabs.iter().find(|t| t.id == 2).unwrap().pinned);
+        assert_eq!(today_ids(&store), Vec::<TabId>::new());
+    }
+
+    #[test]
+    fn clear_ephemeral_tabs_keeps_active_when_keep_empty() {
+        let mut store = TabStore::from_saved(saved(
+            1,
+            vec![(1, Some(2))],
+            vec![],
+            vec![
+                (1, 1, None, false),
+                (2, 1, None, false),
+                (3, 1, None, false),
+            ],
+        ));
+        let keep: std::collections::HashSet<TabId> = store.visible_tab().into_iter().collect();
+        let victims: Vec<TabId> = store
+            .tabs
+            .iter()
+            .filter(|t| t.space == 1 && !t.pinned && !keep.contains(&t.id))
+            .map(|t| t.id)
+            .collect();
+        for id in victims {
+            store.remove_tab(id);
+        }
+        assert_eq!(today_ids(&store), vec![2]);
+        assert_eq!(store.visible_tab(), Some(2));
+    }
+
+    #[test]
+    fn clear_ephemeral_tabs_keeps_explicit_selection() {
+        let mut store = TabStore::from_saved(saved(
+            1,
+            vec![(1, Some(2))],
+            vec![],
+            vec![
+                (1, 1, None, false),
+                (2, 1, None, false),
+                (3, 1, None, false),
+                (4, 1, None, false),
+            ],
+        ));
+        let keep: std::collections::HashSet<TabId> = [1, 3].into_iter().collect();
+        let victims: Vec<TabId> = store
+            .tabs
+            .iter()
+            .filter(|t| t.space == 1 && !t.pinned && !keep.contains(&t.id))
+            .map(|t| t.id)
+            .collect();
+        for id in victims {
+            store.remove_tab(id);
+        }
+        assert_eq!(today_ids(&store), vec![1, 3]);
+        // Active tab (2) was not in `keep` — it closes with the rest.
+        assert_eq!(store.visible_tab(), Some(1));
     }
 
     #[test]
@@ -1417,7 +1800,7 @@ mod tests {
             vec![(5, 2)],              // folder 5 lives in space 2
             vec![(3, 1, None, false)], // tab 3 is in space 1
         ));
-        store.relocate_tab(3, false, Some(5), None);
+        store.relocate_tab(3, false, false, Some(5), None);
         let t = store.tabs.iter().find(|t| t.id == 3).unwrap();
         assert!(!t.pinned); // unchanged — the cross-space folder was rejected
         assert_eq!(t.folder, None);
@@ -1488,6 +1871,40 @@ mod tests {
     }
 
     #[test]
+    fn favorite_dismiss_keeps_tab_and_browser_slot() {
+        let mut store = TabStore::from_saved(saved(
+            1,
+            vec![(1, Some(2))],
+            vec![],
+            vec![(1, 1, None, false), (2, 1, None, false)],
+        ));
+        store.tabs.iter_mut().find(|t| t.id == 2).unwrap().favorite = true;
+        store.dismiss_favorite(2);
+        assert_eq!(store.tabs.len(), 2);
+        let t = store.tabs.iter().find(|t| t.id == 2).unwrap();
+        assert!(t.favorite);
+        assert!(t.dismissed);
+        assert_eq!(store.visible_tab(), Some(1));
+        assert!(favorite_ids(&store).is_empty());
+    }
+
+    #[test]
+    fn relocate_into_favorite_section() {
+        let mut store = TabStore::from_saved(saved(
+            1,
+            vec![(1, None)],
+            vec![],
+            vec![(2, 1, None, false), (3, 1, None, false)],
+        ));
+        store.relocate_tab(3, true, false, None, None);
+        let t = store.tabs.iter().find(|t| t.id == 3).unwrap();
+        assert!(t.favorite);
+        assert!(!t.pinned);
+        assert_eq!(favorite_ids(&store), vec![3]);
+        assert_eq!(today_ids(&store), vec![2]);
+    }
+
+    #[test]
     fn closed_stack_is_capped_and_evicts_oldest() {
         let mut store = TabStore::default_store();
         let n = CLOSED_STACK_CAP + 5;
@@ -1497,6 +1914,8 @@ mod tests {
                 space: 1,
                 folder: None,
                 pinned: false,
+                favorite: false,
+                dismissed: false,
                 browser: None,
                 url: String::new(),
                 title: String::new(),

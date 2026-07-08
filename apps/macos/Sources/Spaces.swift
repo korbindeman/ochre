@@ -1,34 +1,42 @@
 import AppKit
 import SwiftUI
 
-/// The active space's tree, rendered in the sidebar's scroll region: the pinned
-/// section (folders, then loose pinned tabs) above the "today" (ephemeral) tabs,
-/// with the New Tab row heading the today section (Arc placement).
-/// Membership + order come from the core-owned `BrowserState` (ADR-0006).
+/// The active space's tree, rendered in the sidebar's scroll region: the saved
+/// section (folders, then loose saved tabs) above open tabs, with the New Tab
+/// row between them. Membership + order come from the core-owned `BrowserState`
+/// (ADR-0006).
 struct SpaceContents: View {
     @ObservedObject private var state = BrowserState.shared
     @StateObject private var drag = TabDragModel()
-    /// Namespace for the sliding active-tab highlight, shared across the loose,
-    /// today, and folder rows so the selection can animate between any of them.
+    /// Namespace for the sliding active-tab highlight, shared across saved and
+    /// open rows so the selection can animate between any of them.
     @Namespace private var selection
 
     var body: some View {
         let folders = state.activeFolders
-        let loose = state.loosePinnedTabs
-        let today = state.todayTabs
+        let loose = state.looseSavedTabs
+        let open = state.openTabs
+        let hasSaved = !folders.isEmpty || !loose.isEmpty
 
         VStack(alignment: .leading, spacing: 4) {
             ForEach(folders) { folder in
                 FolderRow(folder: folder, drag: drag, selection: selection)
             }
-            sectionRows(loose, section: .loosePinned)
-            // Separate the persistent section from the today section.
-            if !folders.isEmpty || !loose.isEmpty {
+            sectionRows(loose, section: .looseSaved)
+            if hasSaved {
                 Divider()
                     .padding(.vertical, 4)
             }
-            NewTabRow(looseEmpty: loose.isEmpty, firstToday: today.first?.id, drag: drag)
-            sectionRows(today, section: .today)
+            NewTabRow(looseEmpty: loose.isEmpty, firstOpen: open.first?.id, drag: drag)
+            if !open.isEmpty {
+                TabSectionHeader(
+                    title: "Open",
+                    actionTitle: "Clear",
+                    actionHelp: "Close open tabs (selected tabs are kept)",
+                    onAction: { (NSApp.delegate as? AppDelegate)?.clearOpenTabs() }
+                )
+            }
+            sectionRows(open, section: .open)
         }
     }
 
@@ -53,24 +61,23 @@ struct SpaceContents: View {
             // A tab and a native surface are mutually exclusive — no tab reads as
             // active while History/Passwords covers the canvas.
             isActive: tab.id == state.activeTabId && !state.isSurfaceOpen,
+            isMultiSelected: state.selectedTabIds.contains(tab.id),
             selection: selection,
-            onSelect: { state.selectTab(tab.id) },
+            onSelect: { state.handleTabClick(tab.id) },
             onClose: { (NSApp.delegate as? AppDelegate)?.closeTab(tab.id) }
         )
-        .contextMenu { TabMenu(tab: tab, folders: state.activeFolders) }
+        .contextMenu { TabMenu(tab: tab) }
         .tabRowDrag(tab: tab, section: section, next: next, drag: drag)
         .transition(SidebarSelection.rowTransition)
     }
 }
 
-/// The New Tab row at the head of the today section — opens the command bar.
-/// Styled like a tab row so the list reads as one column. It also doubles as the
-/// drag boundary between the pinned and today sections (see `BoundaryDropDelegate`):
-/// its indicators only appear for the section a tab row can't cover (an empty
-/// loose-pinned or today section).
+/// The New Tab row between saved and open — opens the command bar. Styled like a
+/// tab row so the list reads as one column. It also doubles as the drag boundary
+/// between saved and open (see `BoundaryDropDelegate`).
 private struct NewTabRow: View {
     let looseEmpty: Bool
-    let firstToday: Int32?
+    let firstOpen: Int32?
     @ObservedObject var drag: TabDragModel
 
     @State private var height: CGFloat = 36
@@ -100,16 +107,16 @@ private struct NewTabRow: View {
         )
         .onPreferenceChange(RowHeightKey.self) { height = $0 }
         .overlay(alignment: .top) {
-            InsertionIndicator().opacity(looseEmpty && drag.slot == .endOf(.loosePinned) ? 1 : 0)
+            InsertionIndicator().opacity(looseEmpty && drag.slot == .endOf(.looseSaved) ? 1 : 0)
         }
         .overlay(alignment: .bottom) {
-            InsertionIndicator().opacity(firstToday == nil && drag.slot == .endOf(.today) ? 1 : 0)
+            InsertionIndicator().opacity(firstOpen == nil && drag.slot == .endOf(.open) ? 1 : 0)
         }
         .onDrop(
             of: [.text],
             delegate: BoundaryDropDelegate(
                 looseEmpty: looseEmpty,
-                firstToday: firstToday,
+                firstOpen: firstOpen,
                 rowHeight: { height },
                 drag: drag
             )
@@ -117,16 +124,37 @@ private struct NewTabRow: View {
     }
 }
 
-/// The right-click menu for a tab — pin/unpin, move between folders, close.
+/// The right-click menu for a tab — save/move to open, folders, close.
 private struct TabMenu: View {
     let tab: TabItem
-    let folders: [FolderItem]
+    @ObservedObject private var state = BrowserState.shared
 
     private var app: AppDelegate? { NSApp.delegate as? AppDelegate }
+    private var folders: [FolderItem] { state.activeFolders }
+
+    private var bulkIds: [Int32] {
+        state.hasMultiTabSelection && state.selectedTabIds.contains(tab.id)
+            ? Array(state.selectedTabIds).sorted()
+            : []
+    }
 
     var body: some View {
+        if !bulkIds.isEmpty {
+            Button("New Folder from \(bulkIds.count) Tabs") {
+                app?.createFolderFromTabs(bulkIds)
+            }
+            Button("Close \(bulkIds.count) Tabs") {
+                app?.closeTabs(bulkIds)
+            }
+            Divider()
+        }
+        if tab.favorite {
+            Button("Unpin Tab") { app?.setTabFavorite(tab.id, false) }
+        } else {
+            Button("Pin Tab") { app?.setTabFavorite(tab.id, true) }
+        }
         if tab.pinned {
-            Button("Unpin Tab") { app?.setTabPinned(tab.id, false) }
+            Button("Move to Open") { app?.setTabSaved(tab.id, false) }
             if !folders.isEmpty || tab.folder != nil {
                 Menu("Move to Folder") {
                     Button("None") { app?.moveTab(tab.id, toFolder: nil) }
@@ -135,22 +163,52 @@ private struct TabMenu: View {
                     }
                 }
             }
-        } else {
-            Button("Pin Tab") { app?.setTabPinned(tab.id, true) }
+        } else if !tab.favorite {
+            Button("Save Tab") { app?.setTabSaved(tab.id, true) }
         }
         Divider()
-        Button("Close Tab") { app?.closeTab(tab.id) }
+        Button(tab.favorite ? "Close Pinned Tab" : "Close Tab") { app?.closeTab(tab.id) }
     }
 }
 
-/// A collapsible folder in the pinned section, with its pinned tabs indented
+/// Section label (optional) with an optional trailing action — e.g. Saved, or Clear alone.
+private struct TabSectionHeader: View {
+    var title: String?
+    var actionTitle: String?
+    var actionHelp: String?
+    var onAction: (() -> Void)?
+
+    var body: some View {
+        HStack {
+            if let title {
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 0)
+            if let actionTitle, let onAction {
+                Button(actionTitle, action: onAction)
+                    .buttonStyle(IconButtonStyle(cornerRadius: 5, emphasizesLabel: false))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .help(actionHelp ?? "")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 2)
+    }
+}
+
+/// A collapsible folder in the saved section, with its saved tabs indented
 /// beneath. Collapse state is view-local (UI only, not in the core).
 struct FolderRow: View {
     let folder: FolderItem
     @ObservedObject private var state = BrowserState.shared
     @ObservedObject var drag: TabDragModel
     /// Shared with the rest of the sidebar so the active-tab highlight can slide
-    /// between a folder tab and a loose/today tab.
+    /// between a folder tab and a loose/open tab.
     let selection: Namespace.ID
     @State private var collapsed = false
 
@@ -204,11 +262,12 @@ struct FolderRow: View {
                     TabRow(
                         tab: tab,
                         isActive: tab.id == state.activeTabId && !state.isSurfaceOpen,
+                        isMultiSelected: state.selectedTabIds.contains(tab.id),
                         selection: selection,
-                        onSelect: { state.selectTab(tab.id) },
+                        onSelect: { state.handleTabClick(tab.id) },
                         onClose: { app?.closeTab(tab.id) }
                     )
-                    .contextMenu { TabMenu(tab: tab, folders: state.activeFolders) }
+                    .contextMenu { TabMenu(tab: tab) }
                     .tabRowDrag(
                         tab: tab,
                         section: .folder(folder.id),
@@ -235,12 +294,17 @@ struct SpaceSwitcher: View {
         HStack(spacing: 6) {
             // Passwords (vault) — the sidebar entry point to the manager (also in
             // the app menu). Leading utility button; spaces scroll to its right.
-            Button { app?.showVault() } label: {
+            Button {
+                app?.showVault()
+            } label: {
                 Image(systemName: "key.fill")
                     .font(.system(size: 12, weight: .semibold))
                     .frame(width: 26, height: 26)
             }
-            .buttonStyle(IconButtonStyle(cornerRadius: 7, isActive: state.isVaultOpen, emphasizesLabel: false))
+            .buttonStyle(
+                IconButtonStyle(
+                    cornerRadius: 7, isActive: state.isVaultOpen, emphasizesLabel: false)
+            )
             .foregroundStyle(state.isVaultOpen ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
             .help("Passwords")
 
@@ -258,7 +322,9 @@ struct SpaceSwitcher: View {
             }
             .scrollIndicators(.never)
 
-            Button { app?.newSpace() } label: {
+            Button {
+                app?.newSpace()
+            } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .semibold))
                     .frame(width: 26, height: 26)
@@ -281,7 +347,9 @@ private struct SpacePill: View {
     private var app: AppDelegate? { NSApp.delegate as? AppDelegate }
 
     var body: some View {
-        Button { browser_select_space(space.id) } label: {
+        Button {
+            browser_select_space(space.id)
+        } label: {
             Text(space.icon)
                 .font(.system(size: 13))
                 .frame(width: 26, height: 26)

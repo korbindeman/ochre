@@ -138,6 +138,20 @@ pub extern "C" fn browser_tab_set_pinned(id: i32, pinned: bool) {
     browser_core::embed::set_tab_pinned(id, pinned);
 }
 
+/// Pin or unpin tab `id` in the Arc-style icon strip (ADR-0032). Emits
+/// `StructureChanged`. Main thread only.
+#[no_mangle]
+pub extern "C" fn browser_tab_set_favorite(id: i32, favorite: bool) {
+    browser_core::embed::set_tab_favorite(id, favorite);
+}
+
+/// Restore a dismissed favorite to the icon strip. Emits `StructureChanged`.
+/// Main thread only.
+#[no_mangle]
+pub extern "C" fn browser_tab_restore_favorite(id: i32) {
+    browser_core::embed::restore_tab_favorite(id);
+}
+
 /// Move tab `id` into folder `folder` (negative ⇒ out of any folder). Moving
 /// into a folder auto-pins the tab. Emits `StructureChanged`. Main thread only.
 #[no_mangle]
@@ -145,13 +159,19 @@ pub extern "C" fn browser_tab_move_to_folder(id: i32, folder: i32) {
     browser_core::embed::move_tab_to_folder(id, folder);
 }
 
-/// Relocate tab `id` for drag-and-drop: set its section (`pinned`, and `folder`
-/// — negative ⇒ no folder) and position it just before tab `before` (negative ⇒
-/// the section's end). A folder destination auto-pins. Emits `StructureChanged`.
-/// Main thread only.
+/// Relocate tab `id` for drag-and-drop: set its section (`favorite`, `pinned`,
+/// and `folder` — negative ⇒ no folder) and position it just before tab `before`
+/// (negative ⇒ the section's end). A folder destination auto-pins. Emits
+/// `StructureChanged`. Main thread only.
 #[no_mangle]
-pub extern "C" fn browser_tab_move(id: i32, pinned: bool, folder: i32, before: i32) {
-    browser_core::embed::move_tab(id, pinned, folder, before);
+pub extern "C" fn browser_tab_move(
+    id: i32,
+    favorite: bool,
+    pinned: bool,
+    folder: i32,
+    before: i32,
+) {
+    browser_core::embed::move_tab(id, favorite, pinned, folder, before);
 }
 
 /// Create an empty folder (named `name`) in the active space; returns its id.
@@ -161,6 +181,42 @@ pub extern "C" fn browser_tab_move(id: i32, pinned: bool, folder: i32, before: i
 #[no_mangle]
 pub unsafe extern "C" fn browser_create_folder(name: *const c_char) -> i32 {
     browser_core::embed::create_folder(&cstr(name))
+}
+
+/// Create a folder in the active space and move `tab_ids` (length `count`) into
+/// it (auto-pins). Unknown ids are skipped. Returns the new folder id.
+///
+/// # Safety
+/// `name` must be null or a valid, NUL-terminated UTF-8 C string. When
+/// `count > 0`, `tab_ids` must point at `count` valid `i32`s.
+#[no_mangle]
+pub unsafe extern "C" fn browser_create_folder_with_tabs(
+    name: *const c_char,
+    tab_ids: *const i32,
+    count: i32,
+) -> i32 {
+    let ids = if count <= 0 || tab_ids.is_null() {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(tab_ids, count as usize)
+    };
+    browser_core::embed::create_folder_with_tabs(&cstr(name), ids)
+}
+
+/// Close ephemeral ("today") tabs in the active space except those listed in
+/// `keep_ids` (length `count`). When `count` is 0, the active tab is kept.
+/// Bulk close — not reopenable. Main thread only.
+///
+/// # Safety
+/// When `count > 0`, `keep_ids` must point at `count` valid `i32`s.
+#[no_mangle]
+pub unsafe extern "C" fn browser_clear_ephemeral_tabs(keep_ids: *const i32, count: i32) {
+    let keep = if count <= 0 || keep_ids.is_null() {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(keep_ids, count as usize)
+    };
+    browser_core::embed::clear_ephemeral_tabs(keep)
 }
 
 /// Delete folder `id`, keeping its tabs (they drop to loose pinned). Main thread.
@@ -407,6 +463,106 @@ pub extern "C" fn browser_set_find_result_callback(
 #[no_mangle]
 pub extern "C" fn browser_request_close_all() -> bool {
     browser_core::embed::request_close_all()
+}
+
+/// Close one window's browsers. `window_id` `0` = normal, `>= 1` = private.
+#[no_mangle]
+pub extern "C" fn browser_request_close_window(window_id: i32) -> bool {
+    browser_core::embed::request_close_window(window_id)
+}
+
+/// Tell the core which window owns nav/keyboard commands.
+#[no_mangle]
+pub extern "C" fn browser_set_focused_window(window_id: i32) {
+    browser_core::embed::set_focused_window(window_id);
+}
+
+/// Allocate a new private window profile. Returns its id (`>= 1`).
+#[no_mangle]
+pub extern "C" fn browser_private_window_create() -> i32 {
+    browser_core::embed::create_private_window()
+}
+
+/// JSON snapshot of a private window's tabs. Free with [`browser_string_free`].
+#[no_mangle]
+pub extern "C" fn browser_private_structure_json(window_id: i32) -> *mut c_char {
+    let json = browser_core::embed::private_structure_json(window_id);
+    CString::new(json)
+        .map(CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Create a tab in private window `window_id`. Returns tab id or negative.
+///
+/// # Safety
+/// `parent_view` and `url` must be valid per [`browser_tab_create`].
+#[no_mangle]
+pub unsafe extern "C" fn browser_private_tab_create(
+    window_id: i32,
+    parent_view: *mut c_void,
+    width: i32,
+    height: i32,
+    url: *const c_char,
+) -> i32 {
+    let url = if url.is_null() {
+        ""
+    } else {
+        CStr::from_ptr(url).to_str().unwrap_or("")
+    };
+    browser_core::embed::create_private_tab(window_id, parent_view, width, height, url)
+}
+
+#[no_mangle]
+pub extern "C" fn browser_private_tab_select(window_id: i32, id: i32) {
+    browser_core::embed::select_private_tab(window_id, id);
+}
+
+#[no_mangle]
+pub extern "C" fn browser_private_tab_close(window_id: i32, id: i32) {
+    browser_core::embed::close_private_tab(window_id, id);
+}
+
+#[no_mangle]
+pub extern "C" fn browser_private_destroy_window(window_id: i32) {
+    browser_core::embed::destroy_private_window(window_id);
+}
+
+#[no_mangle]
+pub extern "C" fn browser_private_adblock_site_allowlisted(window_id: i32) -> bool {
+    let host = browser_core::embed::active_tab_host();
+    if host.is_empty() {
+        return false;
+    }
+    browser_core::embed::private_is_site_allowlisted(window_id, &host)
+}
+
+#[no_mangle]
+pub extern "C" fn browser_private_adblock_set_site_allowlisted(window_id: i32, allowlisted: bool) {
+    let host = browser_core::embed::active_tab_host();
+    if host.is_empty() {
+        return;
+    }
+    browser_core::embed::private_set_site_allowlisted(window_id, &host, allowlisted);
+}
+
+#[no_mangle]
+pub extern "C" fn browser_settings_private_vault_enabled() -> bool {
+    browser_core::settings::private_vault_enabled()
+}
+
+#[no_mangle]
+pub extern "C" fn browser_settings_set_private_vault_enabled(enabled: bool) {
+    browser_core::settings::set_private_vault_enabled(enabled);
+}
+
+#[no_mangle]
+pub extern "C" fn browser_settings_private_vault_prompt_seen() -> bool {
+    browser_core::settings::private_vault_prompt_seen()
+}
+
+#[no_mangle]
+pub extern "C" fn browser_settings_set_private_vault_prompt_seen(seen: bool) {
+    browser_core::settings::set_private_vault_prompt_seen(seen);
 }
 
 // ─── Autocomplete: history suggestions + favicons ────────────────────────
@@ -748,6 +904,11 @@ pub extern "C" fn browser_vault_list() -> *mut c_char {
 /// `id` must be null or a valid NUL-terminated UTF-8 C string.
 #[no_mangle]
 pub unsafe extern "C" fn browser_vault_password(id: *const c_char) -> *mut c_char {
+    if browser_core::private_window::focused_is_private()
+        && !browser_core::settings::private_vault_enabled()
+    {
+        return std::ptr::null_mut();
+    }
     match browser_core::vault::service::password_for(&cstr(id)) {
         Some(password) => vault_string(password),
         None => std::ptr::null_mut(),
@@ -926,9 +1087,16 @@ pub extern "C" fn browser_consent_set_enabled(enabled: bool) {
     browser_core::embed::consent_set_enabled(enabled);
 }
 
+/// Count of consent banners auto-rejected on the active tab since its last
+/// navigation — the shield popover's transparency line. Main thread.
+#[no_mangle]
+pub extern "C" fn browser_consent_active_rejected_count() -> u64 {
+    browser_core::embed::consent_active_rejected_count()
+}
+
 // --- Browser settings ---
 
-/// Vault auto-lock policy: 0 Never, 1 OnBrowserClose, 2 OnRestart, 3 OnPasswordUse.
+/// Vault auto-lock policy: 0 Never, 1 OnBrowserClose, 2 OnMacRestart, 3 OnPasswordUse.
 #[no_mangle]
 pub extern "C" fn browser_settings_vault_auto_lock() -> i32 {
     browser_core::settings::vault_auto_lock().to_i32()
@@ -946,6 +1114,45 @@ pub extern "C" fn browser_settings_set_vault_auto_lock(policy: i32) {
 #[no_mangle]
 pub extern "C" fn browser_settings_lock_vault_on_shutdown() {
     browser_core::vault::service::lock_on_shutdown();
+}
+
+/// Forward the Mac's current system boot time (Unix seconds). Drives the
+/// OnMacRestart auto-lock policy.
+#[no_mangle]
+pub extern "C" fn browser_settings_set_system_boot_secs(secs: u64) {
+    browser_core::settings::set_system_boot_secs(secs);
+    browser_core::vault::service::check_mac_restart_lock();
+}
+
+/// Default search engine: 0 Google, 1 DuckDuckGo, 2 Bing, 3 Brave, 4 Startpage,
+/// 5 Ecosia, 6 Kagi.
+#[no_mangle]
+pub extern "C" fn browser_settings_search_engine() -> i32 {
+    browser_core::search_engine::engine().to_i32()
+}
+
+/// Persist the default search engine.
+#[no_mangle]
+pub extern "C" fn browser_settings_set_search_engine(engine: i32) {
+    browser_core::search_engine::set_engine(browser_core::search_engine::SearchEngine::from_i32(
+        engine,
+    ));
+}
+
+/// Build a search-results URL for `query` using the selected engine. Returns a
+/// heap-allocated UTF-8 string; free with [`browser_string_free`].
+///
+/// # Safety
+/// `query` must be a valid, NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_search_url_for_query(query: *const c_char) -> *mut c_char {
+    if query.is_null() {
+        return std::ptr::null_mut();
+    }
+    let query = CStr::from_ptr(query).to_str().unwrap_or("");
+    CString::new(browser_core::search_engine::search_url(query))
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 // --- Appearance / color scheme (ADR-0030) ---

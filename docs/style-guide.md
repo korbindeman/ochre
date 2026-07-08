@@ -49,7 +49,7 @@ Slim, content-first, Safari-like. Arc's interaction model, **not** Arc's thick i
 
 - **Content is full-bleed.** The web view takes the maximum area. No rounded card floated in with big margins, no persistent full-width address bar. That Arc look is explicitly killed.
 - **Chrome is a slim glass sidebar + minimal top controls.** Sidebar holds the controls (sidebar toggle, back/forward/reload), a compact current-tab URL chip (§6 — edits inline, not a full-width bar), vertical tabs, and the space switcher. No persistent chrome beyond that — *new-tab* entry is the command bar (§6); editing the current tab's address happens inline in the chip.
-- **Control placement mirrors Arc.** One top row shared with the traffic lights: lights, then the sidebar toggle beside them, back/forward/reload grouped at the right edge. The URL chip sits directly below. The New Tab row heads the today section of the tab list (below the pinned divider, above today's tabs) — it is not a bottom-of-sidebar control.
+- **Control placement mirrors Arc.** One top row shared with the traffic lights: lights, then the sidebar toggle beside them, back/forward/reload grouped at the right edge. The URL chip sits directly below. The New Tab row sits between the saved and open sections of the tab list (below the saved divider, above open tabs) — it is not a bottom-of-sidebar control.
 - **Sidebar sizing.** Comfortable default width, favicon + title per tab, no wasted padding. Draggable within a sane min/max. Collapsible to give content the whole window (§9 shortcut); collapse/expand is a spring width animation.
 - **A collapsed sidebar auto-reveals when the empty canvas is showing** (Arc). The empty (zero-tab) state has no other affordance to reach a saved/pinned tab, so the sidebar floats out on its own and stays out — hover-dismissal is suspended — until a tab exists again; opening one lets it collapse back on the next pointer-leave. Applies at launch-into-empty and after the last tab closes. Scoped to the *visible* empty canvas: a full-content-area panel over it (History/Vault, §16) takes over the surface, so the auto-floated sidebar tucks away while the panel is up and floats back when it closes — over a panel the sidebar reverts to ordinary hover-reveal. A pinned sidebar is already visible, so this is a no-op there.
 - **Sidebar is slim glass, flush *beside* the content** (not lensing over it). The M2 validation is resolved (ADR-0019): in-window glass can't sample CEF's GPU-hosted web layer, so over-content lensing has nothing valid to lens — the documented fallback stands. The sidebar's material is the standard sidebar vibrancy (macOS 26 renders it as Liquid Glass, sampling behind the *window*); discrete `.glassEffect` is reserved for the floating chrome that composites correctly over content (command bar, find bar, history capsules). Either way: slim and content-first.
@@ -66,7 +66,7 @@ The core of the Arc model. The sidebar is a vertical list; the core owns the mod
 - **Selection:** one active tab per space, clearly indicated with a native selection treatment (not a custom-painted highlight that fights the platform).
 - **Create / close / reorder / select** are all animated with native springs — snappy, never sluggish, never blocking interaction. Reorder is drag-and-drop *and* keyboard-driven (§9).
 - **Live state** reflects the core event stream (spec §5): title, favicon, load spinner, and an audio-playing indicator with click-to-mute. Update without jank.
-- **Pinned vs. ephemeral** tabs are a fast-follow — MVP is one flat list (`mvp1.md`). When added, pinned tabs sort above ephemeral and persist across sessions; the split must not change the rest of the model.
+- **Saved vs. open** tabs split the sidebar: **saved** tabs (folders + loose saved) persist across sessions; **open** tabs are the working set below New Tab. **Save Tab** / **Move to Open** move between them. Open tabs are not auto-cleared — cleanup is manual (Open → **Clear**) or via a future setting. **Pinned** (future) is a distinct Arc-like type: always resident in the sidebar, not the same as saved.
 - **New tabs** open adjacent to the active tab and take focus, matching mainstream behavior. Closing the active tab selects a sensible neighbor (next, else previous).
 
 ---
@@ -112,6 +112,7 @@ Snappy, native, purposeful. Motion communicates state change; it never delays th
 
 - **Native icon sets only:** SF Symbols (macOS), Segoe Fluent Icons (Windows), the platform set on Linux. Pick the glyph that carries the same *meaning* on each platform; don't ship a custom icon font to force pixel-identical icons.
 - **System fonts, system sizing.** Use the platform UI font and default type scale; respect Dynamic Type / OS text scaling (§11). No bundled brand font for chrome.
+- **No uppercase transform.** Section labels, group headers, and chrome copy use natural title case or sentence case — never `.textCase(.uppercase)`, `text-transform: uppercase`, or string `.uppercased()` for display. Uppercase chrome reads shouty and fights platform typography; macOS Settings and mainstream browsers use mixed case for section headers.
 - **Weight and density** favor a power-user read: legible but compact. Tabular figures where numbers align (e.g. any counts).
 
 ---
@@ -203,6 +204,7 @@ What we deliberately don't do. Reviewers should reject these on sight.
 - **No silent auto-run of imported Tweaks** — importing never enables; a Script (JS) Tweak shows its code and requires explicit consent before it runs (§14).
 - **No hidden or obfuscated Tweak code** — a Tweak's CSS/JS is always inspectable before and after enabling.
 - **No placeholder states shipped** — see §10; flag instead of shipping half.
+- **No uppercase-transformed chrome copy** — section headers and labels in natural case only (§8).
 
 ---
 

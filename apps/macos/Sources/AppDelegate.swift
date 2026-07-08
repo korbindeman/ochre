@@ -1,12 +1,13 @@
 import AppKit
+import Darwin
 import SwiftUI
 
 /// Owns the app's single window. The window's content is an AppKit skeleton
 /// (`RootView`) hosting SwiftUI chrome islands over the embedded CEF web view.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    private var window: NSWindow?
-    private var rootView: RootView?
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var normalController: BrowserWindowController!
+    private var privateControllers: [Int32: BrowserWindowController] = [:]
     private let commandBar = CommandBarController()
 
     private static let windowWidthKey = BrowserProfile.defaultsKey("windowWidth")
@@ -27,7 +28,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Install the menu bar first: it owns every app-level shortcut (⌘T, ⌘R,
         // ⌘[, …) as a key equivalent, so it must exist before the browser view
         // starts receiving key events.
-        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Browser"
+        let appName =
+            Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Browser"
         NSApp.mainMenu = MainMenu.build(appName: appName, actions: self)
 
         // Appearance (ADR-0030). Apply the persisted preference to the native
@@ -37,39 +39,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // `System` mode tracks the OS live.
         updateAppAppearance()
         forwardSystemAppearance()
+        forwardSystemBootTime()
         appearanceObserver = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
             MainActor.assumeIsolated { self?.forwardSystemAppearance() }
         }
         let windowSize = Self.loadWindowSize()
-        let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: windowSize),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
+        normalController = BrowserWindowController(
+            windowId: 0,
+            isPrivate: false,
+            state: BrowserState.normal
         )
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        window.title = "Browser"
-        window.isMovableByWindowBackground = true
-        window.delegate = self
-        window.center()
-        // The app launches with no live browsers — the persisted session (or
-        // the empty state) is restored after this, and every CEF browser is
-        // created on demand once the window is already visible, so CEF's
-        // compositor comes up painting.
-        window.makeKeyAndOrderFront(nil)
-        let rootView = RootView(frame: window.contentRect(forFrameRect: window.frame))
-        window.contentView = rootView
-        self.window = window
-        self.rootView = rootView
+        normalController.makeWindow(size: windowSize)
 
-        // The sidebar draws its own traffic lights (ADR-0012); hide the real
-        // window buttons while windowed. Fullscreen re-shows them so the OS
-        // auto-hiding titlebar can present them (see the fullscreen callbacks).
-        setNativeButtonsHidden(true)
-
-        commandBar.parentWindow = window
-        findBar.parentWindow = window
+        commandBar.parentWindow = normalController.window
+        findBar.parentWindow = normalController.window
         // Drive the find bar's "n of m" counter from the core's find results.
         browser_set_find_result_callback(browserFindResultCallback)
 
@@ -87,7 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // session (or the default empty space), and no event fires until the
         // first mutation. Publishing the restored active tab triggers RootView
         // to hydrate it (lazy session restore, ADR-0013).
-        BrowserState.shared.reloadStructure()
+        normalController.activate()
+        BrowserState.normal.reloadStructure()
 
         // Vault harness: open the Passwords surface at launch so it can be
         // inspected without driving the menu — `BROWSER_VAULT_DEMO` (seeded, shows
@@ -100,7 +84,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 // `BROWSER_VAULT_EDIT` also opens the editor for the seeded login.
                 if env["BROWSER_VAULT_EDIT"] != nil {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                        VaultModel.shared.editing = EditorTarget(detail: VaultModel.shared.loginDetail(id: "demo"))
+                        VaultModel.shared.editing = EditorTarget(
+                            detail: VaultModel.shared.loginDetail(id: "demo"))
                     }
                 }
             }
@@ -139,7 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// Launch Services hands http/https links here — from Mail, Slack, `open`, etc.
     func application(_ sender: NSApplication, open urls: [URL]) {
-        guard rootView != nil else {
+        guard normalController != nil else {
             pendingExternalURLs.append(contentsOf: urls)
             return
         }
@@ -155,10 +140,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard !webURLs.isEmpty else { return }
 
         NSApp.activate(ignoringOtherApps: true)
-        window?.makeKeyAndOrderFront(nil)
+        normalController.window?.makeKeyAndOrderFront(nil)
 
         for url in webURLs {
-            openTab(url: url.absoluteString)
+            openTab(url: url.absoluteString, windowId: 0)
+        }
+    }
+
+    private var focusedController: BrowserWindowController {
+        if let key = NSApp.keyWindow,
+            let privateCtl = privateControllers.values.first(where: { $0.window === key })
+        {
+            return privateCtl
+        }
+        return normalController
+    }
+
+    func didClosePrivateWindow(_ windowId: Int32) {
+        privateControllers.removeValue(forKey: windowId)
+    }
+
+    @objc func newPrivateWindow() {
+        PrivateWindowPrompt.showIfNeeded()
+        let windowId = browser_private_window_create()
+        let state = BrowserState.register(windowId: windowId, isPrivate: true)
+        let size =
+            normalController.window?.contentRect(forFrameRect: normalController.window!.frame).size
+            ?? Self.defaultWindowSize
+        let controller = BrowserWindowController(windowId: windowId, isPrivate: true, state: state)
+        privateControllers[windowId] = controller
+        controller.makeWindow(size: size)
+    }
+
+    func openTab(url: String, windowId: Int32) {
+        if windowId == 0 {
+            normalController.openTab(url: url)
+        } else if let controller = privateControllers[windowId] {
+            controller.openTab(url: url)
         }
     }
 
@@ -176,7 +194,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Persist the windowed content size. Skipped while fullscreen — AppKit owns
     /// that geometry and restores the pre-fullscreen frame on exit.
     private func persistWindowSize() {
-        guard let window, !BrowserState.shared.isFullscreen else { return }
+        guard let window = normalController?.window, !BrowserState.normal.isFullscreen else {
+            return
+        }
         let size = window.contentRect(forFrameRect: window.frame).size
         UserDefaults.standard.set(Double(size.width), forKey: Self.windowWidthKey)
         UserDefaults.standard.set(Double(size.height), forKey: Self.windowHeightKey)
@@ -186,24 +206,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// windowed — the sidebar draws its own (ADR-0012) — and revealed in
     /// fullscreen, where the OS auto-hiding titlebar owns them. Re-asserted on
     /// key/main changes in case AppKit restores them on its own relayout.
-    private func setNativeButtonsHidden(_ hidden: Bool) {
-        for type: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
-            window?.standardWindowButton(type)?.isHidden = hidden
-        }
-    }
-
-    private func reassertNativeButtons() {
-        setNativeButtonsHidden(!BrowserState.shared.isFullscreen)
-    }
-
     // MARK: - Focus self-test hooks
     //
     // Minimal accessors the P0-1 focus regression (`--focus-selftest`,
     // `FocusSelfTest.swift`) reaches into to drive and observe focus transitions.
     // Kept here so the private window/rootView/commandBar stay private otherwise.
 
-    var focusTestWindow: NSWindow? { window }
-    var focusTestRootView: RootView? { rootView }
+    var focusTestWindow: NSWindow? { normalController?.window }
+    var focusTestRootView: RootView? { normalController?.rootView }
     var focusTestCommandBar: CommandBarController { commandBar }
 
     // MARK: - Menu actions
@@ -213,9 +223,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // reaches CEF's web view.
 
     @objc func toggleCommandBar() {
-        // The command bar is the new-tab surface; if the sidebar URL editor is
-        // open, dismiss it first so the two entry surfaces never overlap.
         URLBarModel.shared.endEditing()
+        commandBar.parentWindow = focusedController.window
         commandBar.toggle()
     }
 
@@ -242,18 +251,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Show/hide the History page (⌘Y) — a native content-area surface, not a
     /// tab (ADR-0010).
     @objc func showHistory() {
-        BrowserState.shared.toggleHistory()
+        guard !BrowserState.current.isPrivate else { return }
+        BrowserState.current.toggleHistory()
     }
 
     /// Show/hide the Passwords (vault) page — a native content-area surface
     /// (ADR-0010/0016).
     @objc func showVault() {
-        BrowserState.shared.toggleVault()
+        guard !BrowserState.current.isPrivate else { return }
+        BrowserState.current.toggleVault()
     }
 
     /// Show/hide the Settings page — a native content-area surface (ADR-0010).
     @objc func showSettings() {
-        BrowserState.shared.toggleSettings()
+        BrowserState.current.toggleSettings()
     }
 
     /// Register this app as the system default http/https handler. When the OS
@@ -265,7 +276,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         let alert = NSAlert()
         alert.messageText = "Set Default Browser"
-        alert.informativeText = "Choose Browser in System Settings → Desktop & Dock → Default web browser."
+        alert.informativeText =
+            "Choose Browser in System Settings → Desktop & Dock → Default web browser."
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -274,11 +286,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // Tab lifecycle. `openTab`/`closeTab` are called from the command bar,
     // sidebar, and empty state; `closeActiveTab` backs the ⌘W menu item.
-    func openTab(url: String) { rootView?.openNewTab(url: url) }
-    func closeTab(_ id: Int32) { rootView?.closeTab(id) }
+    func closeTab(_ id: Int32) { focusedController.closeTab(id) }
 
-    // Pin/organize (from the sidebar's tab & folder context menus).
-    func setTabPinned(_ id: Int32, _ pinned: Bool) { browser_tab_set_pinned(id, pinned) }
+    // Save/organize (from the sidebar's tab & folder context menus).
+    func setTabSaved(_ id: Int32, _ saved: Bool) { browser_tab_set_pinned(id, saved) }
+    func setTabFavorite(_ id: Int32, _ favorite: Bool) { browser_tab_set_favorite(id, favorite) }
+    func restoreTabFavorite(_ id: Int32) { browser_tab_restore_favorite(id) }
     func moveTab(_ id: Int32, toFolder folder: Int32?) {
         browser_tab_move_to_folder(id, folder ?? -1)
     }
@@ -286,8 +299,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Drag-and-drop relocation (see `browser_tab_move`): move `id` into a
     /// section — pinned/loose or a folder — positioned before `before` (nil ⇒
     /// the section's end). A folder destination auto-pins.
-    func moveTab(_ id: Int32, pinned: Bool, folder: Int32?, before: Int32?) {
-        browser_tab_move(id, pinned, folder ?? -1, before ?? -1)
+    func moveTab(_ id: Int32, favorite: Bool, pinned: Bool, folder: Int32?, before: Int32?) {
+        browser_tab_move(id, favorite, pinned, folder ?? -1, before ?? -1)
     }
 
     // ─── Spaces & folders ──────────────────────────────────────────────────
@@ -320,9 +333,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    /// Demote a space to a folder in the active space (its ephemeral tabs close).
+    /// Demote a space to a folder in the active space (its open tabs close).
     func spaceToFolder(_ id: Int32) {
-        if confirmDelete("Convert to a folder? This space's unpinned tabs will be closed.") {
+        if confirmDelete("Convert to a folder? This space's open tabs will be closed.") {
             browser_space_to_folder(id)
         }
     }
@@ -331,6 +344,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let name = promptName(title: "New Folder", initial: "Folder") {
             name.withCString { browser_create_folder($0) }
         }
+    }
+
+    @objc func newFolderFromSelectionMenu() {
+        let ids = Array(BrowserState.shared.selectedTabIds).sorted()
+        guard ids.count >= 2 else { return }
+        createFolderFromTabs(ids)
+    }
+
+    func createFolderFromTabs(_ ids: [Int32]) {
+        guard ids.count >= 2 else { return }
+        if let name = promptName(title: "New Folder", initial: "Folder") {
+            name.withCString { cName in
+                ids.withUnsafeBufferPointer { buf in
+                    _ = browser_create_folder_with_tabs(cName, buf.baseAddress, Int32(buf.count))
+                }
+            }
+            BrowserState.shared.clearTabSelection()
+        }
+    }
+
+    @objc func clearOpenTabsMenu() { clearOpenTabs() }
+
+    /// Close open tabs except the multi-selection (or the active tab when nothing
+    /// is selected) — the sidebar Open → Clear control.
+    func clearOpenTabs() {
+        let state = BrowserState.shared
+        let keep = Array(state.selectedTabIds)
+        keep.withUnsafeBufferPointer { buf in
+            browser_clear_ephemeral_tabs(buf.baseAddress, Int32(buf.count))
+        }
+        state.clearTabSelection()
+    }
+
+    func closeTabs(_ ids: [Int32]) {
+        for id in ids { closeTab(id) }
+        BrowserState.shared.clearTabSelection()
     }
 
     func renameFolder(_ id: Int32) {
@@ -437,8 +486,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             BrowserState.shared.closeSurfaces()
             return
         }
-        if let active = BrowserState.shared.activeTabId {
-            rootView?.closeTab(active)
+        if let active = BrowserState.current.activeTabId {
+            focusedController.closeTab(active)
             return
         }
         // No active tab. ⌘W only falls back to closing the window on the genuine
@@ -450,8 +499,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // inert (Escape dismisses the command bar; the space switcher reaches the
         // other tabs). `tabs` is the full cross-space list — the UI's own "is
         // anything left" signal.
-        if BrowserState.shared.tabs.isEmpty && !commandBar.isVisible {
-            window?.performClose(nil)
+        if BrowserState.current.tabs.isEmpty && !commandBar.isVisible {
+            focusedController.window?.performClose(nil)
         }
     }
 
@@ -511,10 +560,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         browser_theme_set_system_dark(isDark)
     }
 
+    /// Forward the Mac's boot time so the vault can lock after a system restart
+    /// (OnMacRestart policy) without conflating that with quitting Browser.
+    private func forwardSystemBootTime() {
+        var boot = timeval()
+        var size = MemoryLayout<timeval>.size
+        var mib: [Int32] = [CTL_KERN, KERN_BOOTTIME]
+        guard sysctl(&mib, 2, &boot, &size, nil, 0) == 0 else { return }
+        browser_settings_set_system_boot_secs(UInt64(boot.tv_sec))
+    }
+
     // Single-window app: both Close Window and Quit run the graceful CEF close
     // (see `windowShouldClose`), which is what ends the process.
-    @objc func closeWindow(_ sender: Any?) { window?.performClose(nil) }
-    @objc func quit(_ sender: Any?) { window?.performClose(nil) }
+    @objc func closeWindow(_ sender: Any?) { focusedController.window?.performClose(nil) }
+    @objc func quit(_ sender: Any?) {
+        if !browser_request_close_all() {
+            NSApp.terminate(nil)
+        }
+    }
 
     // Grey out Back/Forward when there's no history to move to; everything else
     // is always available.
@@ -522,7 +585,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         switch menuItem.action {
         case #selector(goBack): return browser_can_go_back()
         case #selector(goForward): return browser_can_go_forward()
-        case #selector(reopenClosedTab): return browser_tab_can_reopen_closed()
+        case #selector(reopenClosedTab):
+            return !BrowserState.current.isPrivate && browser_tab_can_reopen_closed()
+        case #selector(showHistory), #selector(showVault):
+            return !BrowserState.current.isPrivate
         case #selector(findNext), #selector(findPrevious): return findBar.hasActiveSearch
         case #selector(toggleAdblock):
             // Checkmark reflects the global switch; always available.
@@ -551,52 +617,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case #selector(setAsDefaultBrowser):
             menuItem.state = DefaultBrowser.isDefault ? .on : .off
             return !DefaultBrowser.isDefault
+        case #selector(newFolderFromSelectionMenu):
+            return BrowserState.shared.selectedTabIds.count >= 2
+        case #selector(clearOpenTabsMenu):
+            let state = BrowserState.shared
+            let keep: Set<Int32> =
+                state.selectedTabIds.isEmpty
+                ? Set(state.activeTabId.map { [$0] } ?? [])
+                : state.selectedTabIds
+            return state.openTabs.contains { !keep.contains($0.id) }
         default: return true
         }
     }
 
-    // Fullscreen swaps ownership of the lights: windowed, the sidebar draws them
-    // and the native buttons stay hidden; fullscreen, the native buttons come
-    // back for the OS auto-hiding titlebar and the sidebar's set steps aside
-    // (via `isFullscreen`).
-    func windowWillEnterFullScreen(_ notification: Notification) {
-        BrowserState.shared.isFullscreen = true
-        setNativeButtonsHidden(false)
-    }
-
-    func windowDidExitFullScreen(_ notification: Notification) {
-        BrowserState.shared.isFullscreen = false
-        setNativeButtonsHidden(true)
-    }
-
-    func windowDidEndLiveResize(_ notification: Notification) {
-        persistWindowSize()
-    }
-
-    // AppKit can restore the standard buttons when the window changes key/main
-    // state; re-hide them (unless fullscreen) so they never flash back over the
-    // sidebar's own lights.
-    func windowDidBecomeKey(_ notification: Notification) { reassertNativeButtons() }
-    func windowDidResignKey(_ notification: Notification) { reassertNativeButtons() }
-    func windowDidBecomeMain(_ notification: Notification) { reassertNativeButtons() }
-    func windowDidResignMain(_ notification: Notification) { reassertNativeButtons() }
-
-    // Route the close button through CEF instead of tearing the window down
-    // under a live browser: the first close request starts CEF's browser-close
-    // flow and is vetoed; CEF re-requests the close once the browser allows it.
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        !browser_request_close_all()
-    }
-
-    // Final close: detach every tab's CEF child view so the browsers deallocate
-    // — that is what completes their destruction and quits the message loop
-    // (`main.swift` then shuts CEF down and the process exits). The view
-    // hierarchy outlives the window, so the detach must be explicit.
-    func windowWillClose(_ notification: Notification) {
-        persistWindowSize()
-        browser_settings_lock_vault_on_shutdown()
-        rootView?.detachAllCEFViews()
-        window = nil
-        rootView = nil
-    }
 }

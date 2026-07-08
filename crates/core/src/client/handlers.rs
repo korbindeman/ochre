@@ -134,11 +134,20 @@ wrap_task! {
     struct OpenTabTask {
         url: String,
         foreground: bool,
+        source_cef_id: i32,
     }
 
     impl Task {
         fn execute(&self) {
-            tabs::request_open_tab(&self.url, self.foreground);
+            if crate::private_window::is_private_cef(self.source_cef_id) {
+                crate::private_window::request_open_tab(
+                    self.source_cef_id,
+                    &self.url,
+                    self.foreground,
+                );
+            } else {
+                tabs::request_open_tab(&self.url, self.foreground);
+            }
         }
     }
 }
@@ -151,7 +160,7 @@ wrap_life_span_handler! {
     impl LifeSpanHandler {
         fn on_before_popup(
             &self,
-            _browser: Option<&mut Browser>,
+            browser: Option<&mut Browser>,
             _frame: Option<&mut Frame>,
             _popup_id: i32,
             target_url: Option<&CefString>,
@@ -170,7 +179,8 @@ wrap_life_span_handler! {
             }
             let url = target_url.map(CefString::to_string).unwrap_or_default();
             let foreground = target_disposition != WindowOpenDisposition::NEW_BACKGROUND_TAB;
-            let mut task = OpenTabTask::new(url, foreground);
+            let source_cef_id = browser.as_deref().map(|b| b.identifier()).unwrap_or(-1);
+            let mut task = OpenTabTask::new(url, foreground, source_cef_id);
             post_task(ThreadId::UI, Some(&mut task));
             1
         }
@@ -193,10 +203,12 @@ wrap_life_span_handler! {
         }
 
         fn on_before_close(&self, browser: Option<&mut Browser>) {
-            // Drop the tab's adblock counter (ADR-0020) and its injection-substrate
-            // observer registration (ADR-0017) so neither map grows unbounded.
+            // Drop the tab's adblock + consent counters (ADR-0020, ADR-0026) and its
+            // injection-substrate observer registration (ADR-0017) so none of the
+            // maps grow unbounded.
             if let Some(id) = browser.as_deref().map(|b| b.identifier()) {
                 crate::adblock::forget_tab(id);
+                crate::consent::forget_tab(id);
                 crate::inject::uninstall_for_browser(id);
             }
             let mut inner = self.inner.lock().expect("Failed to lock handler");
@@ -224,12 +236,20 @@ wrap_load_handler! {
             can_go_forward: i32,
         ) {
             if let Some(id) = browser.as_deref().map(|b| b.identifier()) {
-                // Reset the tab's adblock count at each navigation start so the
-                // sidebar shield reflects the current page (ADR-0020).
+                // Reset the tab's adblock + consent counts at each navigation start so
+                // the shield reflects the current page (ADR-0020, ADR-0026).
                 if is_loading != 0 {
                     crate::adblock::reset_count(id);
+                    crate::consent::reset_count(id);
                 }
-                tabs::note_load_state(id, is_loading != 0, can_go_back != 0, can_go_forward != 0);
+                if !crate::private_window::note_load_state(
+                    id,
+                    is_loading != 0,
+                    can_go_back != 0,
+                    can_go_forward != 0,
+                ) {
+                    tabs::note_load_state(id, is_loading != 0, can_go_back != 0, can_go_forward != 0);
+                }
             }
         }
 
@@ -338,11 +358,15 @@ wrap_resource_request_handler! {
             let first_party_host =
                 crate::vault::lookup::host_from_uri(&source_url).unwrap_or_default();
 
+            let ephemeral = crate::private_window::ephemeral_allowlist_for_cef(
+                browser.as_deref().map(|b| b.identifier()).unwrap_or(-1),
+            );
             let blocked = crate::adblock::check(
                 &url,
                 &source_url,
                 &first_party_host,
                 adblock_request_type(resource_type),
+                ephemeral.as_deref(),
             );
 
             if blocked {

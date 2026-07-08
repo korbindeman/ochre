@@ -88,12 +88,23 @@ enum MainMenu {
         // window when none are open); ⌘⇧W closes the window.
         target(menu.addItem(withTitle: "New Tab",
                             action: #selector(AppDelegate.toggleCommandBar), keyEquivalent: "t"), actions)
+        let newPrivate = menu.addItem(withTitle: "New Private Window",
+                                      action: #selector(AppDelegate.newPrivateWindow),
+                                      keyEquivalent: "n")
+        newPrivate.keyEquivalentModifierMask = [.command, .shift]
+        target(newPrivate, actions)
         let newSpace = menu.addItem(withTitle: "New Space",
                             action: #selector(AppDelegate.newSpace), keyEquivalent: "n")
-        newSpace.keyEquivalentModifierMask = [.command, .shift]
+        newSpace.keyEquivalentModifierMask = [.command, .option]
         target(newSpace, actions)
         target(menu.addItem(withTitle: "New Folder",
                             action: #selector(AppDelegate.newFolder), keyEquivalent: ""), actions)
+        let folderFromSelection = menu.addItem(
+            withTitle: "New Folder from Selection",
+            action: #selector(AppDelegate.newFolderFromSelectionMenu), keyEquivalent: "")
+        target(folderFromSelection, actions)
+        target(menu.addItem(withTitle: "Clear Open Tabs",
+                            action: #selector(AppDelegate.clearOpenTabsMenu), keyEquivalent: ""), actions)
         target(menu.addItem(withTitle: "Open Location…",
                             action: #selector(AppDelegate.editCurrentURL), keyEquivalent: "l"), actions)
         menu.addItem(.separator())

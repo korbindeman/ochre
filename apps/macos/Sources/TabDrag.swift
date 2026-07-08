@@ -12,11 +12,12 @@ import UniformTypeIdentifiers
 /// spring-animated by `BrowserState.reloadStructure`.
 
 /// Which sidebar section a tab lives in — the destination a drag resolves to.
-/// Mirrors the sections `SpaceContents` renders: `loosePinned` = pinned with no
-/// folder, `today` = ephemeral, `folder` = pinned inside that folder.
+/// Mirrors the sections `SpaceContents` renders: `looseSaved` = saved with no
+/// folder, `open` = the working-set tabs, `folder` = saved inside that folder.
 enum TabSection: Equatable {
-    case loosePinned
-    case today
+    case favorite
+    case looseSaved
+    case open
     case folder(Int32)
 }
 
@@ -38,6 +39,34 @@ final class TabDragModel: ObservableObject {
     @Published var draggingId: Int32?
     @Published var slot: DropSlot?
 
+    /// While a tab drag is in flight the window must stay put — the chrome uses
+    /// `isMovableByWindowBackground` (Arc-style sidebar drag), which otherwise
+    /// competes with SwiftUI's reorder drag. Suppressed on drag start, restored on
+    /// drop or mouse-up (covers cancelled drags that never call `commit`).
+    private var windowDragSuppressed = false
+    private var dragEndMonitor: Any?
+
+    func armWindowDragSuppression() {
+        guard !windowDragSuppressed else { return }
+        windowDragSuppressed = true
+        NSApp.keyWindow?.isMovableByWindowBackground = false
+        dragEndMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) {
+            [weak self] event in
+            Task { @MainActor in self?.releaseWindowDragSuppression() }
+            return event
+        }
+    }
+
+    func releaseWindowDragSuppression() {
+        guard windowDragSuppressed else { return }
+        windowDragSuppressed = false
+        NSApp.keyWindow?.isMovableByWindowBackground = true
+        if let dragEndMonitor {
+            NSEvent.removeMonitor(dragEndMonitor)
+            self.dragEndMonitor = nil
+        }
+    }
+
     func begin(_ id: Int32) {
         draggingId = id
         slot = nil
@@ -46,6 +75,7 @@ final class TabDragModel: ObservableObject {
     func end() {
         draggingId = nil
         slot = nil
+        releaseWindowDragSuppression()
     }
 
     /// Commit the current `slot` for the dragged tab as a single core move, then
@@ -59,13 +89,21 @@ final class TabDragModel: ObservableObject {
             guard anchor != id,
                 let t = BrowserState.shared.tabs.first(where: { $0.id == anchor })
             else { return }
-            app?.moveTab(id, pinned: t.pinned, folder: t.folder, before: anchor)
-        case .endOf(.loosePinned):
-            app?.moveTab(id, pinned: true, folder: nil, before: nil)
-        case .endOf(.today):
-            app?.moveTab(id, pinned: false, folder: nil, before: nil)
+            app?.moveTab(
+                id,
+                favorite: t.favorite,
+                pinned: t.pinned,
+                folder: t.folder,
+                before: anchor
+            )
+        case .endOf(.favorite):
+            app?.moveTab(id, favorite: true, pinned: false, folder: nil, before: nil)
+        case .endOf(.looseSaved):
+            app?.moveTab(id, favorite: false, pinned: true, folder: nil, before: nil)
+        case .endOf(.open):
+            app?.moveTab(id, favorite: false, pinned: false, folder: nil, before: nil)
         case .endOf(.folder(let f)), .ontoFolder(let f):
-            app?.moveTab(id, pinned: true, folder: f, before: nil)
+            app?.moveTab(id, favorite: false, pinned: true, folder: f, before: nil)
         }
     }
 }
@@ -122,10 +160,17 @@ struct TabRowDrag: ViewModifier {
                 InsertionIndicator()
                     .opacity(next == nil && drag.slot == .endOf(section) ? 1 : 0)
             }
+            // Arm before SwiftUI's `onDrag` threshold — otherwise the window's
+            // background-drag steals the gesture for the first few points.
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in drag.armWindowDragSuppression() }
+            )
             .onDrag {
-                // Defer marking the drag so the floating preview is snapshotted at
+                // Defer marking the tab so the floating preview is snapshotted at
                 // full opacity — the dim then applies only to the in-place row.
                 let id = tab.id
+                drag.armWindowDragSuppression()
                 DispatchQueue.main.async { drag.begin(id) }
                 return NSItemProvider(object: String(id) as NSString)
             }
@@ -204,28 +249,27 @@ struct FolderDropDelegate: DropDelegate {
     }
 }
 
-// ─── The pinned / today boundary ─────────────────────────────────────────────
+// ─── The saved / open boundary ───────────────────────────────────────────────
 
-/// The New Tab row sits between the pinned section and "today", so it doubles as
-/// the drop boundary and covers the two gaps no tab row can: an *empty* loose
-/// section (top half → pin) and an *empty* today section (bottom half → unpin).
-/// When those sections have rows, the rows own their own gaps and this row's
-/// halves defer to them (its top half is inert; its bottom half aims at the top
-/// of "today", which the first today row draws).
+/// The New Tab row sits between the saved section and open tabs, so it doubles as
+/// the drop boundary and covers the two gaps no tab row can: an *empty* loose-
+/// saved section (top half → save) and an *empty* open section (bottom half →
+/// open). When those sections have rows, the rows own their own gaps and this
+/// row's halves defer to them.
 struct BoundaryDropDelegate: DropDelegate {
-    /// Only when the loose-pinned section has no rows to aim at is the top half a
-    /// pin target — otherwise the last loose row owns that gap.
+    /// Only when the loose-saved section has no rows to aim at is the top half a
+    /// save target — otherwise the last loose row owns that gap.
     let looseEmpty: Bool
-    /// The first "today" tab, so an unpin lands at the top of the section.
-    let firstToday: Int32?
+    /// The first open tab, so moving to open lands at the top of the section.
+    let firstOpen: Int32?
     let rowHeight: () -> CGFloat
     let drag: TabDragModel
 
     private func slot(_ info: DropInfo) -> DropSlot? {
         if info.location.y < rowHeight() / 2 {
-            return looseEmpty ? .endOf(.loosePinned) : nil
+            return looseEmpty ? .endOf(.looseSaved) : nil
         }
-        return firstToday.map { .before($0) } ?? .endOf(.today)
+        return firstOpen.map { .before($0) } ?? .endOf(.open)
     }
 
     func validateDrop(info: DropInfo) -> Bool { drag.draggingId != nil }

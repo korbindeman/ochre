@@ -39,11 +39,13 @@ else
   BUNDLE_DIR=target/bundle
 fi
 
+GATE="$PWD/scripts/with-work-gate.sh"
+
 echo "[prebuild] building libbrowser_ffi.dylib (${CARGO_TARGET})"
 if ((${#CARGO_PROFILE[@]})); then
-  cargo build -p browser-ffi "${CARGO_PROFILE[@]}"
+  "$GATE" cargo build -p browser-ffi "${CARGO_PROFILE[@]}"
 else
-  cargo build -p browser-ffi
+  "$GATE" cargo build -p browser-ffi
 fi
 
 echo "[prebuild] pinning dylib install name to @rpath/libbrowser_ffi.dylib"
@@ -51,7 +53,7 @@ install_name_tool -id @rpath/libbrowser_ffi.dylib "target/${CARGO_TARGET}/libbro
 
 echo "[prebuild] assembling ${BUNDLE_DIR}/browser.app (CEF framework + helper)"
 if ((${#BUNDLE_FLAG[@]})); then
-  cargo run --quiet --bin bundle -- "${BUNDLE_FLAG[@]}"
+  "$GATE" cargo run --quiet --bin bundle -- "${BUNDLE_FLAG[@]}"
 else
-  cargo run --quiet --bin bundle
+  "$GATE" cargo run --quiet --bin bundle
 fi

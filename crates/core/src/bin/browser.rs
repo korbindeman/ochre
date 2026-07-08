@@ -17,6 +17,9 @@ fn main() {
     if std::env::args().any(|arg| arg == "--redirect-selftest") {
         browser_core::redirect_selftest::run(); // never returns; exits with the verdict
     }
+    if std::env::args().any(|arg| arg == "--favicon-selftest") {
+        browser_core::favicon_selftest::run(); // never returns; exits with the verdict
+    }
     if std::env::args().any(|arg| arg == "--native-shell") {
         browser_core::native_shell::run().expect("Failed to run native shell");
         return;

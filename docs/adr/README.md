@@ -53,3 +53,6 @@ rejected and why. Read here before reopening a settled choice.
 | [0028](0028-pin-cef-148-subresource-redirect-regression.md) | Pin CEF to the 148 line — Chromium 149 drops subresource redirects (`ERR_INVALID_ARGUMENT`); broke the Google avatar | Accepted |
 | [0029](0029-core-initiated-main-world-fill.md) | Button-driven vault autofill fills via a core-initiated main-world evaluate (main frame, no context tracking); the isolated-world bridge stays reply-only | Accepted |
 | [0030](0030-appearance-color-scheme-forwarding.md) | Appearance — forward the color scheme to web content via the global request context; one Light/Dark/System setting drives web content + native chrome | Accepted |
+| [0031](0031-private-windows-incognito.md) | Private windows — incognito `RequestContext` per window, ephemeral tabs, privacy gates, opt-in vault fill | Accepted |
+| [0032](0032-pinned-tabs-favorites.md) | Pinned tabs (favorites) — Arc-style resident icon strip, dismiss-not-destroy, distinct from saved | Accepted |
+| [0033](0033-runtime-tab-suspension.md) | Runtime tab suspension — reuse lazy hydration, grace-delayed background discard | Accepted |

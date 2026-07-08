@@ -5,10 +5,15 @@ import SwiftUI
 struct TabItem: Identifiable, Equatable {
     let id: Int32
     var space: Int32
-    /// The folder this tab lives in (pinned tabs only), or nil for a loose tab.
+    /// The folder this tab lives in (saved tabs only), or nil for a loose tab.
     var folder: Int32?
-    /// Persistent (pinned) vs. ephemeral ("today"). Only pinned tabs join folders.
+    /// Saved (persistent in the sidebar tree) vs. open (working set). Core
+    /// field is `pinned` — distinct from `favorite` (the icon strip).
     var pinned: Bool
+    /// Arc-style pinned icon strip below the URL bar (ADR-0032).
+    var favorite: Bool
+    /// Hidden from the strip after a user close; browser stays loaded.
+    var dismissed: Bool
     var title: String = ""
     var url: String = ""
     var isLoading: Bool = false
@@ -16,6 +21,9 @@ struct TabItem: Identifiable, Equatable {
     /// back/forward controls (disabled when there's nowhere to go).
     var canGoBack: Bool = false
     var canGoForward: Bool = false
+    /// `false` when the core has discarded the tab's CEF browser (lazy restore or
+    /// runtime suspension, ADR-0013 / ADR-0033).
+    var isHydrated: Bool = true
     /// Bumped when the engine captures a fresh favicon, to retrigger the load.
     var faviconVersion: Int = 0
 
@@ -28,7 +36,7 @@ struct TabItem: Identifiable, Equatable {
     }
 }
 
-/// A space — a switchable set of tabs (with its own pinned + today sections).
+/// A space — a switchable set of tabs (saved + open sections).
 /// `icon` is the emoji shown in the space switcher.
 struct SpaceItem: Identifiable, Equatable {
     let id: Int32
@@ -36,7 +44,7 @@ struct SpaceItem: Identifiable, Equatable {
     var icon: String
 }
 
-/// A folder inside a space's pinned section; holds pinned tabs.
+/// A folder inside a space's saved section; holds saved tabs.
 struct FolderItem: Identifiable, Equatable {
     let id: Int32
     var space: Int32
@@ -48,13 +56,38 @@ struct FolderItem: Identifiable, Equatable {
 /// on `StructureChanged`; hot per-tab content is patched in place (ADR-0005).
 @MainActor
 final class BrowserState: ObservableObject {
-    static let shared = BrowserState()
+    static let normal = BrowserState(windowId: 0, isPrivate: false)
+    static var current: BrowserState = normal
+    private(set) static var registry: [Int32: BrowserState] = [0: normal]
+
+    /// The focused window's state (most UI reads this).
+    static var shared: BrowserState { current }
+
+    static func register(windowId: Int32, isPrivate: Bool) -> BrowserState {
+        let state = BrowserState(windowId: windowId, isPrivate: isPrivate)
+        registry[windowId] = state
+        return state
+    }
+
+    static func unregister(windowId: Int32) {
+        registry.removeValue(forKey: windowId)
+        if current.windowId == windowId {
+            current = normal
+            browser_set_focused_window(0)
+        }
+    }
+
+    let windowId: Int32
+    let isPrivate: Bool
 
     @Published var tabs: [TabItem] = []
     @Published var spaces: [SpaceItem] = []
     @Published var folders: [FolderItem] = []
     @Published var activeTabId: Int32?
     @Published var activeSpaceId: Int32 = 1
+    /// Set when the core discards a tab's browser (ADR-0033); `RootView` detaches
+    /// the CEF host in response.
+    @Published var suspendedTabId: Int32?
 
     /// Sidebar pinned (always visible) vs. collapsed to hover-reveal. Persisted
     /// across launches, like the sidebar width (`RootView`); defaults to pinned.
@@ -66,6 +99,11 @@ final class BrowserState: ObservableObject {
     @Published var isSidebarRevealed = false
 
     private static let sidebarPinnedKey = BrowserProfile.defaultsKey("sidebarPinned")
+
+    init(windowId: Int32, isPrivate: Bool) {
+        self.windowId = windowId
+        self.isPrivate = isPrivate
+    }
 
     /// Mirrors the window's fullscreen state (set by `AppDelegate`) so the
     /// custom traffic lights step aside — in fullscreen the OS auto-hiding
@@ -99,6 +137,8 @@ final class BrowserState: ObservableObject {
     @Published var adblockSiteOff = false
     /// Cookie-consent handling (reject + hide) switch (on by default; ADR-0026).
     @Published var consentEnabled = true
+    /// Consent banners auto-rejected on the active tab since its last navigation.
+    @Published var consentRejectedCount = 0
 
     // ─── Vault quick access (P2-34, ADR-0029) ──────────────────────────────
     // Backs the URL-bar key button + current-site logins popover. Refreshed off
@@ -119,40 +159,71 @@ final class BrowserState: ObservableObject {
 
     // Folders / tabs of the active space, split into the sidebar's sections.
     var activeFolders: [FolderItem] { folders.filter { $0.space == activeSpaceId } }
-    var loosePinnedTabs: [TabItem] {
-        tabs.filter { $0.space == activeSpaceId && $0.pinned && $0.folder == nil }
+    var favoriteTabs: [TabItem] {
+        tabs.filter { $0.space == activeSpaceId && $0.favorite && !$0.dismissed }
     }
-    var todayTabs: [TabItem] { tabs.filter { $0.space == activeSpaceId && !$0.pinned } }
+    var dismissedFavorites: [TabItem] {
+        tabs.filter { $0.space == activeSpaceId && $0.favorite && $0.dismissed }
+    }
+    var looseSavedTabs: [TabItem] {
+        tabs.filter {
+            $0.space == activeSpaceId && $0.pinned && !$0.favorite && $0.folder == nil
+        }
+    }
+    var openTabs: [TabItem] {
+        tabs.filter { $0.space == activeSpaceId && !$0.pinned && !$0.favorite }
+    }
     func tabs(inFolder folder: Int32) -> [TabItem] { tabs.filter { $0.folder == folder } }
+
+    /// Sidebar row order (folders → loose saved → open) for shift-click range
+    /// selection across sections.
+    var sidebarTabOrder: [Int32] {
+        var ids: [Int32] = []
+        ids.append(contentsOf: favoriteTabs.map(\.id))
+        for folder in activeFolders {
+            ids.append(contentsOf: tabs(inFolder: folder.id).map(\.id))
+        }
+        ids.append(contentsOf: looseSavedTabs.map(\.id))
+        ids.append(contentsOf: openTabs.map(\.id))
+        return ids
+    }
+
+    /// Cmd/shift multi-select for bulk folder/close/clear actions.
+    @Published var selectedTabIds: Set<Int32> = []
+    private var selectionAnchor: Int32?
+
+    var hasMultiTabSelection: Bool { selectedTabIds.count > 1 }
 
     // ─── Event ingestion (from the FFI trampoline, on the main thread) ─────
 
     func handleEvent(type: Int32, id: Int32, payload: String?) {
         switch type {
-        case 0: patch(id) { $0.title = payload ?? "" } // TabTitleChanged
-        case 1: patch(id) { $0.url = payload ?? "" } // TabUrlChanged
-        case 2: // TabLoadStarted
+        case 0: patch(id) { $0.title = payload ?? "" }  // TabTitleChanged
+        case 1: patch(id) { $0.url = payload ?? "" }  // TabUrlChanged
+        case 2:  // TabLoadStarted
             patch(id) { $0.isLoading = true }
-            refreshAdblock() // core reset the count at nav start → shows 0
-            refreshVaultMatches() // the host may have changed → re-match logins
-        case 3: // TabLoadEnded
+            refreshAdblock()  // core reset the count at nav start → shows 0
+            refreshVaultMatches()  // the host may have changed → re-match logins
+        case 3:  // TabLoadEnded
             patch(id) { $0.isLoading = false }
-            refreshAdblock() // final blocked count for the page
+            refreshAdblock()  // final blocked count for the page
             refreshVaultMatches()
-        case 4: // TabFaviconChanged
+        case 4:  // TabFaviconChanged
             FaviconLoader.shared.invalidate(host: payload ?? "")
             patch(id) { $0.faviconVersion += 1 }
-        case 5: reloadStructure() // StructureChanged
-        case 6: // TabNavStateChanged — payload = "bf" back/forward flags
+        case 5: reloadStructure()  // StructureChanged
+        case 6:  // TabNavStateChanged — payload = "bf" back/forward flags
             let flags = payload ?? "00"
             patch(id) {
                 $0.canGoBack = flags.first == "1"
                 $0.canGoForward = flags.dropFirst().first == "1"
             }
-        case 7: // OpenTabRequested — payload = url; id = 1 foreground / 0 background
+        case 7:  // OpenTabRequested — payload = url; id = 1 foreground / 0 background
             guard let url = payload else { return }
-            // Background-tab opening isn't wired yet; foreground matches target="_blank".
-            (NSApp.delegate as? AppDelegate)?.openTab(url: url)
+            (NSApp.delegate as? AppDelegate)?.openTab(url: url, windowId: windowId)
+        case 8:  // TabSuspended — background discard (ADR-0033)
+            patch(id) { $0.isHydrated = false }
+            suspendedTabId = id
         default: break
         }
     }
@@ -165,6 +236,10 @@ final class BrowserState: ObservableObject {
     /// Rebuild the tree from the core's JSON snapshot, preserving per-tab UI state
     /// (favicon version) so already-loaded icons don't flicker.
     func reloadStructure() {
+        if isPrivate {
+            reloadPrivateStructure()
+            return
+        }
         guard let raw = browser_structure_json() else { return }
         defer { browser_string_free(raw) }
         let data = Data(String(cString: raw).utf8)
@@ -177,11 +252,14 @@ final class BrowserState: ObservableObject {
                 space: dto.space,
                 folder: dto.folder,
                 pinned: dto.pinned,
+                favorite: dto.favorite,
+                dismissed: dto.dismissed,
                 title: dto.title,
                 url: dto.url,
                 isLoading: dto.loading,
                 canGoBack: dto.canGoBack,
                 canGoForward: dto.canGoForward,
+                isHydrated: dto.hydrated,
                 faviconVersion: priorFavicon[dto.id] ?? 0
             )
         }
@@ -194,12 +272,18 @@ final class BrowserState: ObservableObject {
         // (the sidebar list) animate; the CEF view swap is AppKit-driven and
         // unaffected. This ambient spring also drives the rows' enter/exit
         // transitions and the sliding active-tab highlight (`SidebarSelection`).
+        let priorSpace = activeSpaceId
         let apply = {
             self.tabs = newTabs
             self.spaces = newSpaces
             self.folders = newFolders
             self.activeSpaceId = snap.activeSpace
             self.activeTabId = snap.activeTab
+            if snap.activeSpace != priorSpace {
+                self.clearTabSelection()
+            } else {
+                self.pruneTabSelection()
+            }
         }
         if spaces.isEmpty || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             apply()
@@ -207,8 +291,8 @@ final class BrowserState: ObservableObject {
             withAnimation(.spring(response: 0.24, dampingFraction: 0.88), apply)
         }
 
-        refreshAdblock() // the active tab may have changed → re-read its shield state
-        refreshVaultMatches() // …and re-match logins for the new active host
+        refreshAdblock()  // the active tab may have changed → re-read its shield state
+        refreshVaultMatches()  // …and re-match logins for the new active host
     }
 
     // ─── Adblock ───────────────────────────────────────────────────────────
@@ -218,8 +302,46 @@ final class BrowserState: ObservableObject {
     func refreshAdblock() {
         adblockEnabled = browser_adblock_is_enabled()
         adblockBlockedCount = Int(browser_adblock_active_blocked_count())
-        adblockSiteOff = browser_adblock_active_site_allowlisted()
+        if isPrivate {
+            adblockSiteOff = browser_private_adblock_site_allowlisted(windowId)
+        } else {
+            adblockSiteOff = browser_adblock_active_site_allowlisted()
+        }
         consentEnabled = browser_consent_is_enabled()
+        consentRejectedCount = Int(browser_consent_active_rejected_count())
+    }
+
+    private func reloadPrivateStructure() {
+        guard let raw = browser_private_structure_json(windowId) else { return }
+        defer { browser_string_free(raw) }
+        let data = Data(String(cString: raw).utf8)
+        guard let snap = try? Self.privateDecoder.decode(PrivateSnapshot.self, from: data) else {
+            return
+        }
+
+        let priorFavicon = Dictionary(tabs.map { ($0.id, $0.faviconVersion) }) { a, _ in a }
+        tabs = snap.tabs.map { dto in
+            TabItem(
+                id: dto.id,
+                space: 0,
+                folder: nil,
+                pinned: false,
+                favorite: false,
+                dismissed: false,
+                title: dto.title,
+                url: dto.url,
+                isLoading: dto.loading,
+                canGoBack: dto.canGoBack,
+                canGoForward: dto.canGoForward,
+                faviconVersion: priorFavicon[dto.id] ?? 0
+            )
+        }
+        activeTabId = snap.activeTab
+        spaces = []
+        folders = []
+        activeSpaceId = 0
+        refreshAdblock()
+        refreshVaultMatches()
     }
 
     // ─── Vault quick access ──────────────────────────────────────────────────
@@ -231,7 +353,10 @@ final class BrowserState: ObservableObject {
         vaultConfigured = browser_vault_is_configured()
         vaultLocked = browser_vault_is_locked()
         let host = activeTab?.host ?? ""
-        vaultMatches = (vaultLocked || host.isEmpty) ? [] : Self.fetchMatches(host: host)
+        let vaultAllowed = !isPrivate || browser_settings_private_vault_enabled()
+        vaultMatches =
+            (vaultLocked || host.isEmpty || !vaultAllowed)
+            ? [] : Self.fetchMatches(host: host)
     }
 
     private static func fetchMatches(host: String) -> [VaultLogin] {
@@ -265,9 +390,19 @@ final class BrowserState: ObservableObject {
     /// Turn blocking off/on for the active tab's site (the shield toggle / menu
     /// "Block Ads on This Site"). The core reloads the tab so it applies on screen.
     func toggleAdblockForSite() {
-        browser_adblock_set_active_site_allowlisted(!adblockSiteOff)
+        if isPrivate {
+            browser_private_adblock_set_site_allowlisted(windowId, !adblockSiteOff)
+        } else {
+            browser_adblock_set_active_site_allowlisted(!adblockSiteOff)
+        }
         refreshAdblock()
     }
+
+    private static let privateDecoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return decoder
+    }()
 
     private static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
@@ -351,6 +486,57 @@ final class BrowserState: ObservableObject {
         closeSettings()
     }
 
+    /// Handle a sidebar tab click with modifier keys for multi-select.
+    func handleTabClick(_ id: Int32) {
+        let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let ordered = sidebarTabOrder
+
+        if flags.contains(.command) {
+            if selectedTabIds.contains(id) {
+                selectedTabIds.remove(id)
+            } else {
+                if selectedTabIds.isEmpty, let active = activeTabId {
+                    selectedTabIds.insert(active)
+                }
+                selectedTabIds.insert(id)
+            }
+            selectionAnchor = id
+            return
+        }
+
+        if flags.contains(.shift) {
+            let anchor = selectionAnchor ?? activeTabId ?? id
+            guard let from = ordered.firstIndex(of: anchor),
+                let to = ordered.firstIndex(of: id)
+            else {
+                clearTabSelection()
+                selectTab(id)
+                selectionAnchor = id
+                return
+            }
+            let lo = min(from, to)
+            let hi = max(from, to)
+            selectedTabIds = Set(ordered[lo...hi])
+            selectionAnchor = anchor
+            return
+        }
+
+        clearTabSelection()
+        selectTab(id)
+        selectionAnchor = id
+    }
+
+    func clearTabSelection() {
+        selectedTabIds.removeAll()
+        selectionAnchor = nil
+    }
+
+    private func pruneTabSelection() {
+        let live = Set(tabs.map(\.id))
+        selectedTabIds = selectedTabIds.filter { live.contains($0) }
+        if selectedTabIds.isEmpty { selectionAnchor = nil }
+    }
+
     /// Select a tab from the sidebar. A tab and a surface are mutually exclusive,
     /// so dismiss any open surface and hand keyboard focus back to the page. The
     /// core already refocuses when the *visible tab changes* (`tabs::set_visible`);
@@ -361,7 +547,11 @@ final class BrowserState: ObservableObject {
         isHistoryOpen = false
         isVaultOpen = false
         isSettingsOpen = false
-        browser_tab_select(id)
+        if isPrivate {
+            browser_private_tab_select(windowId, id)
+        } else {
+            browser_tab_select(id)
+        }
         if hadSurface { browser_focus_active_tab() }
     }
 
@@ -421,6 +611,24 @@ private struct Snapshot: Decodable {
         let space: Int32
         let folder: Int32?
         let pinned: Bool
+        let favorite: Bool
+        let dismissed: Bool
+        let url: String
+        let title: String
+        let loading: Bool
+        let canGoBack: Bool
+        let canGoForward: Bool
+        let hydrated: Bool
+    }
+}
+
+private struct PrivateSnapshot: Decodable {
+    let windowId: Int32
+    let activeTab: Int32?
+    let tabs: [PrivateTabDTO]
+
+    struct PrivateTabDTO: Decodable {
+        let id: Int32
         let url: String
         let title: String
         let loading: Bool
@@ -432,10 +640,15 @@ private struct Snapshot: Decodable {
 /// C-ABI trampoline for the core's event stream (ADR-0003). Registered once at
 /// launch via `browser_set_event_callback`. A non-capturing global, so it
 /// coerces to the expected `@convention(c)` pointer. Invoked on the main thread.
-func browserTabEventCallback(_ type: Int32, _ id: Int32, _ payload: UnsafePointer<CChar>?) {
+func browserTabEventCallback(
+    _ type: Int32,
+    _ windowId: Int32,
+    _ id: Int32,
+    _ payload: UnsafePointer<CChar>?
+) {
     let text = payload.map { String(cString: $0) }
     MainActor.assumeIsolated {
-        BrowserState.shared.handleEvent(type: type, id: id, payload: text)
+        BrowserState.registry[windowId]?.handleEvent(type: type, id: id, payload: text)
     }
 }
 
@@ -455,7 +668,8 @@ enum Navigation {
         MainActor.assumeIsolated {
             switch route {
             case .newTab:
-                (NSApp.delegate as? AppDelegate)?.openTab(url: url)
+                (NSApp.delegate as? AppDelegate)?.openTab(
+                    url: url, windowId: BrowserState.current.windowId)
             case .currentTab:
                 url.withCString { browser_navigate($0) }
             }
@@ -469,7 +683,6 @@ enum Navigation {
         if !query.contains(" "), query.contains(".") {
             return "https://" + query
         }
-        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-        return "https://www.google.com/search?q=\(encoded)"
+        return SearchNavigation.url(for: query)
     }
 }

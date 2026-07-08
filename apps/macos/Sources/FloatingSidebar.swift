@@ -5,8 +5,10 @@ import SwiftUI
 /// CEF's content is a GPU-hosted remote layer that in-window blur cannot
 /// sample reliably.
 struct FloatingSidebar: View {
+    var isPrivate: Bool = false
+
     var body: some View {
-        Sidebar(variant: .floating)
+        Sidebar(variant: .floating, isPrivate: isPrivate)
             .frame(maxHeight: .infinity)
             .background {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)

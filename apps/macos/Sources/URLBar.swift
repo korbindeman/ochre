@@ -238,7 +238,8 @@ struct URLBar: View {
     /// count, blocking turned off here, or on hover (so it's always reachable).
     /// Keep it up while its popover is open so the popover never dismisses itself.
     private var shieldVisible: Bool {
-        isWebPage && (state.adblockBlockedCount > 0 || state.adblockSiteOff || hovering || showShield)
+        isWebPage
+            && (state.adblockBlockedCount > 0 || state.adblockSiteOff || hovering || showShield)
     }
 
     private var shieldActivelyBlocking: Bool {
@@ -256,21 +257,22 @@ struct URLBar: View {
         return AnyShapeStyle(.secondary)
     }
 
+    private var shieldBadgeText: String {
+        let count = state.adblockBlockedCount
+        if count > 99 { return "99+" }
+        return "\(count)"
+    }
+
     private var shield: some View {
-        Button { showShield.toggle() } label: {
-            HStack(spacing: 3) {
-                Image(systemName: shieldIcon)
-                    .font(.system(size: 12, weight: .semibold))
-                    .contentTransition(.symbolEffect(.replace))
-                if shieldActivelyBlocking {
-                    Text("\(state.adblockBlockedCount)")
-                        .font(.system(size: 11, weight: .semibold))
-                        .monospacedDigit()
-                }
-            }
-            .foregroundStyle(shieldTint)
-            .frame(height: 18)
-            .padding(.horizontal, 2)
+        Button {
+            showShield.toggle()
+        } label: {
+            ShieldIcon(
+                systemName: shieldIcon,
+                tint: shieldTint,
+                knockedOutCount: shieldActivelyBlocking ? shieldBadgeText : nil
+            )
+            .frame(width: 18, height: 18)
         }
         .buttonStyle(IconButtonStyle(cornerRadius: 5, emphasizesLabel: false))
         .help(state.adblockSiteOff ? "Ad blocking off for this site" : "Ad & tracker blocking")
@@ -287,6 +289,16 @@ struct URLBar: View {
         }
     }
 
+    /// Cookie-consent is reject-first with no per-site override (ADR-0026), so
+    /// this is a transparency line only — shown when there's something to
+    /// report, not paired with a toggle.
+    private var consentCountText: String? {
+        guard state.consentEnabled, state.consentRejectedCount > 0 else { return nil }
+        return state.consentRejectedCount == 1
+            ? "1 cookie banner auto-rejected."
+            : "\(state.consentRejectedCount) cookie banners auto-rejected."
+    }
+
     private var shieldPopover: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(tab?.host.isEmpty == false ? tab!.host : "This site")
@@ -300,11 +312,23 @@ struct URLBar: View {
             }
             .font(.subheadline)
             .foregroundStyle(.secondary)
+            if let consentCountText {
+                Label {
+                    Text(consentCountText)
+                } icon: {
+                    Image(systemName: "hand.raised.fill").foregroundStyle(.secondary)
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            }
             Divider()
-            Toggle("Block ads and trackers on this site", isOn: Binding(
-                get: { !state.adblockSiteOff },
-                set: { _ in state.toggleAdblockForSite() }
-            ))
+            Toggle(
+                "Block ads and trackers on this site",
+                isOn: Binding(
+                    get: { !state.adblockSiteOff },
+                    set: { _ in state.toggleAdblockForSite() }
+                )
+            )
             .toggleStyle(.switch)
             .disabled(!state.adblockEnabled)
             if !state.adblockEnabled {
@@ -344,8 +368,14 @@ struct URLBar: View {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(Color.accentColor, lineWidth: 2)
         )
-        .onKeyPress(.upArrow) { suggestions.moveSelection(by: -1); return .handled }
-        .onKeyPress(.downArrow) { suggestions.moveSelection(by: 1); return .handled }
+        .onKeyPress(.upArrow) {
+            suggestions.moveSelection(by: -1)
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            suggestions.moveSelection(by: 1)
+            return .handled
+        }
         .onExitCommand { model.endEditing() }
         .onSubmit {
             if let selected = suggestions.selected() {
@@ -373,6 +403,41 @@ struct URLBar: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .offset(y: fieldHeight + 6)
             }
+        }
+    }
+}
+
+/// Shield with optional glyph-shaped knock-outs. Canvas keeps punched areas
+/// transparent so the URL chip behind shows through — `compositingGroup` on
+/// `Image` cannot see that parent.
+private struct ShieldIcon: View {
+    let systemName: String
+    let tint: AnyShapeStyle
+    let knockedOutCount: String?
+
+    var body: some View {
+        Canvas { context, size in
+            let bounds = CGRect(origin: .zero, size: size)
+            guard let shield = context.resolveSymbol(id: 0) else { return }
+            context.draw(shield, in: bounds)
+
+            if let knockedOutCount {
+                context.drawLayer { layer in
+                    layer.blendMode = .destinationOut
+                    layer.draw(
+                        Text(knockedOutCount)
+                            .font(.system(size: 8, weight: .heavy))
+                            .monospacedDigit(),
+                        at: CGPoint(x: size.width - 1, y: 1),
+                        anchor: .topTrailing
+                    )
+                }
+            }
+        } symbols: {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(tint)
+                .tag(0)
         }
     }
 }

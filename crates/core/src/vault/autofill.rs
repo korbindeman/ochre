@@ -506,12 +506,14 @@ mod tests {
         let lookup = Message {
             channel: CHANNEL,
             data: &serde_json::json!({ "type": "lookup", "host": "example.com" }),
+            tab_id: 1,
         };
         assert_eq!(handle(&lookup).unwrap()["matches"], serde_json::json!([]));
 
         let password = Message {
             channel: CHANNEL,
             data: &serde_json::json!({ "type": "password", "id": "whatever" }),
+            tab_id: 1,
         };
         assert!(handle(&password).unwrap()["password"].is_null());
     }
@@ -521,11 +523,13 @@ mod tests {
         let unknown = Message {
             channel: CHANNEL,
             data: &serde_json::json!({ "type": "frobnicate" }),
+            tab_id: 1,
         };
         assert!(handle(&unknown).is_none());
         let missing = Message {
             channel: CHANNEL,
             data: &serde_json::json!({ "host": "example.com" }),
+            tab_id: 1,
         };
         assert!(handle(&missing).is_none());
     }

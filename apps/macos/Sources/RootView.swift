@@ -16,8 +16,11 @@ import SwiftUI
 /// [`openNewTab`] / [`closeTab`] — and reconciles which one is visible against
 /// the core's `BrowserState` (the source of truth for the tab list + active tab).
 final class RootView: NSView {
+    private let state: BrowserState
+    private let isPrivate: Bool
+
     private let background = NSVisualEffectView()
-    private let sidebarHost = NSHostingView(rootView: Sidebar())
+    private lazy var sidebarHost = NSHostingView(rootView: Sidebar(isPrivate: isPrivate))
     private let divider = NSView()
     /// Transparent, wider grab strip on the sidebar's right edge — drag it to
     /// resize. Tracks the divider seam when pinned and the floating card's edge
@@ -25,9 +28,9 @@ final class RootView: NSView {
     private let resizeHandle = SidebarResizeHandle()
     /// Hosts the per-tab CEF views and the empty state, in the content region.
     private let contentArea = NSView()
-    private let emptyStateHost = NSHostingView(rootView: EmptyStateView())
+    private let emptyStateHost: NSHostingView<AnyView>
     private let hotZone = TrackingView()
-    private let floatingHost = NSHostingView(rootView: FloatingSidebar())
+    private lazy var floatingHost = NSHostingView(rootView: FloatingSidebar(isPrivate: isPrivate))
     /// The History page — a native content-area surface shown over the web
     /// content and dismissed back to it (ADR-0010), never a tab.
     private let historyHost = NSHostingView(rootView: HistoryView())
@@ -44,7 +47,7 @@ final class RootView: NSView {
     /// Seeded from the persisted state so the first layout pass already matches
     /// (the `$isSidebarPinned` observer drops the initial value — it only
     /// animates *changes*).
-    private var sidebarPinned = BrowserState.shared.isSidebarPinned
+    private var sidebarPinned: Bool
     /// Bumped at each pin/unpin animation start so a stale completion handler
     /// from an interrupted transition can't clear a newer one.
     private var sidebarTransitionGeneration: UInt = 0
@@ -68,7 +71,7 @@ final class RootView: NSView {
     /// User-resizable sidebar width, clamped to [min, max] and persisted across
     /// launches. Both the pinned and the floating sidebar render at this width.
     private var sidebarWidth: CGFloat = RootView.loadSidebarWidth()
-    private var chromeWidth: CGFloat { sidebarWidth + 1 } // sidebar + divider
+    private var chromeWidth: CGFloat { sidebarWidth + 1 }  // sidebar + divider
 
     private static let sidebarWidthKey = BrowserProfile.defaultsKey("sidebarWidth")
     private static let defaultSidebarWidth: CGFloat = 224
@@ -94,10 +97,16 @@ final class RootView: NSView {
         return stored > 0 ? clampSidebarWidth(CGFloat(stored)) : defaultSidebarWidth
     }
 
-    override init(frame frameRect: NSRect) {
+    init(frame frameRect: NSRect, state: BrowserState, isPrivate: Bool) {
+        self.state = state
+        self.isPrivate = isPrivate
+        self.sidebarPinned = state.isSidebarPinned
+        emptyStateHost = NSHostingView(
+            rootView: isPrivate ? AnyView(PrivateEmptyStateView()) : AnyView(EmptyStateView())
+        )
         super.init(frame: frameRect)
 
-        background.material = .sidebar
+        background.material = isPrivate ? .hudWindow : .sidebar
         background.blendingMode = .behindWindow
         background.state = .active
 
@@ -147,9 +156,9 @@ final class RootView: NSView {
         floatingHost.alphaValue = 0
         floatingHost.isHidden = true
 
-        hotZone.onChange = { hovering in
+        hotZone.onChange = { [weak self] hovering in
             if hovering {
-                BrowserState.shared.revealSidebar()
+                self?.state.revealSidebar()
             }
         }
 
@@ -189,16 +198,29 @@ final class RootView: NSView {
     /// tab, the two surfaces — re-runs `syncFloatingSidebar`; the method is
     /// idempotent, so redundant calls are free.
     private func observeState() {
-        let state = BrowserState.shared
         state.$tabs
             .receive(on: RunLoop.main)
-            .sink { [weak self] tabs in self?.pruneOrphanViews(liveIds: tabs.map(\.id)) }
+            .sink { [weak self] tabs in
+                self?.pruneOrphanViews(liveIds: tabs.map(\.id))
+                self?.preloadFavoriteTabs()
+            }
+            .store(in: &cancellables)
+        state.$activeSpaceId
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.preloadFavoriteTabs() }
             .store(in: &cancellables)
         state.$activeTabId
             .receive(on: RunLoop.main)
             .sink { [weak self] active in
                 self?.showActive(active)
                 self?.syncFloatingSidebar()
+            }
+            .store(in: &cancellables)
+        state.$suspendedTabId
+            .compactMap { $0 }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] id in
+                self?.detachSuspendedTab(id)
             }
             .store(in: &cancellables)
         state.$isHistoryOpen
@@ -240,8 +262,11 @@ final class RootView: NSView {
             .receive(on: RunLoop.main)
             .sink { [weak self] hovered in
                 guard let self else { return }
-                if hovered { self.startRevealDismissMonitor() }
-                else { self.stopRevealDismissMonitor() }
+                if hovered {
+                    self.startRevealDismissMonitor()
+                } else {
+                    self.stopRevealDismissMonitor()
+                }
                 self.syncFloatingSidebar()
             }
             .store(in: &cancellables)
@@ -251,7 +276,7 @@ final class RootView: NSView {
     /// the active tab, if any. The self-test asserts keyboard focus lands on a
     /// descendant of this view.
     var activeCEFContainer: NSView? {
-        guard let id = BrowserState.shared.activeTabId else { return nil }
+        guard let id = state.activeTabId else { return nil }
         return tabViews[id]
     }
 
@@ -264,7 +289,7 @@ final class RootView: NSView {
     /// (which creates the CEF browser and makes the tab active), and show it.
     func openNewTab(url: String) {
         // Opening a tab dismisses any app-UI surface (History / Passwords) if up.
-        BrowserState.shared.closeSurfaces()
+        if !isPrivate { state.closeSurfaces() }
         let container = CEFContainerView()
         container.autoresizingMask = [.width, .height]
         container.frame = contentArea.bounds
@@ -273,13 +298,26 @@ final class RootView: NSView {
         contentArea.addSubview(container)
 
         let size = contentArea.bounds.size
-        let id = url.withCString {
-            browser_tab_create(
-                Unmanaged.passUnretained(container).toOpaque(),
-                Int32(size.width),
-                Int32(size.height),
-                $0
-            )
+        let id: Int32
+        if isPrivate {
+            id = url.withCString {
+                browser_private_tab_create(
+                    state.windowId,
+                    Unmanaged.passUnretained(container).toOpaque(),
+                    Int32(size.width),
+                    Int32(size.height),
+                    $0
+                )
+            }
+        } else {
+            id = url.withCString {
+                browser_tab_create(
+                    Unmanaged.passUnretained(container).toOpaque(),
+                    Int32(size.width),
+                    Int32(size.height),
+                    $0
+                )
+            }
         }
         guard id >= 0 else {
             container.removeFromSuperview()
@@ -289,17 +327,38 @@ final class RootView: NSView {
         tabViews[id] = container
         // The core emitted TabSelected(id) during the call above; make sure the
         // freshly-registered view is the one shown.
-        showActive(BrowserState.shared.activeTabId)
+        showActive(state.activeTabId)
     }
 
     /// Close tab `id`: route it through CEF's close flow, then detach its child
     /// view so teardown completes (CEF finishes destroying a browser only once
     /// its host view is released — mirroring the window-close path).
     func closeTab(_ id: Int32) {
-        browser_tab_close(id)
+        let keepView = !isPrivate && (state.tabs.first { $0.id == id }?.favorite ?? false)
+        if isPrivate {
+            browser_private_tab_close(state.windowId, id)
+        } else {
+            browser_tab_close(id)
+        }
+        guard !keepView else { return }
         if let container = tabViews.removeValue(forKey: id) {
             container.detachCEFView()
             container.removeFromSuperview()
+        }
+    }
+
+    /// Pre-hydrate every favorite in the active space so they stay loaded
+    /// (ADR-0032), including dismissed ones.
+    private func preloadFavoriteTabs() {
+        guard !isPrivate else { return }
+        let favorites = state.tabs.filter { $0.space == state.activeSpaceId && $0.favorite }
+        for tab in favorites where tabViews[tab.id] == nil {
+            hydrateRestoredTab(tab.id)
+        }
+        if let active = state.activeTabId {
+            for (id, container) in tabViews {
+                container.isHidden = (id != active)
+            }
         }
     }
 
@@ -309,6 +368,14 @@ final class RootView: NSView {
         for container in tabViews.values {
             container.detachCEFView()
         }
+    }
+
+    /// Tear down the CEF host for a tab the core suspended (ADR-0033). The tab
+    /// row stays; re-selecting hydrates via `hydrateRestoredTab`.
+    private func detachSuspendedTab(_ id: Int32) {
+        guard let container = tabViews.removeValue(forKey: id) else { return }
+        container.detachCEFView()
+        container.removeFromSuperview()
     }
 
     /// Drop host views whose tab the core has closed (e.g. a page that closed
@@ -471,11 +538,14 @@ final class RootView: NSView {
         // otherwise so it never swallows clicks over the web content or the
         // reveal hot zone.
         resizeHandle.isHidden = !(sidebarPinned || floatingShown)
-        resizeHandle.frame = sidebarPinned
-            ? NSRect(x: chrome - resizeHandleWidth / 2, y: 0,
-                     width: resizeHandleWidth, height: bounds.height)
-            : NSRect(x: inset + sidebarWidth - resizeHandleWidth / 2, y: inset,
-                     width: resizeHandleWidth, height: floatingHeight)
+        resizeHandle.frame =
+            sidebarPinned
+            ? NSRect(
+                x: chrome - resizeHandleWidth / 2, y: 0,
+                width: resizeHandleWidth, height: bounds.height)
+            : NSRect(
+                x: inset + sidebarWidth - resizeHandleWidth / 2, y: inset,
+                width: resizeHandleWidth, height: floatingHeight)
     }
 
     /// Apply a new sidebar width from an edge drag. `pointerX` is in this view's
@@ -510,7 +580,10 @@ final class RootView: NSView {
     }
 
     private func tickRevealDismiss() {
-        guard BrowserState.shared.isSidebarRevealed else { stopRevealDismissMonitor(); return }
+        guard BrowserState.shared.isSidebarRevealed else {
+            stopRevealDismissMonitor()
+            return
+        }
         // Suspend dismissal while resizing the sidebar (the pointer roams past the
         // edge to drag it) or editing the URL inline (the pointer leaves the hover
         // zone to reach the autocomplete results, and collapsing mid-edit would
@@ -561,17 +634,19 @@ final class RootView: NSView {
         startSidebarTransitionSync()
         sidebarTransitionGeneration &+= 1
         let generation = sidebarTransitionGeneration
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = sidebarPinAnimationDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            context.allowsImplicitAnimation = true
-            applyLayout()
-        }, completionHandler: { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self, self.sidebarTransitionGeneration == generation else { return }
-                self.finishSidebarTransition()
-            }
-        })
+        NSAnimationContext.runAnimationGroup(
+            { context in
+                context.duration = sidebarPinAnimationDuration
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.allowsImplicitAnimation = true
+                applyLayout()
+            },
+            completionHandler: { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.sidebarTransitionGeneration == generation else { return }
+                    self.finishSidebarTransition()
+                }
+            })
     }
 
     private func startSidebarTransitionSync() {
@@ -604,8 +679,10 @@ final class RootView: NSView {
         guard case .sidebarTransition = CEFContainerView.sidebarLayout else { return }
         let size = animatedContentSize()
         guard size.width >= 1, size.height >= 1 else { return }
-        guard abs(size.width - lastSyncedCEFSize.width) >= 0.5
-            || abs(size.height - lastSyncedCEFSize.height) >= 0.5 else { return }
+        guard
+            abs(size.width - lastSyncedCEFSize.width) >= 0.5
+                || abs(size.height - lastSyncedCEFSize.height) >= 0.5
+        else { return }
         lastSyncedCEFSize = size
         for container in tabViews.values {
             container.applyCEFSize(size)
@@ -637,18 +714,20 @@ final class RootView: NSView {
         guard shown != floatingShown else { return }
         floatingShown = shown
         if shown { floatingHost.isHidden = false }
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.16
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            context.allowsImplicitAnimation = true
-            applyLayout()
-            floatingHost.animator().alphaValue = shown ? 1 : 0
-        }, completionHandler: { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self, !self.floatingShown else { return }
-                self.floatingHost.isHidden = true
-            }
-        })
+        NSAnimationContext.runAnimationGroup(
+            { context in
+                context.duration = 0.16
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.allowsImplicitAnimation = true
+                applyLayout()
+                floatingHost.animator().alphaValue = shown ? 1 : 0
+            },
+            completionHandler: { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, !self.floatingShown else { return }
+                    self.floatingHost.isHidden = true
+                }
+            })
     }
 }
 

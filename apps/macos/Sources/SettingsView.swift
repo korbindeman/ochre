@@ -169,6 +169,20 @@ private struct GeneralPane: View {
                 }
             }
         }
+        SettingsGroup("Search") {
+            Picker("Search engine", selection: $model.searchEngine) {
+                ForEach(SearchEngineOption.allCases) { option in
+                    Text(option.label).tag(option)
+                }
+            }
+            .onChange(of: model.searchEngine) { _, value in
+                model.setSearchEngine(value)
+            }
+            Text("Used for address-bar searches and the command bar.")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .padding(.top, 4)
+        }
         SettingsGroup("About") {
             SettingsRow(
                 title: "Version",
@@ -333,7 +347,7 @@ private struct SettingsGroup<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title.uppercased())
+            Text(title)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 12) {
@@ -377,13 +391,15 @@ private struct SettingsToggle: View {
     let onChange: (Bool) -> Void
 
     var body: some View {
-        Toggle(isOn: Binding(
-            get: { isOn },
-            set: { newValue in
-                isOn = newValue
-                onChange(newValue)
-            }
-        )) {
+        Toggle(
+            isOn: Binding(
+                get: { isOn },
+                set: { newValue in
+                    isOn = newValue
+                    onChange(newValue)
+                }
+            )
+        ) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 13, weight: .medium))
@@ -398,10 +414,42 @@ private struct SettingsToggle: View {
 
 // ─── Model ────────────────────────────────────────────────────────────────
 
+enum SearchEngineOption: Int32, CaseIterable, Identifiable {
+    case google = 0
+    case duckDuckGo = 1
+    case bing = 2
+    case brave = 3
+    case startpage = 4
+    case ecosia = 5
+    case kagi = 6
+
+    var id: Int32 { rawValue }
+
+    var label: String {
+        switch self {
+        case .google: return "Google"
+        case .duckDuckGo: return "DuckDuckGo"
+        case .bing: return "Bing"
+        case .brave: return "Brave Search"
+        case .startpage: return "Startpage"
+        case .ecosia: return "Ecosia"
+        case .kagi: return "Kagi"
+        }
+    }
+
+    static var current: Self {
+        from(engine: browser_settings_search_engine())
+    }
+
+    static func from(engine: Int32) -> Self {
+        allCases.first { $0.rawValue == engine } ?? .google
+    }
+}
+
 enum VaultAutoLockPolicy: Int32, CaseIterable, Identifiable {
     case never = 0
     case onBrowserClose = 1
-    case onRestart = 2
+    case onMacRestart = 2
     case onPasswordUse = 3
 
     var id: Int32 { rawValue }
@@ -410,7 +458,7 @@ enum VaultAutoLockPolicy: Int32, CaseIterable, Identifiable {
         switch self {
         case .never: return "Never"
         case .onBrowserClose: return "When Browser closes"
-        case .onRestart: return "When Browser restarts"
+        case .onMacRestart: return "When Mac restarts"
         case .onPasswordUse: return "After each password"
         }
     }
@@ -418,18 +466,20 @@ enum VaultAutoLockPolicy: Int32, CaseIterable, Identifiable {
     var help: String {
         switch self {
         case .never:
-            return "Stay unlocked until you choose Lock Now. The vault is still cleared from memory when Browser quits."
+            return "Stay unlocked until you choose Lock Now."
         case .onBrowserClose:
-            return "Lock when you quit Browser."
-        case .onRestart:
-            return "Require your master password each time you open Browser. Also locks when you quit."
+            return
+                "Lock when you quit Browser. Quitting and reopening Browser is the same thing — your vault is always locked on relaunch."
+        case .onMacRestart:
+            return
+                "Lock when your Mac reboots, not when you quit Browser. Reopening Browser still requires unlock — the vault never persists across launches."
         case .onPasswordUse:
             return "Lock immediately after filling or copying a password."
         }
     }
 
     static func from(policy: Int32) -> Self {
-        allCases.first { $0.rawValue == policy } ?? .onRestart
+        allCases.first { $0.rawValue == policy } ?? .onBrowserClose
     }
 }
 
@@ -441,7 +491,8 @@ final class SettingsModel: ObservableObject {
     @Published var themePreference: Int32 = 0
     @Published var adblockEnabled = true
     @Published var consentEnabled = true
-    @Published var vaultAutoLock: VaultAutoLockPolicy = .onRestart
+    @Published var vaultAutoLock: VaultAutoLockPolicy = .onBrowserClose
+    @Published var searchEngine: SearchEngineOption = .google
     @Published var vaultConfigured = false
     @Published var vaultLocked = true
     @Published var isDefaultBrowser = false
@@ -458,6 +509,7 @@ final class SettingsModel: ObservableObject {
         adblockEnabled = BrowserState.shared.adblockEnabled
         consentEnabled = BrowserState.shared.consentEnabled
         vaultAutoLock = VaultAutoLockPolicy.from(policy: browser_settings_vault_auto_lock())
+        searchEngine = SearchEngineOption.from(engine: browser_settings_search_engine())
         vaultConfigured = browser_vault_is_configured()
         vaultLocked = browser_vault_is_locked()
         isDefaultBrowser = DefaultBrowser.isDefault
@@ -489,6 +541,11 @@ final class SettingsModel: ObservableObject {
     func setVaultAutoLock(_ policy: VaultAutoLockPolicy) {
         browser_settings_set_vault_auto_lock(policy.rawValue)
         vaultAutoLock = policy
+    }
+
+    func setSearchEngine(_ engine: SearchEngineOption) {
+        browser_settings_set_search_engine(engine.rawValue)
+        searchEngine = engine
     }
 
     func setAsDefaultBrowser() {

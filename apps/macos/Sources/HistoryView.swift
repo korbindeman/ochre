@@ -62,7 +62,7 @@ struct HistoryView: View {
     }
 
     private func open(_ entry: HistoryEntry) {
-        (NSApp.delegate as? AppDelegate)?.openTab(url: entry.url)
+        (NSApp.delegate as? AppDelegate)?.openTab(url: entry.url, windowId: 0)
         BrowserState.shared.closeHistory()
     }
 }

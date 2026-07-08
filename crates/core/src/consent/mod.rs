@@ -21,11 +21,55 @@ use crate::adblock::build_engine;
 use crate::inject::{register as register_consumer, Consumer, Message};
 use adblock::Engine;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 /// The substrate channel cookie-consent messages ride.
 const CHANNEL: &str = "consent";
+
+/// Per-tab count of consent banners rejected since the tab's last main-frame
+/// navigation, keyed by CEF browser identifier. Feeds the shield popover
+/// (mirrors [`crate::adblock`]'s blocked-request counter).
+static COUNTS: OnceLock<Mutex<HashMap<i32, u64>>> = OnceLock::new();
+
+fn counts() -> &'static Mutex<HashMap<i32, u64>> {
+    COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Record a rejected consent banner against a tab.
+fn note_rejected(tab_id: i32) {
+    *counts()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(tab_id)
+        .or_insert(0) += 1;
+}
+
+/// Rejected-banner count for a tab since its last main-frame navigation.
+pub fn rejected_count(tab_id: i32) -> u64 {
+    counts()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&tab_id)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Reset a tab's count — call on a main-frame navigation start (new page).
+pub fn reset_count(tab_id: i32) {
+    counts()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(tab_id, 0);
+}
+
+/// Drop a tab's counter when the tab closes, so the map doesn't grow unbounded.
+pub fn forget_tab(tab_id: i32) {
+    counts()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&tab_id);
+}
 
 // ─── Cookie-list engine (Tier A cosmetics, P2-26) ─────────────────────────
 
@@ -197,6 +241,7 @@ pub fn handle(msg: &Message) -> Option<serde_json::Value> {
             let cmp = msg.data.get("cmp").and_then(|v| v.as_str()).unwrap_or("?");
             let host = msg.data.get("host").and_then(|v| v.as_str()).unwrap_or("?");
             eprintln!("[consent] rejected {cmp} on {host}");
+            note_rejected(msg.tab_id);
             Some(serde_json::json!({}))
         }
         _ => None,
@@ -461,18 +506,21 @@ mod tests {
         let cfg = Message {
             channel: CHANNEL,
             data: &serde_json::json!({ "type": "config" }),
+            tab_id: 1,
         };
         assert_eq!(handle(&cfg).unwrap()["enabled"], true);
 
         let ack = Message {
             channel: CHANNEL,
             data: &serde_json::json!({ "type": "rejected", "cmp": "onetrust", "host": "x.com" }),
+            tab_id: 1,
         };
         assert_eq!(handle(&ack), Some(serde_json::json!({})));
 
         let unknown = Message {
             channel: CHANNEL,
             data: &serde_json::json!({ "type": "frobnicate" }),
+            tab_id: 1,
         };
         assert!(handle(&unknown).is_none());
     }
@@ -488,9 +536,34 @@ mod tests {
                 "classes": ["cookie-alert", "main"],
                 "ids": []
             }),
+            tab_id: 1,
         };
         let css = handle(&msg).unwrap()["css"].as_str().unwrap().to_string();
         assert!(css.contains(".cookie-alert"), "css: {css}");
+    }
+
+    #[test]
+    fn rejected_message_increments_the_tabs_count() {
+        let tab = 4242;
+        reset_count(tab);
+        assert_eq!(rejected_count(tab), 0);
+
+        let ack = Message {
+            channel: CHANNEL,
+            data: &serde_json::json!({ "type": "rejected", "cmp": "onetrust", "host": "x.com" }),
+            tab_id: tab,
+        };
+        handle(&ack);
+        handle(&ack);
+        assert_eq!(rejected_count(tab), 2);
+
+        // A different tab's count is unaffected.
+        assert_eq!(rejected_count(tab + 1), 0);
+
+        reset_count(tab);
+        assert_eq!(rejected_count(tab), 0);
+
+        forget_tab(tab);
     }
 
     #[test]

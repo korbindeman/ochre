@@ -15,6 +15,7 @@ enum SidebarVariant { case pinned, floating }
 /// live from the event stream.
 struct Sidebar: View {
     var variant: SidebarVariant = .pinned
+    var isPrivate: Bool = false
     @ObservedObject private var state = BrowserState.shared
 
     /// The on-screen instance: the pinned column when pinned, the floating copy
@@ -54,24 +55,45 @@ struct Sidebar: View {
             URLBar(isVisible: isVisible)
                 .zIndex(1)
 
-            // The active space's tree: pinned section (folders + loose pinned)
-            // above New Tab + the today (ephemeral) tabs. Scrolls independently.
+            if !isPrivate {
+                PinnedTabStrip()
+            }
+
+            // The active space's tree: saved section (folders + loose saved)
+            // above New Tab + open tabs. Scrolls independently.
             // Fill the scroll viewport so empty list space is tappable — clicking
             // it dismisses the inline URL editor (the field only resigns on its
             // own when focus moves elsewhere, which bare sidebar chrome doesn't).
             GeometryReader { proxy in
                 ScrollView {
                     SpaceContents()
-                        .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .topLeading)
+                        .frame(
+                            maxWidth: .infinity, minHeight: proxy.size.height,
+                            alignment: .topLeading
+                        )
                         .contentShape(.rect)
-                        .onTapGesture { URLBarModel.shared.endEditing() }
+                        .onTapGesture {
+                            URLBarModel.shared.endEditing()
+                            BrowserState.shared.clearTabSelection()
+                        }
                 }
                 .scrollIndicators(.never)
             }
             .frame(maxHeight: .infinity)
 
-            // Space switcher lives at the bottom, Arc-style.
-            SpaceSwitcher()
+            if isPrivate {
+                HStack(spacing: 6) {
+                    Image(systemName: "hand.raised.fill")
+                        .font(.system(size: 11))
+                    Text("Private")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
+            } else {
+                SpaceSwitcher()
+            }
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 10)
@@ -79,7 +101,10 @@ struct Sidebar: View {
         .background {
             Color.clear
                 .contentShape(.rect)
-                .onTapGesture { URLBarModel.shared.endEditing() }
+                .onTapGesture {
+                    URLBarModel.shared.endEditing()
+                    BrowserState.shared.clearTabSelection()
+                }
         }
     }
 }

@@ -157,8 +157,24 @@ Goal (rm §5.1 / mvp): the Arc interaction model in native chrome, good enough f
 | P1-20 | App-UI surface ↔ tab mutual exclusivity — opening History/Passwords suppresses the sidebar active-tab highlight; clicking a tab dismisses the surface + focuses that tab; the two surfaces are exclusive with each other; leading ✕ close button on each; ⌘W dismisses whichever surface is open | done | ~15k | P1-13, P2-13 | ADR-0022 · style §15; user request/bug 2026-07-07 |
 | P1-21 | URL-bar chip neutralized while an app-UI surface is open — the chip still shows the active tab's host while History/Passwords covers the canvas (the highlight is cleared but the address chip isn't); decide whether to blank/neutralize it for consistency (self-contained; core active tab stays as-is) | done | ~8k | P1-20 | ADR-0022 (discovered in P1-20) |
 | P1-22 | Uniform button feedback — shared `IconButtonStyle` (hover fill + press-deepen, Reduce-Motion-aware) replaces the hand-rolled per-button highlights across the chrome; brings the URL-chip copy/shield buttons in line with the rest, adds the pressed state no custom button had, and generalizes action-confirmation (vault copy ✓ like the URL chip) | done | ~18k | P1-M2 | ADR-0023 · style §17; user request 2026-07-07 |
+| P1-23 | Tab multiselect + folder-from-selection + clear ephemeral tabs (Arc) — ⌘/⇧-click range select, "New Folder from Selection", sidebar Today **Clear** (keeps multi-selection, else active tab); core `create_folder_with_tabs` + `clear_ephemeral_tabs` | done | ~35k | P1-7 | style §4; user request 2026-07-08 |
+| P1-24 | Runtime tab suspension — auto-discard background CEF browsers (30 s grace on tab switch, immediate on space switch), favorites stay resident, `TabSuspended` event + sidebar dimming | done | ~45k | P1-15 | ADR-0033 · mvp risk #3; user request 2026-07-08 |
+| P1-25 | Tab suspension settings + manual controls — grace duration, disable auto-suspend, "Suspend Other Tabs" menu | next | ~25k | P1-24 | ADR-0033 consequences |
+| P1-26 | Session persist coalescing — debounce title/url write-through to `session.json` if profiling shows main-thread pressure | next | ~15k | P1-15 | ADR-0013 consequences |
 
 Notes:
+- **Landed 2026-07-08 (P1-23 + P2-3) — tab multiselect, folder-from-selection, clear ephemeral.**
+  **Core:** `tabs::create_folder_with_tabs` (batch pin+file, store-order preserved) and
+  `tabs::clear_ephemeral_tabs` (bulk close, not reopenable; empty `keep` ⇒ active tab survives).
+  FFI: `browser_create_folder_with_tabs`, `browser_clear_ephemeral_tabs`. **Swift:** ⌘-click toggles
+  selection (seeds from the active tab on first ⌘-click), ⇧-click range-selects across the full sidebar
+  order (folders → loose pinned → today), tint stroke for multi-selected rows; **Today → Clear** in the
+  sidebar + File → Clear Ephemeral Tabs; File → New Folder from Selection + context-menu bulk actions
+  (folder / close N tabs) when 2+ are selected. **Verified:** 4 new core unit tests + `cargo build`
+  green; Swift compiles. **Pending interactive:** the ⌘/⇧ click gestures and Clear button want a `just run`
+  pass (can't be driven headlessly).
+- **Split view filed as P3-13** (`later`) — depends on stable multi-tab hosting + focus routing; not in
+  scope for this slice.
 - **P1-M1 is Rust-core only** — independent of focus routing, so it can run in parallel with P0-1.
 - The event-stream boundary + **swift-bridge vs. UniFFI callback vs. extend the hand-rolled C ABI**
   decision lands inside P1-M1 (mvp M1 "Decision to lock") — write an ADR when it's chosen. Grounding
@@ -379,9 +395,10 @@ Phase 1 nears exit.
 |----|------|--------|-----|------|------|
 | P2-1 | Tab taxonomy in core — a tab *type*: pinned (per-space, persistent) vs. today (ephemeral) | later | ~40k | P1-M1 | mvp §Arc-UX ("pinned/today split is a fast-follow"); user 2026-07-06 |
 | P2-2 | Rename tab — double-click for inline rename + context-menu "Rename" | later | ~20k | P2-1 | user 2026-07-06 |
-| P2-3 | Clear ephemeral (today) tabs — keep the active one; multi-select marks tabs to keep, "Clear" removes the rest | later | ~25k | P2-1 | user 2026-07-06 |
+| P2-3 | Clear ephemeral (today) tabs — keep the active one; multi-select marks tabs to keep, "Clear" removes the rest | done | ~25k | P1-7 | user 2026-07-06 · landed in P1-23 2026-07-08 |
 | P2-4 | Pinned-tab saved-URL semantics — navigate freely, "close" reverts to the saved URL (tab persists, reopenable), + "Replace URL with current" | later | ~30k | P2-1 | Arc pinned-tab behavior; user 2026-07-06 |
 | P2-5 | Global pinned tabs (Favorites) — pinned across *all* spaces, distinct from the per-space persistent tabs | later | ~35k | P2-1 | user 2026-07-06 |
+| P2-36 | **Pinned tabs** (Arc-like, distinct from saved) — always resident / preloaded in each space's sidebar, separate from the saved/open split; plus a setting for when to clear **open** tabs (never by default) | wip | ~50k | P1-23 | style §4; ADR-0032; user request 2026-07-08 |
 | P2-6 | Downloads indicator + section (Tier-1 downloads manager) | later | ~40k | — | rm §4.1 / §5.2; user 2026-07-06 |
 | P2-7 | Traffic-light native-parity polish — option-key alternate glyphs, VoiceOver labels/traits, green zoom-vs-fullscreen nuance (deferred from P1-14's custom-drawn lights) | later | ~20k | P1-14 | ADR-0012 |
 | P2-8 | Vault crypto core — key hierarchy (KDF → master key → password hash → stretched key → user symmetric key) + Bitwarden `EncString` (AES-256-CBC + HMAC-SHA256), unit-tested in isolation | done | ~35k | — | ADR-0016 · spec §10; user 2026-07-06 |
@@ -828,6 +845,7 @@ focus); the user asked to plan, not start.
 | P3-10 | **Device / responsive frames** — resize viewport to device presets, rotate, DPR toggle (CDP `Emulation.*`). **Is** rm §5.3's "device/responsive emulation" dev-toolbox line — cross-ref, not a new capability. *CDP.* | later | ~30k | P3-1 · P0-4 | rm §5.3 (dev toolbox); user request 2026-07-07 (v2) |
 | P3-11 | **QR for current URL** — core QR generator + native popover; hand the page off to a phone. Trivial, high delight. *Core + native.* | later | ~12k | P3-1 | rm §5.3; user request 2026-07-07 (v2) |
 | P3-12 | **Tech-stack detector** (Wappalyzer-class) — fingerprint framework / CDN / analytics via an injected probe → a summary popover. *Injected content script.* | later | ~30k | P3-1 · P2-14 | rm §5.3; user request 2026-07-07 (v2) |
+| P3-13 | **Split view** — side-by-side tab tiling (2-pane to start; grid/workspaces later). rm §5.3 Tier-3 differentiator; Firefox-baseline parity. Depends on stable multi-tab CEF hosting + focus routing. | later | ~90k | P1-M2 · P0-1 | rm §5.3 · user request 2026-07-08 |
 
 Notes:
 - **Sequencing.** **P3-1 is the spine** — the Developer menu + overlay HUD host every other row hangs off;

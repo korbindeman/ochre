@@ -139,13 +139,23 @@ fn install_engine(rules: &str) {
 /// site" allowlists); `request_type` is the lowercase adblock resource kind
 /// (`"script"`, `"image"`, `"sub_frame"`, …) — the CEF mapping lives in the
 /// resource-request handler. Runs on the CEF IO thread.
-pub fn check(url: &str, source_url: &str, first_party_host: &str, request_type: &str) -> bool {
+pub fn check(
+    url: &str,
+    source_url: &str,
+    first_party_host: &str,
+    request_type: &str,
+    ephemeral_allowlist: Option<&[String]>,
+) -> bool {
     {
         let state = state();
         if !state.enabled {
             return false;
         }
-        if state.is_allowlisted(&allowlist_key(first_party_host)) {
+        let key = allowlist_key(first_party_host);
+        if state.is_allowlisted(&key) {
+            return false;
+        }
+        if ephemeral_allowlist.is_some_and(|list| list.iter().any(|h| h == &key)) {
             return false;
         }
     }

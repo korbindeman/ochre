@@ -116,10 +116,10 @@ final class FocusSelfTest {
     private func buildSteps() {
         // Fixture: two tabs. Opening a tab makes it active and (via set_visible)
         // focuses its page.
-        steps.append(("open-tab-1", { self.app.openTab(url: self.fixtureURL) }))
+        steps.append(("open-tab-1", { self.app.openTab(url: self.fixtureURL, windowId: 0) }))
         steps.append(("open-tab-2", {
             self.tab1 = BrowserState.shared.activeTabId ?? -1
-            self.app.openTab(url: self.fixtureURL)
+            self.app.openTab(url: self.fixtureURL, windowId: 0)
         }))
 
         // ── Case A: tab switch focuses the newly-selected tab's page ──

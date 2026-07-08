@@ -29,10 +29,12 @@ bool browser_initialize(void);
 //   5  StructureChanged  no id / payload — re-pull browser_structure_json
 //   6  TabNavStateChanged payload = "bf" — back/forward enablement as '0'/'1'
 //   7  OpenTabRequested   payload = url; id = 1 foreground / 0 background
+//   8  TabSuspended       no payload — host detaches the CEF view (ADR-0033)
 
 // Register (or clear, with NULL) the tab/space event callback. Invoked on the
 // main thread. `payload` is owned by the core and valid only during the call.
-void browser_set_event_callback(void (*callback)(int32_t event_type, int32_t id,
+void browser_set_event_callback(void (*callback)(int32_t event_type,
+                                                 int32_t window_id, int32_t id,
                                                  const char *payload));
 
 // The whole tree as a JSON snapshot (see crates/ffi browser_structure_json).
@@ -41,7 +43,7 @@ char *browser_structure_json(void);
 
 // Create a new tab rendering into `parent_view` (NSView*) at the given size,
 // loading `url` (NUL-terminated UTF-8, or NULL for blank). Returns the tab id
-// (>= 0) or negative on failure. The tab becomes active (ephemeral / "today").
+// (>= 0) or negative on failure. The tab becomes active (open / working set).
 // Main thread only.
 int32_t browser_tab_create(void *parent_view, int32_t width, int32_t height,
                            const char *url);
@@ -68,23 +70,35 @@ int32_t browser_tab_reopen_closed(void);
 // item's enabled state). Main thread only.
 bool browser_tab_can_reopen_closed(void);
 
-// Pin (persist) or unpin tab `id`. Unpinning returns it to "today" and clears
-// its folder. Main thread only.
+// Save (persist) or move-to-open tab `id` (`pinned` flag in core). Moving to open
+// clears its folder. Main thread only.
 void browser_tab_set_pinned(int32_t id, bool pinned);
 
+// Pin or unpin tab `id` in the Arc-style icon strip (ADR-0032). Main thread only.
+void browser_tab_set_favorite(int32_t id, bool favorite);
+
+// Restore a dismissed favorite to the icon strip. Main thread only.
+void browser_tab_restore_favorite(int32_t id);
+
 // Move tab `id` into folder `folder` (negative ⇒ out of any folder). Moving
-// into a folder auto-pins the tab. Main thread only.
+// into a folder auto-saves the tab. Main thread only.
 void browser_tab_move_to_folder(int32_t id, int32_t folder);
 
-// Drag-and-drop relocation: set tab `id`'s section (`pinned`; `folder` negative
-// ⇒ no folder) and position it just before tab `before` (negative ⇒ the
-// section's end). A folder destination auto-pins. Main thread only.
-void browser_tab_move(int32_t id, bool pinned, int32_t folder, int32_t before);
+// Drag-and-drop relocation: set tab `id`'s section (`favorite`, `pinned`;
+// `folder` negative ⇒ no folder) and position it just before tab `before`
+// (negative ⇒ the section's end). A folder destination auto-pins. Main thread only.
+void browser_tab_move(int32_t id, bool favorite, bool pinned, int32_t folder,
+                      int32_t before);
 
-// Folders live in a space's pinned section and hold pinned tabs.
+// Folders live in a space's saved section and hold saved tabs.
 // Create an empty folder (named `name`) in the active space; returns its id.
 int32_t browser_create_folder(const char *name);
-// Delete folder `id`, keeping its tabs (they drop to loose pinned).
+// Create a folder and move `tab_ids` (length `count`) into it (auto-pins).
+int32_t browser_create_folder_with_tabs(const char *name, const int32_t *tab_ids,
+                                        int32_t count);
+// Close open tabs except those in `keep_ids` (`count` 0 ⇒ keep active).
+void browser_clear_ephemeral_tabs(const int32_t *keep_ids, int32_t count);
+// Delete folder `id`, keeping its tabs (they drop to loose saved).
 void browser_delete_folder(int32_t id);
 void browser_rename_folder(int32_t id, const char *name);
 
@@ -166,6 +180,28 @@ void browser_quit(void);
 // closing is already underway — let the window close, and release the parent
 // view so browser teardown can complete.
 bool browser_request_close_all(void);
+
+// Close one window (`0` = normal, `>= 1` = private). Main thread only.
+bool browser_request_close_window(int32_t window_id);
+
+// Tell the core which window owns nav commands. Main thread only.
+void browser_set_focused_window(int32_t window_id);
+
+// Private (incognito) windows — ephemeral tabs in isolated CEF profiles.
+int32_t browser_private_window_create(void);
+char *browser_private_structure_json(int32_t window_id);
+int32_t browser_private_tab_create(int32_t window_id, void *parent_view,
+                                   int32_t width, int32_t height, const char *url);
+void browser_private_tab_select(int32_t window_id, int32_t id);
+void browser_private_tab_close(int32_t window_id, int32_t id);
+void browser_private_destroy_window(int32_t window_id);
+bool browser_private_adblock_site_allowlisted(int32_t window_id);
+void browser_private_adblock_set_site_allowlisted(int32_t window_id, bool allowlisted);
+
+bool browser_settings_private_vault_enabled(void);
+void browser_settings_set_private_vault_enabled(bool enabled);
+bool browser_settings_private_vault_prompt_seen(void);
+void browser_settings_set_private_vault_prompt_seen(bool seen);
 
 // ─── Autocomplete: history suggestions + favicons ───────────────────────────
 // Frecency-ranked history suggestions for `query`, as a JSON array string of
@@ -287,13 +323,24 @@ void browser_adblock_set_active_site_allowlisted(bool allowlisted);
 bool browser_consent_is_enabled(void);
 // Toggle cookie-consent handling (persisted); reloads the active tab so it applies.
 void browser_consent_set_enabled(bool enabled);
+// Consent banners auto-rejected on the active tab since its last navigation.
+uint64_t browser_consent_active_rejected_count(void);
 
 // Browser settings — vault auto-lock policy (0 Never / 1 OnBrowserClose /
-// 2 OnRestart / 3 OnPasswordUse).
+// 2 OnMacRestart / 3 OnPasswordUse).
 int32_t browser_settings_vault_auto_lock(void);
 void browser_settings_set_vault_auto_lock(int32_t policy);
 // Lock the vault on graceful shutdown when the policy requires it.
 void browser_settings_lock_vault_on_shutdown(void);
+// Forward the Mac's system boot time (Unix seconds) for OnMacRestart policy.
+void browser_settings_set_system_boot_secs(uint64_t secs);
+
+// Default search engine (0 Google / 1 DuckDuckGo / 2 Bing / 3 Brave /
+// 4 Startpage / 5 Ecosia / 6 Kagi).
+int32_t browser_settings_search_engine(void);
+void browser_settings_set_search_engine(int32_t engine);
+// Build a search-results URL for the query using the selected engine.
+char *browser_search_url_for_query(const char *query);
 
 // Appearance / color scheme (ADR-0030). One preference drives web content
 // (prefers-color-scheme) and native chrome: 0 System, 1 Light, 2 Dark.

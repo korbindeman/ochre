@@ -11,18 +11,28 @@ extension CommandBarController {
     /// fixed so the field stays put and suggestions extend downward.
     func resizeToFit() {
         guard let hosting else { return }
-        positionPanel(height: max(fieldHeight, ceil(hosting.fittingSize.height)))
+        // Flush any pending SwiftUI layout first: the `$suggestions` change that
+        // triggers us can land a runloop hop before the hosting view re-measures
+        // its intrinsic height, so a bare read of `fittingSize` sees the *old* row
+        // count. The zero-state (⌘T with an empty field) fires a single update
+        // with no debounced follow-up to correct a stale measurement, which left
+        // the list clipped at the collapsed height.
+        hosting.layoutSubtreeIfNeeded()
+        positionPanel(height: max(collapsedHeight, ceil(hosting.fittingSize.height)))
     }
 
     func positionPanel(height: CGFloat) {
         guard let parent = parentWindow, let panel else { return }
         let frame = parent.frame
-        let topEdge = frame.maxY - barTopOffset
+        // The glass sits inset by `shadowInset` inside the panel, so lift the
+        // panel's top edge by that much to keep the glass's own top pinned at
+        // `barTopOffset`.
+        let topEdge = frame.maxY - barTopOffset + shadowInset
         panel.setFrame(
             NSRect(
-                x: frame.midX - barWidth / 2,
+                x: frame.midX - panelWidth / 2,
                 y: topEdge - height,
-                width: barWidth,
+                width: panelWidth,
                 height: height
             ),
             display: true
@@ -31,7 +41,7 @@ extension CommandBarController {
 
     func makePanel() -> KeyablePanel {
         let panel = KeyablePanel(
-            contentRect: NSRect(x: 0, y: 0, width: barWidth, height: fieldHeight),
+            contentRect: NSRect(x: 0, y: 0, width: panelWidth, height: collapsedHeight),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false

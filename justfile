@@ -7,19 +7,39 @@
 default:
     @just --list
 
+# ── Parallel-agent work leases ──────────────────────────────────────
+# Claim at slice start; release before verify/build. Recipes below wait until
+# every lease is gone. Cargo's own lock handles simultaneous compiles.
+
+# Claim a work lease for this session (optional task label for status).
+work-begin *TASK:
+    ./scripts/work-lease.py begin {{TASK}}
+
+# Refresh this session's lease heartbeat (long slices).
+work-touch:
+    ./scripts/work-lease.py touch
+
+# Release this session's lease — required before just verify / just build.
+work-end:
+    ./scripts/work-lease.py end
+
+# List sessions still editing.
+work-status:
+    ./scripts/work-lease.py status
+
 # ── Rust workspace ──────────────────────────────────────────────────
 
 # Build all Rust crates.
 build:
-    cargo build --workspace
+    ./scripts/with-work-gate.sh cargo build --workspace
 
 # Run all tests.
 test:
-    cargo test --workspace
+    ./scripts/with-work-gate.sh cargo test --workspace
 
 # Lint with clippy.
 lint:
-    cargo clippy --workspace -- -D warnings
+    ./scripts/with-work-gate.sh cargo clippy --workspace -- -D warnings
 
 # Format check.
 fmt-check:
@@ -37,7 +57,7 @@ fmt:
 #
 # Run the native development app for the current platform.
 run: gen-macos
-    cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
     ./apps/macos/build/Build/Products/Debug/Browser.app/Contents/MacOS/Browser
 
 # A pure-Rust AppKit NSWindow hosting the embedded browser (native_shell.rs) — the
@@ -51,7 +71,7 @@ run-native-shell: bundle
 
 # Assemble target/bundle/browser.app (builds browser + browser_helper).
 bundle:
-    cargo run --bin bundle
+    ./scripts/with-work-gate.sh cargo run --bin bundle
 
 # Subresource-redirect regression (ADR-0028): assembles the bundle and drives an
 # embedded browser at a hermetic in-process server whose <img> loads through a
@@ -60,6 +80,12 @@ bundle:
 # Exits non-zero on failure. Throwaway $HOME dodges Chromium's process singleton.
 redirect-selftest: bundle
     HOME="$(mktemp -d)" ./target/bundle/browser.app/Contents/MacOS/browser --redirect-selftest
+
+# Favicon-capture regression: hermetic loopback page (SVG + ICO) asserts the
+# engine stores a transparent raster favicon in history.sqlite. Re-run after
+# favicon-pipeline or CEF changes.
+favicon-selftest: bundle
+    HOME="$(mktemp -d)" ./target/bundle/browser.app/Contents/MacOS/browser --favicon-selftest
 
 # ── macOS app (SwiftUI) ─────────────────────────────────────────────
 # Requires XcodeGen + Xcode Command Line Tools.
@@ -70,7 +96,7 @@ gen-macos:
 
 # Build the macOS app without running it (generate project first if missing).
 build-macos: gen-macos
-    cd apps/macos && xcodebuild -scheme Browser build
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser build'
 
 # P0-1 focus-routing regression (ADR-0018): builds the app and runs the in-process
 # synthetic-input focus self-test, which drives page ↔ command-bar ↔ tab-switch ↔
@@ -78,7 +104,7 @@ build-macos: gen-macos
 # non-zero on any failure. Runs under a throwaway $HOME so it never collides with
 # a running Browser on Chromium's process singleton.
 focus-selftest: gen-macos
-    cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
     HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/Browser.app/Contents/MacOS/Browser --focus-selftest
 
 # ── Dogfood (release) ───────────────────────────────────────────────
@@ -86,7 +112,7 @@ focus-selftest: gen-macos
 # Release build of Browser.app, install to /Applications, and launch.
 # Replaces any existing /Applications/Browser.app (quits a running instance first).
 dogfood: gen-macos
-    cd apps/macos && xcodebuild -scheme Browser -configuration Release -derivedDataPath build build
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Release -derivedDataPath build build'
     ./scripts/install-dogfood.sh apps/macos/build/Build/Products/Release/Browser.app
 
 # ── Convenience ─────────────────────────────────────────────────────

@@ -83,7 +83,7 @@ bind) so they can't silently drift from the code — see ADR-0007 · *Future*.
 | Audio-playing indicator + click-to-mute | Inv | ⬜ | ⬜ | ⬜ | style §4 |
 | New tab adjacent + focused; close selects neighbor | Inv | 🚧 | ⬜ | ⬜ | style §4 |
 | Reopen closed tab (⌘⇧T) — faithful restore of space/folder/pinned/slot | Inv | 🚧 | ⬜ | ⬜ | style §4 · ADR-0013 |
-| Pinned vs. ephemeral split (fast-follow) | Inv | ⬜ | ⬜ | ⬜ | style §4 · ADR-0006 |
+| Saved vs. open tab split | Inv | 🚧 | ⬜ | ⬜ | style §4 · ADR-0006 |
 | Session persistence — tabs/spaces/folders survive restart (lazy hydration) | Inv | 🚧 | ⬜ | ⬜ | rm §4 · ADR-0013 |
 
 ## Spaces

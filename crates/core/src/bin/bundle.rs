@@ -31,10 +31,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     std::fs::create_dir_all(output)?;
 
+    // Match apps/macos/project.yml PRODUCT_BUNDLE_IDENTIFIER so standalone
+    // bundles and the SwiftUI shell share one identifier family.
+    let (bundle_id, display_name) = if release {
+        ("com.nativechrome.Browser", "Browser")
+    } else {
+        ("com.nativechrome.Browser.dev", "Browser Dev")
+    };
     let bundle_info = BundleInfo::new(
         "browser",
-        "dev.browser.Browser",
-        "Browser",
+        bundle_id,
+        display_name,
         "English",
         Version::new(0, 1, 0),
     );
@@ -66,6 +73,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bundle_metadata.resources_path,
         bundle_info,
     )?;
+
+    // Give each helper a Chromium-style suffix under the main bundle ID.
+    let patch_script = Path::new("scripts/patch-helper-bundle-ids.sh");
+    if patch_script.exists() {
+        let status = Command::new(patch_script).arg(&app).status()?;
+        if !status.success() {
+            return Err(io::Error::from(io::ErrorKind::Other).into());
+        }
+    }
+
     println!("Bundled ({}): {}", profile, app.display());
     Ok(())
 }

@@ -39,8 +39,20 @@ final class CommandBarController {
     /// Distance from the window's top edge to the command bar's top edge. The
     /// bar's top stays pinned here; it grows *downward* as suggestions appear.
     let barTopOffset: CGFloat = 150
+    /// Visible width of the glass surface.
     let barWidth: CGFloat = 620
+    /// Transparent margin the panel leaves around the glass on every side, so the
+    /// material's own soft drop shadow renders in that margin instead of being
+    /// hard-clipped at the panel's edge. The panel is this much larger than the
+    /// glass on each side; the SwiftUI content pads itself by the same amount.
+    let shadowInset: CGFloat = 36
+    /// Height of the field row (the panel's collapsed content height).
     let fieldHeight: CGFloat = 60
+
+    /// Full panel width: the glass plus its shadow margin on both sides.
+    var panelWidth: CGFloat { barWidth + shadowInset * 2 }
+    /// Panel height with only the field showing (field row + shadow margins).
+    var collapsedHeight: CGFloat { fieldHeight + shadowInset * 2 }
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
@@ -68,7 +80,8 @@ final class CommandBarController {
             onChoose: { [weak self] suggestion in
                 suggestion.run()
                 self?.hide()
-            }
+            },
+            shadowInset: shadowInset
         ))
         hosting.translatesAutoresizingMaskIntoConstraints = false
         hosting.sizingOptions = [.intrinsicContentSize]
@@ -78,7 +91,7 @@ final class CommandBarController {
             hosting.topAnchor.constraint(equalTo: container.topAnchor),
             hosting.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            hosting.widthAnchor.constraint(equalToConstant: barWidth),
+            hosting.widthAnchor.constraint(equalToConstant: panelWidth),
         ])
         panel.contentView = container
         self.hosting = hosting
@@ -101,7 +114,7 @@ final class CommandBarController {
         // it never recurred; setting alpha 0 up front makes every presentation
         // behave like a reused one. The content adds its own spring scale-in.
         panel.alphaValue = 0
-        positionPanel(height: fieldHeight)
+        positionPanel(height: collapsedHeight)
         parent.addChildWindow(panel, ordered: .above)
         panel.makeKeyAndOrderFront(nil)
         NSLog("[focus] commandbar opened → panel is key")

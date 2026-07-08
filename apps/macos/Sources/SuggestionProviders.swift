@@ -291,15 +291,40 @@ struct TopSitesProvider: SuggestionProvider {
 
 // ─── Search suggestions ──────────────────────────────────────────────────
 
-/// A search engine's suggestion + query endpoints. Abstracted so the search
-/// source is swappable while defaulting to Google.
-protocol SearchEngine: Sendable {
-    func suggestionsURL(for query: String) -> URL?
-    func parseSuggestions(_ data: Data) -> [String]
-    func searchURL(for query: String) -> String
+/// Builds a search-results URL via the core-owned engine preference (ADR-0010).
+enum SearchNavigation {
+    static func url(for query: String) -> String {
+        query.withCString { ptr -> String in
+            guard let raw = browser_search_url_for_query(ptr) else {
+                return "https://www.google.com/search?q=\(query)"
+            }
+            defer { browser_string_free(raw) }
+            return String(cString: raw)
+        }
+    }
 }
 
-struct GoogleSuggestEngine: SearchEngine {
+/// Live autocomplete endpoint for the selected search engine. Engines without a
+/// public suggest API return nil and contribute no remote rows.
+protocol SearchSuggestBackend: Sendable {
+    func suggestionsURL(for query: String) -> URL?
+    func parseSuggestions(_ data: Data) -> [String]
+}
+
+enum SearchSuggestBackends {
+    static func current() -> (any SearchSuggestBackend)? {
+        switch browser_settings_search_engine() {
+        case 1: return DuckDuckGoSuggestBackend()
+        case 2: return BingSuggestBackend()
+        case 3: return BraveSuggestBackend()
+        case 5: return EcosiaSuggestBackend()
+        case 6: return KagiSuggestBackend()
+        default: return GoogleSuggestBackend()
+        }
+    }
+}
+
+private struct GoogleSuggestBackend: SearchSuggestBackend {
     func suggestionsURL(for query: String) -> URL? {
         guard let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
             return nil
@@ -316,32 +341,115 @@ struct GoogleSuggestEngine: SearchEngine {
         }
         return completions
     }
+}
 
-    func searchURL(for query: String) -> String {
-        let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-        return "https://www.google.com/search?q=\(q)"
+private struct DuckDuckGoSuggestBackend: SearchSuggestBackend {
+    func suggestionsURL(for query: String) -> URL? {
+        guard let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+            return nil
+        }
+        return URL(string: "https://duckduckgo.com/ac/?q=\(q)&type=list")
+    }
+
+    func parseSuggestions(_ data: Data) -> [String] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [Any],
+              root.count > 1,
+              let completions = root[1] as? [String]
+        else {
+            return []
+        }
+        return completions
     }
 }
 
-/// Live query completions from a `SearchEngine` (Google by default).
+private struct BingSuggestBackend: SearchSuggestBackend {
+    func suggestionsURL(for query: String) -> URL? {
+        guard let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+            return nil
+        }
+        return URL(string: "https://api.bing.com/osjson.aspx?query=\(q)")
+    }
+
+    func parseSuggestions(_ data: Data) -> [String] {
+        guard let completions = try? JSONSerialization.jsonObject(with: data) as? [String] else {
+            return []
+        }
+        return completions
+    }
+}
+
+private struct BraveSuggestBackend: SearchSuggestBackend {
+    func suggestionsURL(for query: String) -> URL? {
+        guard let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+            return nil
+        }
+        return URL(string: "https://search.brave.com/api/suggest?q=\(q)")
+    }
+
+    func parseSuggestions(_ data: Data) -> [String] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [Any],
+              root.count > 1,
+              let completions = root[1] as? [String]
+        else {
+            return []
+        }
+        return completions
+    }
+}
+
+private struct EcosiaSuggestBackend: SearchSuggestBackend {
+    func suggestionsURL(for query: String) -> URL? {
+        guard let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+            return nil
+        }
+        return URL(string: "https://ac.ecosia.org/autocomplete?q=\(q)")
+    }
+
+    func parseSuggestions(_ data: Data) -> [String] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return []
+        }
+        return root.compactMap { $0["title"] as? String }
+    }
+}
+
+private struct KagiSuggestBackend: SearchSuggestBackend {
+    func suggestionsURL(for query: String) -> URL? {
+        guard let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+            return nil
+        }
+        return URL(string: "https://kagi.com/api/autosuggest?q=\(q)")
+    }
+
+    func parseSuggestions(_ data: Data) -> [String] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [Any],
+              root.count > 1,
+              let completions = root[1] as? [String]
+        else {
+            return []
+        }
+        return completions
+    }
+}
+
+/// Live query completions from the selected search engine.
 struct SearchSuggestProvider: SuggestionProvider {
-    var engine: SearchEngine = GoogleSuggestEngine()
     var limit = 5
 
     func suggestions(for query: String) async -> [Suggestion] {
-        guard let url = engine.suggestionsURL(for: query),
+        guard let backend = SearchSuggestBackends.current(),
+              let url = backend.suggestionsURL(for: query),
               let (data, _) = try? await URLSession.shared.data(from: url)
         else {
             return []
         }
-        let engine = engine
-        return engine.parseSuggestions(data).prefix(limit).enumerated().map { index, text in
+        return backend.parseSuggestions(data).prefix(limit).enumerated().map { index, text in
             Suggestion(
                 id: "search:\(text)",
                 icon: .system("magnifyingglass"),
                 title: text,
                 subtitle: nil,
-                run: { Navigation.open(engine.searchURL(for: text)) },
+                run: { Navigation.open(SearchNavigation.url(for: text)) },
                 score: SuggestionScore.searchSuggestBase - index * 10
             )
         }
@@ -350,22 +458,20 @@ struct SearchSuggestProvider: SuggestionProvider {
 
 // ─── Search fallback ─────────────────────────────────────────────────────
 
-/// The omnibox's bottom anchor row — "Search Google for …" — always available
-/// when the query is not already a URL.
+/// The omnibox's bottom anchor row — "Search … for …" — always available when
+/// the query is not already a URL.
 struct SearchQueryProvider: SuggestionProvider {
-    var engine: SearchEngine = GoogleSuggestEngine()
-
     func suggestions(for query: String) async -> [Suggestion] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, urlLikeHost(q) == nil else { return [] }
-        let engine = engine
+        let label = SearchEngineOption.current.label
         return [
             Suggestion(
                 id: "search-query:\(q)",
                 icon: .system("magnifyingglass"),
-                title: "Search for \"\(q)\"",
+                title: "Search \(label) for \"\(q)\"",
                 subtitle: nil,
-                run: { Navigation.open(engine.searchURL(for: q)) },
+                run: { Navigation.open(SearchNavigation.url(for: q)) },
                 score: SuggestionScore.searchQuery
             ),
         ]

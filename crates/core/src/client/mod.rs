@@ -97,11 +97,15 @@ impl BrowserHandler {
         let Some(url) = url.map(CefString::to_string) else {
             return;
         };
-        history::record_visit(&url);
+        if !crate::private_window::is_private_cef(id) {
+            history::record_visit(&url);
+        }
         self.current_url.insert(id, url.clone());
         // Push the address change to the host's tab model (a no-op for non-tab
         // browsers, e.g. popups, which are never registered as tabs).
-        tabs::note_url(id, &url);
+        if !crate::private_window::note_url(id, &url) {
+            tabs::note_url(id, &url);
+        }
     }
 
     fn on_title_change(&mut self, browser: Option<&mut Browser>, title: Option<&CefString>) {
@@ -109,11 +113,15 @@ impl BrowserHandler {
         // Persist the title against this tab's current page before the
         // window-title plumbing (which the Views/Alloy paths need) consumes it.
         let title_str = title.map(CefString::to_string).unwrap_or_default();
-        if let Some(url) = id.and_then(|id| self.current_url.get(&id)) {
-            history::update_title(url, &title_str);
-        }
-        if let Some(id) = id {
-            tabs::note_title(id, &title_str);
+        if let Some(cef_id) = id {
+            if !crate::private_window::is_private_cef(cef_id) {
+                if let Some(url) = self.current_url.get(&cef_id) {
+                    history::update_title(url, &title_str);
+                }
+            }
+            if !crate::private_window::note_title(cef_id, &title_str) {
+                tabs::note_title(cef_id, &title_str);
+            }
         }
         let mut browser = browser.cloned();
         if let Some(browser_view) = browser_view_get_for_browser(browser.as_mut()) {
@@ -136,27 +144,19 @@ impl BrowserHandler {
         let Some(id) = browser.as_deref().map(|b| b.identifier()) else {
             return;
         };
-        let Some(host) = self
-            .current_url
-            .get(&id)
-            .and_then(|url| history::host_of(url))
-        else {
+        let Some(page_url) = self.current_url.get(&id).cloned() else {
             return;
         };
-        let Some(icon_url) = icon_urls.and_then(|list| favicon::best_icon_url(list, &host)) else {
+        let Some(host) = history::host_of(&page_url) else {
             return;
         };
-        let Some(host_obj) = browser.and_then(|b| b.host()) else {
+        let candidates = icon_urls.map_or_else(Vec::new, |list| {
+            favicon::rank_icon_urls_from_list(list, &page_url, &host)
+        });
+        if candidates.is_empty() {
             return;
-        };
-        let mut callback = favicon::FaviconDownloadCallback::new(id, host);
-        host_obj.download_image(
-            Some(&CefString::from(icon_url.as_str())),
-            1,  // is_favicon
-            32, // max_image_size (px) — one row-height icon
-            0,  // bypass_cache
-            Some(&mut callback),
-        );
+        }
+        favicon::start_favicon_download(id, host, candidates);
     }
 
     fn on_after_created(&mut self, browser: Option<&mut Browser>) {
@@ -186,7 +186,11 @@ impl BrowserHandler {
         // Drop this tab's history-attribution entry and tell the host (a no-op
         // for non-tab browsers like popups / DevTools).
         self.current_url.remove(&id);
-        tabs::note_closed(id);
+        if crate::private_window::is_private_cef(id) {
+            crate::private_window::note_closed(id);
+        } else {
+            tabs::note_closed(id);
+        }
         // Quit only when the whole app is closing (window close / ⌘Q) and the
         // last browser is gone — *not* when the user merely closed the last tab.
         if self.is_closing && self.browser_list.is_empty() {
@@ -226,6 +230,15 @@ impl BrowserHandler {
         } else if self.runtime_style == RuntimeStyle::ALLOY {
             platform_show_window(Some(&mut main_browser));
         }
+    }
+
+    /// Snapshot browsers whose CEF id satisfies `pred`.
+    pub(crate) fn matching_browsers(&self, pred: impl Fn(i32) -> bool) -> Vec<Browser> {
+        self.browser_list
+            .iter()
+            .filter(|b| pred(b.identifier()))
+            .cloned()
+            .collect()
     }
 
     /// Close every live browser. Associated function (not a method) on

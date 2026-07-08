@@ -31,6 +31,7 @@ use cef::{
 };
 
 use crate::client::BrowserClient;
+use crate::private_window::{self, WindowId};
 use crate::tabs::{self, EventCallback, TabId};
 use crate::{mac, root_cache_dir};
 
@@ -45,6 +46,11 @@ thread_local! {
     /// side too, so embedded mode does the same. Main-thread only (as is
     /// `create_browser`), hence `thread_local`.
     static CLIENTS: RefCell<Vec<Client>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Retain a browser client for the process lifetime (shared by normal + private tabs).
+pub fn retain_client(client: Client) {
+    CLIENTS.with(|clients| clients.borrow_mut().push(client));
 }
 
 /// Host callback for find-in-page results, invoked on the UI (main) thread with
@@ -197,6 +203,7 @@ pub fn initialize() -> bool {
     // request context is themed before any tab hydrates.
     crate::theme::load_persisted();
     crate::settings::load_persisted();
+    crate::search_engine::load_persisted();
 
     // Autofill end-to-end harness: seed an unlocked demo vault (debug only,
     // overriding any configured vault for the demo).
@@ -295,6 +302,12 @@ pub unsafe fn create_browser(parent_view: *mut c_void, width: i32, height: i32, 
 /// Register (or clear, with `None`) the host's tab/space event callback.
 pub fn set_event_callback(callback: Option<EventCallback>) {
     tabs::set_event_callback(callback);
+    private_window::set_event_callback(callback);
+}
+
+/// Tell the core which window owns keyboard/nav commands (`0` = normal).
+pub fn set_focused_window(window_id: WindowId) {
+    private_window::set_focused_window(window_id);
 }
 
 /// Create a windowed Alloy tab as a child of `parent_view`, register it in the
@@ -412,17 +425,24 @@ pub fn focus_active_tab() {
 /// main world. No-op when the vault is locked / `id` is unknown, or there is no
 /// active tab. Main thread only.
 pub fn vault_fill_active_tab(id: &str) {
-    let Some(detail) = crate::vault::service::login_detail(id) else {
+    if private_window::focused_is_private() && !crate::settings::private_vault_enabled() {
         return;
+    }
+    let detail = match crate::vault::service::login_detail(id) {
+        Some(detail) => detail,
+        None => return,
     };
-    let Some(password) = detail.password else {
-        return;
+    let password = match detail.password {
+        Some(password) => password,
+        None => return,
     };
-    let Some(browser) = main_browser() else {
-        return;
+    let browser = match main_browser() {
+        Some(browser) => browser,
+        None => return,
     };
-    let Some(host) = browser.host() else {
-        return;
+    let host = match browser.host() {
+        Some(host) => host,
+        None => return,
     };
     let expr = crate::vault::autofill::fill_expression(detail.username.as_deref(), &password);
     crate::inject::evaluate_main_world(&host, &expr);
@@ -454,19 +474,31 @@ pub fn set_tab_pinned(id: TabId, pinned: bool) {
     tabs::set_pinned(id, pinned);
 }
 
+/// Pin or unpin tab `id` in the Arc-style icon strip (ADR-0032).
+pub fn set_tab_favorite(id: TabId, favorite: bool) {
+    tabs::set_favorite(id, favorite);
+}
+
+/// Restore a dismissed favorite to the icon strip.
+pub fn restore_tab_favorite(id: TabId) {
+    tabs::restore_favorite(id);
+}
+
 /// Move tab `id` into folder `folder` (negative ⇒ out of any folder). Moving
 /// into a folder auto-pins the tab.
 pub fn move_tab_to_folder(id: TabId, folder: i32) {
     tabs::move_to_folder(id, (folder >= 0).then_some(folder));
 }
 
-/// Drag-and-drop relocation: move tab `id` into a destination section —
-/// pinned/loose (`pinned`) or a folder (`folder`, negative ⇒ no folder) — and
-/// position it just before tab `before` (negative ⇒ the section's end). A folder
-/// destination auto-pins. One structural change; main thread only.
-pub fn move_tab(id: TabId, pinned: bool, folder: i32, before: i32) {
+/// Drag-and-drop relocation: move tab `id` into a destination section — the
+/// favorite strip (`favorite`), pinned/loose (`pinned`), or a folder (`folder`,
+/// negative ⇒ no folder) — positioned just before tab `before` (negative ⇒ the
+/// section's end). A folder destination auto-pins. One structural change; main
+/// thread only.
+pub fn move_tab(id: TabId, favorite: bool, pinned: bool, folder: i32, before: i32) {
     tabs::move_tab(
         id,
+        favorite,
         pinned,
         (folder >= 0).then_some(folder),
         (before >= 0).then_some(before),
@@ -476,6 +508,17 @@ pub fn move_tab(id: TabId, pinned: bool, folder: i32, before: i32) {
 /// Create an empty folder (named `name`) in the active space; returns its id.
 pub fn create_folder(name: &str) -> i32 {
     tabs::create_folder(name)
+}
+
+/// Create a folder in the active space and move `tab_ids` into it (auto-pins).
+pub fn create_folder_with_tabs(name: &str, tab_ids: &[i32]) -> i32 {
+    tabs::create_folder_with_tabs(name, tab_ids)
+}
+
+/// Close ephemeral tabs in the active space except those in `keep`. When `keep`
+/// is empty, the active tab survives.
+pub fn clear_ephemeral_tabs(keep: &[i32]) {
+    tabs::clear_ephemeral_tabs(keep)
 }
 
 /// Delete folder `id`, keeping its tabs (dropped to loose pinned).
@@ -540,7 +583,66 @@ pub fn quit() {
 /// (navigate / back / reload / zoom / find / DevTools) act on the active tab;
 /// the tab model owns which tab that is.
 fn main_browser() -> Option<Browser> {
+    if private_window::focused_is_private() {
+        return private_window::active_browser_for_focused();
+    }
     tabs::active_browser()
+}
+
+/// Create a new private window profile. Returns its id (`>= 1`).
+pub fn create_private_window() -> WindowId {
+    private_window::create_window()
+}
+
+/// Create a tab in private window `window_id`. Returns the tab id or `-1`.
+///
+/// # Safety
+/// `parent_view` must be a valid `NSView*` that outlives the tab.
+pub unsafe fn create_private_tab(
+    window_id: WindowId,
+    parent_view: *mut c_void,
+    width: i32,
+    height: i32,
+    url: &str,
+) -> TabId {
+    private_window::create_tab(window_id, parent_view, width, height, url)
+}
+
+pub fn select_private_tab(window_id: WindowId, id: TabId) {
+    private_window::select_tab(window_id, id);
+}
+
+pub fn close_private_tab(window_id: WindowId, id: TabId) {
+    private_window::close_tab(window_id, id);
+}
+
+pub fn private_structure_json(window_id: WindowId) -> String {
+    serde_json::to_string(&private_window::snapshot(window_id)).unwrap_or_default()
+}
+
+pub fn destroy_private_window(window_id: WindowId) {
+    private_window::destroy_window(window_id);
+}
+
+pub fn private_window_count() -> usize {
+    private_window::window_count()
+}
+
+pub fn private_is_site_allowlisted(window_id: WindowId, host: &str) -> bool {
+    private_window::is_site_allowlisted(window_id, host)
+}
+
+pub fn private_set_site_allowlisted(window_id: WindowId, host: &str, allowlisted: bool) {
+    private_window::set_site_allowlisted(window_id, host, allowlisted);
+}
+
+/// The active tab's host in the focused window (for per-site shield state).
+pub fn active_tab_host() -> String {
+    if private_window::focused_is_private() {
+        return private_window::active_tab_host(private_window::focused_window())
+            .unwrap_or_default();
+    }
+    tabs::active_tab_host().unwrap_or_default()
 }
 
 /// Load `url` in the primary browser's main frame. Main thread only.
@@ -654,6 +756,14 @@ pub fn consent_set_enabled(enabled: bool) {
     reload();
 }
 
+/// Consent banners auto-rejected on the active tab since its last navigation —
+/// the shield popover's transparency line (ADR-0026).
+pub fn consent_active_rejected_count() -> u64 {
+    main_browser().map_or(0, |browser| {
+        crate::consent::rejected_count(browser.identifier())
+    })
+}
+
 /// Step the primary browser's zoom in / out / back to default. CEF owns the zoom
 /// stepping (matching Chromium), so the host just names the command. Main thread.
 pub fn zoom_in() {
@@ -719,10 +829,80 @@ pub fn stop_finding(clear_selection: bool) {
 /// On that final close the host must also release the `NSView` it handed to
 /// [`create_browser`]: CEF completes browser destruction (and thus
 /// `on_before_close`) only when its child view deallocates.
+/// Close one window's browsers. `window_id` `0` = the normal window; `>= 1` =
+/// private. Returns `true` if a close was initiated (host must veto and wait).
+pub fn request_close_window(window_id: WindowId) -> bool {
+    if window_id == private_window::NORMAL_WINDOW_ID {
+        return request_close_normal_window(false);
+    }
+    request_close_private_window(window_id)
+}
+
+fn request_close_private_window(window_id: WindowId) -> bool {
+    let browsers = private_window::browsers_in_window(window_id);
+    for browser in browsers {
+        if let Some(host) = browser.host() {
+            host.close_browser(1);
+        }
+    }
+    private_window::destroy_window(window_id);
+    maybe_quit_after_last_window();
+    false
+}
+
+fn request_close_normal_window(app_quit: bool) -> bool {
+    if app_quit {
+        // Freeze session persistence so the browsers CEF is about to drain
+        // aren't recorded as user tab-closes (ADR-0013).
+        tabs::begin_shutdown();
+    }
+    let Some(handler) = crate::client::BrowserHandler::instance() else {
+        return false;
+    };
+    {
+        let mut h = handler.lock().expect("Failed to lock handler");
+        if h.is_closing() {
+            return false;
+        }
+        let normal_count = h
+            .matching_browsers(|id| !private_window::is_private_cef(id))
+            .len();
+        if normal_count == 0 {
+            drop(h);
+            if app_quit {
+                maybe_quit_after_last_window();
+            }
+            return false;
+        }
+        if app_quit {
+            h.mark_closing();
+        }
+    }
+    close_browsers(|cef_id| !private_window::is_private_cef(cef_id));
+    if app_quit {
+        true
+    } else {
+        false
+    }
+}
+
+fn close_browsers(pred: impl Fn(i32) -> bool) {
+    let Some(handler) = crate::client::BrowserHandler::instance() else {
+        return;
+    };
+    let browsers = handler
+        .lock()
+        .expect("Failed to lock handler")
+        .matching_browsers(pred);
+    for browser in browsers {
+        if let Some(host) = browser.host() {
+            host.close_browser(1);
+        }
+    }
+}
+
+/// App quit (⌘Q / last-window close): drain every browser, then exit.
 pub fn request_close_all() -> bool {
-    // App quit begins here: freeze session persistence so the browsers CEF is
-    // about to drain aren't recorded as user tab-closes (ADR-0013). The session
-    // file already reflects the last mutation, so nothing else is needed.
     tabs::begin_shutdown();
     let Some(handler) = crate::client::BrowserHandler::instance() else {
         return false;
@@ -732,19 +912,32 @@ pub fn request_close_all() -> bool {
         if h.is_closing() {
             return false;
         }
-        // Empty state (zero tabs): there is no browser whose `on_before_close`
-        // would quit the loop, so quit it directly and let the window close.
-        if h.browser_count() == 0 {
+        if h.browser_count() == 0 && private_window::window_count() == 0 {
             drop(h);
             quit();
             return false;
         }
-        // Flag app-quit so the final `on_before_close` (once every browser has
-        // drained) quits the message loop.
         h.mark_closing();
+    }
+    for id in private_window::all_window_ids() {
+        private_window::destroy_window(id);
     }
     crate::client::BrowserHandler::close_all_browsers(&handler, true);
     true
+}
+
+fn maybe_quit_after_last_window() {
+    let Some(handler) = crate::client::BrowserHandler::instance() else {
+        quit();
+        return;
+    };
+    let count = handler
+        .lock()
+        .expect("Failed to lock handler")
+        .browser_count();
+    if count == 0 && private_window::window_count() == 0 {
+        quit();
+    }
 }
 
 /// Tear down CEF. Call after [`run_message_loop`] returns.

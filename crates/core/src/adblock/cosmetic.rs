@@ -71,6 +71,7 @@ mod tests {
         let msg = Message {
             channel: CHANNEL,
             data: &serde_json::json!({ "type": "rules", "url": "https://example.com/" }),
+            tab_id: 1,
         };
         assert_eq!(handle(&msg).unwrap()["css"], "");
     }
@@ -80,6 +81,7 @@ mod tests {
         let msg = Message {
             channel: CHANNEL,
             data: &serde_json::json!({ "type": "frobnicate" }),
+            tab_id: 1,
         };
         assert!(handle(&msg).is_none());
     }

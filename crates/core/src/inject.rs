@@ -79,6 +79,9 @@ pub struct Message<'a> {
     pub channel: &'a str,
     /// The `data` payload the script sent (arbitrary JSON; `Null` if omitted).
     pub data: &'a serde_json::Value,
+    /// The CEF browser identifier of the tab the message came from — for
+    /// consumers that key per-tab state (e.g. consent's rejected-banner count).
+    pub tab_id: i32,
 }
 
 /// A consumer's message handler. Runs on the UI thread. Returns `Some(reply)` to
@@ -235,7 +238,7 @@ fn handle_binding_called(browser: &mut Browser, params: &[u8]) {
     let Some(incoming) = parse_payload(&call.payload) else {
         return;
     };
-    let Some(reply) = route(&incoming) else {
+    let Some(reply) = route(&incoming, browser.identifier()) else {
         return; // fire-and-forget, or no consumer for this channel
     };
     let envelope = serde_json::json!({ "id": incoming.id, "data": reply }).to_string();
@@ -248,17 +251,18 @@ fn handle_binding_called(browser: &mut Browser, params: &[u8]) {
     }
 }
 
-fn route(incoming: &Incoming) -> Option<serde_json::Value> {
-    dispatch(&consumers(), incoming)
+fn route(incoming: &Incoming, tab_id: i32) -> Option<serde_json::Value> {
+    dispatch(&consumers(), incoming, tab_id)
 }
 
 /// Pure dispatch: find the consumer for `incoming.channel` and run its handler.
 /// Split from [`route`] so it is testable without touching the global registry.
-fn dispatch(consumers: &[Consumer], incoming: &Incoming) -> Option<serde_json::Value> {
+fn dispatch(consumers: &[Consumer], incoming: &Incoming, tab_id: i32) -> Option<serde_json::Value> {
     let consumer = consumers.iter().find(|c| c.channel == incoming.channel)?;
     (consumer.handler)(&Message {
         channel: &incoming.channel,
         data: &incoming.data,
+        tab_id,
     })
 }
 
@@ -488,7 +492,7 @@ mod tests {
             data: serde_json::json!({ "x": 1 }),
         };
         assert_eq!(
-            dispatch(&consumers, &hit),
+            dispatch(&consumers, &hit, 7),
             Some(serde_json::json!({ "saw": { "x": 1 } }))
         );
 
@@ -498,7 +502,7 @@ mod tests {
             id: 2,
             data: serde_json::Value::Null,
         };
-        assert!(dispatch(&consumers, &miss).is_none());
+        assert!(dispatch(&consumers, &miss, 7).is_none());
     }
 
     #[test]
@@ -578,7 +582,7 @@ mod tests {
         let call = parse_binding_called(&raw).unwrap();
         assert_eq!(call.execution_context_id, 99);
         let incoming = parse_payload(&call.payload).unwrap();
-        let reply = dispatch(&consumers, &incoming).expect("consumer replies");
+        let reply = dispatch(&consumers, &incoming, 1).expect("consumer replies");
 
         // The reply the core would evaluate back into context 99.
         let envelope = serde_json::json!({ "id": incoming.id, "data": reply }).to_string();

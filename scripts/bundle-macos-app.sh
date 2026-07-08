@@ -59,6 +59,9 @@ for HELPER in "$SRC"/browser\ Helper*.app; do
   ditto "$HELPER" "$FRAMEWORKS/$NAME"
 done
 
+echo "[bundle] aligning helper bundle IDs with host app"
+"$ROOT/scripts/patch-helper-bundle-ids.sh" "$APP"
+
 echo "[bundle] embedding libbrowser_ffi.dylib (${CARGO_TARGET})"
 ditto "$ROOT/target/${CARGO_TARGET}/libbrowser_ffi.dylib" "$FRAMEWORKS/libbrowser_ffi.dylib"
 
@@ -72,14 +75,8 @@ ditto "$ROOT/target/${CARGO_TARGET}/libbrowser_ffi.dylib" "$FRAMEWORKS/libbrowse
 echo "[bundle] re-signing libbrowser_ffi.dylib"
 codesign --force --sign - "$FRAMEWORKS/libbrowser_ffi.dylib"
 
-# Seal the helper app bundles. cargo's linker ad-hoc-signs each helper Mach-O
-# with the bundle flag set but writes no CodeResources, so `codesign -v` fails
-# ("no resources but signature indicates they must be present"). Re-signing the
-# bundles generates valid seals. (Safe here — CopySwiftLibs only scans the main
-# app's Frameworks, never the helpers, so it can't invalidate these afterward.)
-echo "[bundle] sealing helper app bundles"
-for HELPER in "$FRAMEWORKS"/browser\ Helper*.app; do
-  codesign --force --sign - "$HELPER"
-done
+# patch-helper-bundle-ids.sh already re-seals each helper after editing its
+# Info.plist. (CopySwiftLibs only scans the main app's Frameworks, never the
+# helpers, so it can't invalidate these afterward.)
 
 echo "[bundle] done: $APP"

@@ -6,6 +6,8 @@ import SwiftUI
 struct TabRow: View {
     let tab: TabItem
     let isActive: Bool
+    /// Cmd/shift multi-select highlight (distinct from the single active-tab pill).
+    var isMultiSelected: Bool = false
     /// Shared namespace for the sliding active-tab highlight (`matchedGeometryEffect`):
     /// the selection pill is a single element that animates from the old active row
     /// to the new one on tab switch, rather than cross-fading in place.
@@ -36,6 +38,7 @@ struct TabRow: View {
             }
         }
         .font(.system(size: 13, weight: .medium))
+        .opacity(tab.isHydrated ? 1 : 0.55)
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
         .background {
@@ -47,6 +50,11 @@ struct TabRow: View {
                 .fill(.quaternary)
                 .opacity(!isActive && hovering ? 0.45 : 0)
                 .hoverFade(hovering)
+            if isMultiSelected && !isActive {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(.tint.opacity(0.55), lineWidth: 1.5)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(.tint.opacity(0.12)))
+            }
             if isActive {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(.quaternary)

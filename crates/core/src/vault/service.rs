@@ -166,8 +166,14 @@ pub fn lock_on_shutdown() {
     crate::settings::lock_on_shutdown_if_needed(lock);
 }
 
+/// Re-check the Mac-restart policy after the host forwards a fresh boot time.
+pub fn check_mac_restart_lock() {
+    crate::settings::maybe_lock_for_mac_restart(lock);
+}
+
 /// True when locked *or* never initialized (fail safe).
 pub fn is_locked() -> bool {
+    crate::settings::maybe_lock_for_mac_restart(lock);
     with(|m| m.is_locked()).unwrap_or(true)
 }
 
@@ -187,7 +193,10 @@ pub fn unlock_online(email: &str, password: &str, code: &str, provider: &str) ->
     });
     match result {
         None => UnlockOutcome::Failed(not_initialized()),
-        Some(Ok(())) => UnlockOutcome::Unlocked,
+        Some(Ok(())) => {
+            crate::settings::note_vault_unlocked();
+            UnlockOutcome::Unlocked
+        }
         Some(Err(VaultError::Auth(AuthError::TwoFactorRequired(providers)))) => {
             let primary = select_provider(&providers);
             // Email is the one provider the client must trigger — dispatch it now
@@ -245,6 +254,9 @@ pub fn unlock_offline(password: &str) -> Result<(), String> {
     let result = with(|m| m.unlock_offline(password))
         .ok_or_else(not_initialized)?
         .map_err(render);
+    if result.is_ok() {
+        crate::settings::note_vault_unlocked();
+    }
     result
 }
 
