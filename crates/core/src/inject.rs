@@ -58,7 +58,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use cef::*;
 
@@ -111,6 +111,153 @@ pub fn register(consumer: Consumer) {
 static CONSUMERS: Mutex<Vec<Consumer>> = Mutex::new(Vec::new());
 static NEXT_MSG_ID: AtomicI32 = AtomicI32::new(1);
 
+/// Tabs whose first real document may have raced `addScriptToEvaluateOnNewDocument`
+/// registration — [`bootstrap_on_load_end`] runs the scripts explicitly once.
+static NEEDS_FIRST_BOOTSTRAP: OnceLock<Mutex<HashMap<i32, bool>>> = OnceLock::new();
+
+/// In-flight CDP calls for the load-end bootstrap state machine (UI thread only).
+static PENDING_CDP: OnceLock<Mutex<HashMap<i32, PendingCdp>>> = OnceLock::new();
+
+/// First navigations deferred until the injection substrate is registered — see
+/// [`defer_first_navigation`] / [`dispatch_pending_navigation`].
+static PENDING_NAV: OnceLock<Mutex<HashMap<i32, String>>> = OnceLock::new();
+
+/// Staged URL for the next browser whose id is not known until `on_after_created`
+/// (async `browser_host_create_browser`).
+static STAGED_FIRST_NAV: Mutex<Option<String>> = Mutex::new(None);
+
+fn pending_nav() -> &'static Mutex<HashMap<i32, String>> {
+    PENDING_NAV.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// URL used for the initial hop while CDP scripts are wired in [`install_for_browser`].
+pub const BLANK_URL: &str = "about:blank";
+
+/// Stage the real first URL for the next browser created via async CEF create.
+pub fn stage_first_navigation(url: &str) {
+    if url == BLANK_URL {
+        return;
+    }
+    *STAGED_FIRST_NAV.lock().unwrap_or_else(|p| p.into_inner()) = Some(url.to_string());
+}
+
+/// Attach a staged first URL to `browser_id` (call from `on_after_created`).
+pub fn claim_staged_navigation(browser_id: i32) {
+    let url = STAGED_FIRST_NAV
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take();
+    if let Some(url) = url {
+        defer_first_navigation(browser_id, &url);
+    }
+}
+
+/// Queue the real first URL for `browser_id`. The browser must be created on
+/// [`BLANK_URL`]; [`dispatch_pending_navigation`] loads it from `on_load_end`.
+pub fn defer_first_navigation(browser_id: i32, url: &str) {
+    if url == BLANK_URL {
+        return;
+    }
+    pending_nav()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(browser_id, url.to_string());
+}
+
+/// If a deferred first navigation is queued for `browser_id`, return it (once).
+pub fn take_pending_navigation(browser_id: i32) -> Option<String> {
+    pending_nav()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&browser_id)
+}
+
+/// Load a deferred first navigation on the main frame, if any. Call from
+/// `on_load_end` after the blank hop completes. Navigation is posted with a
+/// short delay so in-process CDP script registration can finish first.
+pub fn dispatch_pending_navigation(browser: &mut Browser, frame: &mut Frame) {
+    if frame.is_main() == 0 {
+        return;
+    }
+    let id = browser.identifier();
+    let Some(url) = take_pending_navigation(id) else {
+        return;
+    };
+    eprintln!("[inject] scheduling deferred navigation tab={id} → {url}");
+    let mut task = DeferredNavTask::new(id, url);
+    post_delayed_task(ThreadId::UI, Some(&mut task), 250);
+}
+
+/// Explicitly run bootstrap + consumer scripts in the isolated world after the
+/// main frame finishes loading. Covers the first-load race where
+/// `Page.addScriptToEvaluateOnNewDocument` registration in `on_after_created`
+/// completes after the document has already started (P2-14 timing note).
+pub fn bootstrap_on_load_end(browser: &mut Browser, frame: &mut Frame) {
+    if frame.is_main() == 0 {
+        return;
+    }
+    let id = browser.identifier();
+    if !needs_first_bootstrap(id) {
+        return;
+    }
+    if consumers().is_empty() {
+        return;
+    }
+    let url = CefString::from(&frame.url()).to_string();
+    if url == BLANK_URL || url.is_empty() {
+        return;
+    }
+    let Some(host) = browser.host() else {
+        return;
+    };
+    let scripts = bootstrap_scripts();
+    let msg_id = next_id();
+    pending_cdp()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(
+            msg_id,
+            PendingCdp::FrameTree {
+                browser_id: id,
+                scripts,
+            },
+        );
+    send(&host, msg_get_frame_tree(msg_id));
+    eprintln!("[inject] load-end bootstrap tab={id} url={url}");
+}
+
+wrap_task! {
+    struct DeferredNavTask {
+        browser_id: i32,
+        url: String,
+    }
+
+    impl Task {
+        fn execute(&self) {
+            let Some(handler) = crate::client::BrowserHandler::instance() else {
+                return;
+            };
+            let mut guard = match handler.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            let mut browsers = guard.matching_browsers(|id| id == self.browser_id);
+            let Some(browser) = browsers.first_mut() else {
+                return;
+            };
+            let Some(mut frame) = browser.main_frame() else {
+                return;
+            };
+            eprintln!(
+                "[inject] deferred navigation tab={} → {}",
+                self.browser_id, self.url
+            );
+            let cef_url = CefString::from(self.url.as_str());
+            frame.load_url(Some(&cef_url));
+        }
+    }
+}
+
 thread_local! {
     /// The observer registration per browser id. Holding the [`Registration`]
     /// keeps the subscription alive; dropping it (on browser close) tears it
@@ -124,6 +271,79 @@ fn consumers() -> std::sync::MutexGuard<'static, Vec<Consumer>> {
 
 fn next_id() -> i32 {
     NEXT_MSG_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+fn needs_first_bootstrap_map() -> &'static Mutex<HashMap<i32, bool>> {
+    NEEDS_FIRST_BOOTSTRAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn pending_cdp() -> &'static Mutex<HashMap<i32, PendingCdp>> {
+    PENDING_CDP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn needs_first_bootstrap(browser_id: i32) -> bool {
+    needs_first_bootstrap_map()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&browser_id)
+        .copied()
+        .unwrap_or(false)
+}
+
+fn mark_needs_bootstrap(browser_id: i32) {
+    needs_first_bootstrap_map()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(browser_id, true);
+}
+
+fn clear_needs_bootstrap(browser_id: i32) {
+    needs_first_bootstrap_map()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(browser_id, false);
+}
+
+fn clear_bootstrap_state(browser_id: i32) {
+    needs_first_bootstrap_map()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&browser_id);
+    let mut pending = pending_cdp().lock().unwrap_or_else(|p| p.into_inner());
+    pending.retain(|_, op| op.browser_id() != browser_id);
+}
+
+fn bootstrap_scripts() -> Vec<&'static str> {
+    let mut scripts = vec![BOOTSTRAP_JS];
+    scripts.extend(consumers().iter().map(|c| c.script));
+    scripts
+}
+
+enum PendingCdp {
+    FrameTree {
+        browser_id: i32,
+        scripts: Vec<&'static str>,
+    },
+    CreateWorld {
+        browser_id: i32,
+        scripts: Vec<&'static str>,
+    },
+    Evaluate {
+        browser_id: i32,
+        context_id: i64,
+        scripts: Vec<&'static str>,
+        index: usize,
+    },
+}
+
+impl PendingCdp {
+    fn browser_id(&self) -> i32 {
+        match self {
+            Self::FrameTree { browser_id, .. }
+            | Self::CreateWorld { browser_id, .. }
+            | Self::Evaluate { browser_id, .. } => *browser_id,
+        }
+    }
 }
 
 // ─── Install / uninstall (life-span handler) ─────────────────────────────
@@ -169,6 +389,7 @@ pub fn install_for_browser(browser: &mut Browser) {
     for script in &scripts {
         send(&host, msg_add_script(next_id(), script));
     }
+    mark_needs_bootstrap(id);
     eprintln!(
         "[inject] substrate installed tab={id} ({} consumer(s))",
         scripts.len()
@@ -179,6 +400,7 @@ pub fn install_for_browser(browser: &mut Browser) {
 /// UI thread only (called from `on_before_close`).
 pub fn uninstall_for_browser(id: i32) {
     REGISTRATIONS.with(|r| r.borrow_mut().remove(&id));
+    clear_bootstrap_state(id);
 }
 
 /// Evaluate `expression` in the **main world of a browser's main frame** — the
@@ -203,10 +425,9 @@ fn send(host: &BrowserHost, message: Vec<u8>) {
 
 // ─── DevTools message observer ───────────────────────────────────────────
 
-// Receives CDP events for the browser it is registered on. We only care about
-// `Runtime.bindingCalled` — the page→core edge. Stateless: it resolves the
-// browser (for the reply) from the callback argument and the consumer from the
-// global registry.
+// Receives CDP events + method results for the browser it is registered on.
+// `Runtime.bindingCalled` is the page→core edge; `on_dev_tools_method_result`
+// drives the load-end bootstrap state machine.
 wrap_dev_tools_message_observer! {
     struct InjectObserver;
 
@@ -224,6 +445,16 @@ wrap_dev_tools_message_observer! {
                 return;
             }
             handle_binding_called(browser, params);
+        }
+
+        fn on_dev_tools_method_result(
+            &self,
+            browser: Option<&mut Browser>,
+            message_id: i32,
+            success: i32,
+            result: Option<&[u8]>,
+        ) {
+            handle_method_result(browser, message_id, success, result);
         }
     }
 }
@@ -253,6 +484,115 @@ fn handle_binding_called(browser: &mut Browser, params: &[u8]) {
 
 fn route(incoming: &Incoming, tab_id: i32) -> Option<serde_json::Value> {
     dispatch(&consumers(), incoming, tab_id)
+}
+
+fn handle_method_result(
+    browser: Option<&mut Browser>,
+    message_id: i32,
+    success: i32,
+    result: Option<&[u8]>,
+) {
+    let pending = pending_cdp()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&message_id);
+    let Some(pending) = pending else {
+        return;
+    };
+    if success == 0 {
+        eprintln!("[inject] CDP method failed id={message_id}");
+        return;
+    }
+    let Some(result) = result else {
+        eprintln!("[inject] CDP method {message_id} returned no result");
+        return;
+    };
+    let Some(browser) = browser else {
+        return;
+    };
+    let Some(host) = browser.host() else {
+        return;
+    };
+
+    match pending {
+        PendingCdp::FrameTree {
+            browser_id,
+            scripts,
+        } => {
+            let Some(frame_id) = parse_main_frame_id(result) else {
+                eprintln!("[inject] bootstrap: no main frame id tab={browser_id}");
+                return;
+            };
+            let msg_id = next_id();
+            pending_cdp()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(
+                    msg_id,
+                    PendingCdp::CreateWorld {
+                        browser_id,
+                        scripts,
+                    },
+                );
+            send(&host, msg_create_isolated_world(msg_id, &frame_id));
+        }
+        PendingCdp::CreateWorld {
+            browser_id,
+            scripts,
+        } => {
+            let Some(context_id) = parse_execution_context_id(result) else {
+                eprintln!("[inject] bootstrap: no executionContextId tab={browser_id}");
+                return;
+            };
+            if scripts.is_empty() {
+                clear_needs_bootstrap(browser_id);
+                return;
+            }
+            let msg_id = next_id();
+            let script = scripts[0];
+            pending_cdp()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(
+                    msg_id,
+                    PendingCdp::Evaluate {
+                        browser_id,
+                        context_id,
+                        scripts,
+                        index: 0,
+                    },
+                );
+            send(&host, msg_evaluate_bootstrap(msg_id, context_id, script));
+        }
+        PendingCdp::Evaluate {
+            browser_id,
+            context_id,
+            scripts,
+            index,
+        } => {
+            let next = index + 1;
+            if next >= scripts.len() {
+                clear_needs_bootstrap(browser_id);
+                eprintln!("[inject] load-end bootstrap complete tab={browser_id}");
+                return;
+            }
+            let msg_id = next_id();
+            let script = scripts[next];
+            pending_cdp()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(
+                    msg_id,
+                    PendingCdp::Evaluate {
+                        browser_id,
+                        context_id,
+                        scripts,
+                        index: next,
+                    },
+                );
+            send(&host, msg_evaluate_bootstrap(msg_id, context_id, script));
+        }
+    }
 }
 
 /// Pure dispatch: find the consumer for `incoming.channel` and run its handler.
@@ -332,12 +672,56 @@ fn msg_add_script(id: i32, source: &str) -> Vec<u8> {
     }))
 }
 
+fn msg_get_frame_tree(id: i32) -> Vec<u8> {
+    to_vec(&serde_json::json!({ "id": id, "method": "Page.getFrameTree" }))
+}
+
+fn msg_create_isolated_world(id: i32, frame_id: &str) -> Vec<u8> {
+    to_vec(&serde_json::json!({
+        "id": id,
+        "method": "Page.createIsolatedWorld",
+        "params": {
+            "frameId": frame_id,
+            "worldName": ISOLATED_WORLD,
+            "grantUniveralAccess": false,
+        },
+    }))
+}
+
+fn parse_main_frame_id(result: &[u8]) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_slice(result).ok()?;
+    let id = v.get("frameTree")?.get("frame")?.get("id")?;
+    match id {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn parse_execution_context_id(result: &[u8]) -> Option<i64> {
+    let v: serde_json::Value = serde_json::from_slice(result).ok()?;
+    v.get("executionContextId")?.as_i64()
+}
+
 fn msg_evaluate(id: i32, context_id: i64, expression: &str) -> Vec<u8> {
     to_vec(&serde_json::json!({
         "id": id,
         "method": "Runtime.evaluate",
         "params": { "expression": expression, "contextId": context_id },
     }))
+}
+
+/// Wrap a static script for explicit load-end injection. A freshly created
+/// isolated context can evaluate before `document.documentElement` exists.
+fn wrap_load_end_script(source: &str) -> String {
+    let literal = serde_json::to_string(source).unwrap_or_else(|_| "\"\"".to_string());
+    format!(
+        "(function(){{var s={literal};function run(){{if(!document.documentElement){{requestAnimationFrame(run);return;}}(0,eval)(s);}}run();}})();"
+    )
+}
+
+fn msg_evaluate_bootstrap(id: i32, context_id: i64, source: &str) -> Vec<u8> {
+    msg_evaluate(id, context_id, &wrap_load_end_script(source))
 }
 
 /// A `Runtime.evaluate` with **no `contextId`** — the browser's default context
@@ -558,6 +942,42 @@ mod tests {
         assert!(
             v["params"].get("contextId").is_none(),
             "main-world evaluate must not pin a contextId"
+        );
+    }
+
+    #[test]
+    fn wrap_load_end_script_defers_until_document_element_exists() {
+        let wrapped = wrap_load_end_script("document.title='x'");
+        assert!(wrapped.contains("requestAnimationFrame"));
+        assert!(wrapped.contains("document.documentElement"));
+        assert!(wrapped.contains("document.title='x'"));
+    }
+
+    #[test]
+    fn parse_main_frame_id_accepts_string_and_number_ids() {
+        let string_id = serde_json::json!({
+            "frameTree": { "frame": { "id": "ABC123", "url": "https://example.com/" } }
+        });
+        assert_eq!(
+            parse_main_frame_id(string_id.to_string().as_bytes()),
+            Some("ABC123".into())
+        );
+
+        let numeric_id = serde_json::json!({
+            "frameTree": { "frame": { "id": 42, "url": "about:blank" } }
+        });
+        assert_eq!(
+            parse_main_frame_id(numeric_id.to_string().as_bytes()),
+            Some("42".into())
+        );
+    }
+
+    #[test]
+    fn parse_execution_context_id_reads_result_field() {
+        let result = serde_json::json!({ "executionContextId": 7 });
+        assert_eq!(
+            parse_execution_context_id(result.to_string().as_bytes()),
+            Some(7)
         );
     }
 

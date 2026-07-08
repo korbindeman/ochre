@@ -67,10 +67,12 @@ bind) so they can't silently drift from the code — see ADR-0007 · *Future*.
 |---|:---:|:---:|:---:|:---:|---|
 | Slim, content-first, full-bleed content (no Arc inset frame) | Inv | 🚧 | ⬜ | ⬜ | style §3 |
 | Sidebar material (Liquid Glass / Mica / GTK-native) | Idiom | 🚧 | ⬜ | ⬜ | style §2,§3 · spec §7,§8 |
-| Sidebar collapse/expand (spring width) | Inv | ⬜ | ⬜ | ⬜ | style §3,§9 |
+| Sidebar collapse/expand (spring width) | Inv | ✅ | ⬜ | ⬜ | style §3,§9 |
 | Toolbar controls + Arc placement (sidebar-toggle + back/fwd left, reload right) | Inv | 🚧 | ⬜ | ⬜ | style §3 · ADR-0004 |
 | Window-control placement (traffic lights inset / caption buttons) | Idiom | 🚧 | ⬜ | ⬜ | style §3 |
 | Sidebar URL chip (current-tab address; click / ⌘L → edit inline in the sidebar) | Inv | 🚧 | ⬜ | ⬜ | style §6 · ADR-0014 |
+| Viewport address bar — page theme-color chrome (always when in-page mode; scroll-gated matched fill) | Idiom | ⬜ | ⬜ | ⬜ | P1-28 · `theme_color.rs` |
+| Sidebar page-aware tint (optional setting; per-tab color, no scroll gating) | Idiom | ✅ (Settings → Appearance → Match page color; off by default) | ⬜ | ⬜ | P2-37 · `theme_color.rs` |
 
 ## Tabs
 
@@ -126,13 +128,13 @@ focus-routing proof + polish pass that gates ✅ across the board.*
 
 | Capability | Class | macOS | Win | Linux | Defined in |
 |---|:---:|:---:|:---:|:---:|---|
-| Keyboard shortcut table (Cmd↔Ctrl, same actions) | Inv | 🚧 | ⬜ | ⬜ | style §9 |
+| Keyboard shortcut table (Cmd↔Ctrl, same actions) | Inv | ✅ | ⬜ | ⬜ | style §9 |
 | Motion moments (create/close/reorder/select, sidebar, space, command-bar, hover/focus) | Inv | 🚧 | ⬜ | ⬜ | style §7 |
 | Motion curves (native spring/easing) | Idiom | 🚧 | ⬜ | ⬜ | style §7 |
 | Honor reduce-motion (cut/cross-fade instead of move) | Inv | ⬜ | ⬜ | ⬜ | style §7,§11 |
 
-*macOS shortcuts: Cmd+T/S/R/[/]/W run through a Cmd-gated key monitor; the full `style §9` set and
-focus routing (P0-1) are unproven.*
+*macOS shortcuts: the full `style §9` table is wired through `NSApp.mainMenu` (P1-M5); focus routing
+is proven by `just focus-selftest` (P0-1 / ADR-0018).*
 
 ## Iconography & typography
 
@@ -177,6 +179,8 @@ surface**. `⬜ (post-MVP)` = spec'd but out of MVP1 scope — listed so the sur
 | DevTools (popup; Cmd/Ctrl+Opt+I) | Inv | ✅ | ⬜ | ⬜ | spec §13 · style §9 |
 | CDP automation surface (loopback, consent-gated) | Inv | ⬜ | ⬜ | ⬜ | spec §13 |
 | Tweaks — Snip / Restyle / Script (picker · editor · manager · safety UX) | Inv | ⬜ | ⬜ | ⬜ | style §14 · spec §20 · ADR-0002 |
+| Commands — user scripts (command bar · palette · settings manager · cookbook) | Inv | ⬜ | ⬜ | ⬜ | ADR-0034 · rm §5.3 |
+| Commands — agentic create/edit (in-app AI authoring) | Idiom | ⬜ | ⬜ | ⬜ | ADR-0034 · spec §19 · rm §5.4 · P4-1 |
 | Password vault UI (setup · unlock · list/search · reveal · add/edit/delete · import · sidebar access) | Inv | 🚧 (settings · registration pending) | ⬜ | ⬜ | spec §10 · ADR-0010/0016 |
 | Password vault autofill | Inv | 🚧 (substrate + in-page multi-match picker + URL-bar quick-access button [Fill/Copy]; SPA/two-step detection → P2-28/29, native save banner → P2-23/M2) | ⬜ | ⬜ | spec §10 · ADR-0016/0017/0029 |
 | Sync | Inv | ⬜ (post-MVP) | ⬜ | ⬜ | spec §12 |

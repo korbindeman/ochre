@@ -38,6 +38,12 @@ final class RootView: NSView {
     private let vaultHost = NSHostingView(rootView: VaultView())
     /// The Settings page — native content-area surface (ADR-0010).
     private let settingsHost = NSHostingView(rootView: SettingsView())
+    /// Safari-style address bar floating over the page viewport when enabled.
+    private lazy var viewportURLBarHost: ViewportURLBarHostingView = {
+        let host = ViewportURLBarHostingView(
+            rootView: AnyView(URLBar(placement: .viewport).allowsHitTesting(true)))
+        return host
+    }()
 
     /// One CEF host view per tab, keyed by tab id. Reconciled against
     /// `BrowserState.tabs`; the active one is shown, the rest hidden.
@@ -64,10 +70,6 @@ final class RootView: NSView {
     /// A divider drag is in progress — suspends the floating sidebar's hover
     /// dismissal so dragging its edge past the grace margin doesn't snap it shut.
     private var isResizingSidebar = false
-    /// Disables window-background drag before AppKit handles `mouseDown` in the
-    /// sidebar tab region (pinned strip + scroll list), so tab reorder stays put.
-    private var tabDragMouseDownMonitor: Any?
-    private var tabDragMouseUpMonitor: Any?
     /// Polls the pointer while the sidebar is hover-revealed (see the dismiss
     /// monitor); nil when pinned or collapsed.
     private var revealDismissTimer: Timer?
@@ -90,13 +92,8 @@ final class RootView: NSView {
     // how far past the right edge it may roam before the sidebar collapses.
     private let revealPollInterval = 0.05
     private let revealDismissGrace: CGFloat = 48
-    private let sidebarPinAnimationDuration = 0.18
-    /// Y-from-top of the sidebar where the pinned strip / tab list begins (nav +
-    /// URL bar + VStack spacing). Matches `Sidebar.swift` layout constants.
-    private static let sidebarTabRegionTopInset: CGFloat = 91
-    /// Footer chrome below the tab list (space switcher or private label + padding).
-    private static let sidebarTabRegionBottomInset: CGFloat = 46
-    private static let privateSidebarTabRegionBottomInset: CGFloat = 40
+    /// Matches the sidebar list spring in `BrowserState.reloadStructure` (0.24s).
+    private let sidebarPinAnimationDuration = 0.24
 
     private static func clampSidebarWidth(_ width: CGFloat) -> CGFloat {
         min(maxSidebarWidth, max(minSidebarWidth, width))
@@ -156,6 +153,16 @@ final class RootView: NSView {
         settingsHost.isHidden = true
         contentArea.addSubview(settingsHost)
 
+        viewportURLBarHost.autoresizingMask = [.width, .minYMargin]
+        viewportURLBarHost.frame = NSRect(
+            x: 0, y: 0, width: 1, height: ViewportURLBarMetrics.height)
+        viewportURLBarHost.safeAreaRegions = []
+        viewportURLBarHost.clipsToBounds = false
+        viewportURLBarHost.wantsLayer = true
+        viewportURLBarHost.layer?.backgroundColor = NSColor.clear.cgColor
+        viewportURLBarHost.isHidden = true
+        contentArea.addSubview(viewportURLBarHost)
+
         // The islands manage their own top insets (traffic-light clearance);
         // without this the hosting views also apply the window's safe area
         // and the content lands twice as low.
@@ -195,12 +202,6 @@ final class RootView: NSView {
 
         applyLayout()
         observeState()
-        installSidebarTabDragWindowGuard()
-    }
-
-    deinit {
-        if let tabDragMouseDownMonitor { NSEvent.removeMonitor(tabDragMouseDownMonitor) }
-        if let tabDragMouseUpMonitor { NSEvent.removeMonitor(tabDragMouseUpMonitor) }
     }
 
     @available(*, unavailable)
@@ -230,6 +231,7 @@ final class RootView: NSView {
             .sink { [weak self] active in
                 self?.showActive(active)
                 self?.syncFloatingSidebar()
+                self?.syncViewportURLBar()
             }
             .store(in: &cancellables)
         state.$suspendedTabId
@@ -259,6 +261,15 @@ final class RootView: NSView {
                 self?.setSettingsOpen(open)
                 self?.syncFloatingSidebar()
             }
+            .store(in: &cancellables)
+        state.$isViewportURLBarEnabled
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.syncViewportURLBar() }
+            .store(in: &cancellables)
+
+        Publishers.Merge3(state.$isHistoryOpen, state.$isVaultOpen, state.$isSettingsOpen)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.syncViewportURLBar() }
             .store(in: &cancellables)
         // Pinning animates the chrome; the floating host follows the derived rule.
         // `dropFirst` skips the seeded value — the initial layout already matches
@@ -299,6 +310,27 @@ final class RootView: NSView {
     /// The pinned sidebar host — used by the focus self-test to click empty chrome.
     var focusTestSidebarHost: NSView? { sidebarHost }
 
+    /// Called before a click dispatches — dismiss transient chrome when the user
+    /// presses into the web viewport (not the URL bar pill or sidebar).
+    func dismissTransientFocusIfViewportClick(_ event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard shouldDismissTransientFocus(forClickAt: point) else { return }
+        TransientChrome.dismiss()
+    }
+
+    private func shouldDismissTransientFocus(forClickAt point: NSPoint) -> Bool {
+        guard contentArea.frame.contains(point) else { return false }
+        if !viewportURLBarHost.isHidden {
+            let barPoint = viewportURLBarHost.convert(point, from: self)
+            if viewportURLBarHost.bounds.contains(barPoint),
+                let hit = viewportURLBarHost.hitTest(barPoint)
+            {
+                return false
+            }
+        }
+        return true
+    }
+
     // ─── Tab views ─────────────────────────────────────────────────────────
 
     /// Open a new tab loading `url`: build its host view, hand it to the core
@@ -308,12 +340,17 @@ final class RootView: NSView {
         if !isPrivate { state.closeSurfaces() }
         let container = CEFContainerView()
         container.autoresizingMask = [.width, .height]
-        container.frame = contentArea.bounds
+        let bounds = contentArea.bounds
+        let inset = viewportChromeInsetForLayout()
+        CEFContainerView.viewportChromeInset = inset
+        container.clipsToBounds = inset == 0
+        container.frame = webContainerFrame(in: bounds, chromeInset: inset)
         // Add before creating so the view is in a window (has a real size) when
         // CEF parents its child view into it.
-        contentArea.addSubview(container)
+        contentArea.addSubview(
+            container, positioned: .below, relativeTo: viewportURLBarHost)
 
-        let size = contentArea.bounds.size
+        let size = cefBrowserSize(for: bounds)
         let id: Int32
         if isPrivate {
             id = url.withCString {
@@ -344,6 +381,7 @@ final class RootView: NSView {
         // The core emitted TabSelected(id) during the call above; make sure the
         // freshly-registered view is the one shown.
         showActive(state.activeTabId)
+        syncViewportURLBar()
     }
 
     /// Close tab `id`: route it through CEF's close flow, then detach its child
@@ -428,10 +466,14 @@ final class RootView: NSView {
     private func hydrateRestoredTab(_ id: Int32) {
         let container = CEFContainerView()
         container.autoresizingMask = [.width, .height]
-        container.frame = contentArea.bounds
+        let bounds = contentArea.bounds
+        let inset = viewportChromeInsetForLayout()
+        CEFContainerView.viewportChromeInset = inset
+        container.clipsToBounds = inset == 0
+        container.frame = webContainerFrame(in: bounds, chromeInset: inset)
         contentArea.addSubview(container, positioned: .below, relativeTo: historyHost)
 
-        let size = contentArea.bounds.size
+        let size = cefBrowserSize(for: bounds)
         let ok = browser_tab_restore(
             id,
             Unmanaged.passUnretained(container).toOpaque(),
@@ -444,6 +486,7 @@ final class RootView: NSView {
             return
         }
         tabViews[id] = container
+        syncViewportURLBar()
     }
 
     /// Show or hide the History surface over the content region. On show it is
@@ -562,6 +605,69 @@ final class RootView: NSView {
             : NSRect(
                 x: inset + sidebarWidth - resizeHandleWidth / 2, y: inset,
                 width: resizeHandleWidth, height: floatingHeight)
+
+        syncViewportURLBar()
+    }
+
+    // ─── Viewport URL bar + web content layout ───────────────────────────────
+
+    private func showsViewportURLBar() -> Bool {
+        state.isViewportURLBarEnabled
+            && !state.isSurfaceOpen
+            && state.activeTabId != nil
+            && (state.activeTabId.flatMap { tabViews[$0] != nil } ?? false)
+    }
+
+    /// Chrome inset when a web tab is showing with the viewport URL bar enabled.
+    private func viewportChromeInset() -> CGFloat {
+        showsViewportURLBar() ? ViewportURLBarMetrics.chromeInset : 0
+    }
+
+    /// Chrome inset for new/restored tabs before the bar visibility check runs.
+    private func viewportChromeInsetForLayout() -> CGFloat {
+        state.isViewportURLBarEnabled && !state.isSurfaceOpen
+            ? ViewportURLBarMetrics.chromeInset : 0
+    }
+
+    /// Frame for CEF host views — fills the area below the viewport URL bar.
+    private func webContainerFrame(in bounds: NSRect, chromeInset inset: CGFloat? = nil) -> NSRect {
+        let chrome = inset ?? viewportChromeInset()
+        return NSRect(x: 0, y: 0, width: bounds.width, height: max(1, bounds.height - chrome))
+    }
+
+    /// Size reported to CEF — full content height so the page can scroll behind
+    /// the transparent chrome strip.
+    private func cefBrowserSize(for bounds: NSRect) -> NSSize {
+        NSSize(width: max(1, bounds.width), height: max(1, bounds.height))
+    }
+
+    private func syncWebContentFrames(using bounds: NSRect? = nil) {
+        let area = bounds ?? contentArea.bounds
+        let inset = viewportChromeInset()
+        CEFContainerView.viewportChromeInset = inset
+        let containerFrame = webContainerFrame(in: area)
+        let browserSize = cefBrowserSize(for: area)
+        for container in tabViews.values {
+            container.clipsToBounds = inset == 0
+            container.frame = containerFrame
+            container.applyCEFSize(browserSize)
+        }
+    }
+
+    /// Float the viewport URL bar over the top chrome strip and re-layout CEF.
+    private func syncViewportURLBar() {
+        let show = showsViewportURLBar()
+        viewportURLBarHost.isHidden = !show
+        syncWebContentFrames()
+        guard show else { return }
+        let height = ViewportURLBarMetrics.chromeInset
+        viewportURLBarHost.frame = NSRect(
+            x: 0,
+            y: contentArea.bounds.height - height,
+            width: contentArea.bounds.width,
+            height: height
+        )
+        contentArea.addSubview(viewportURLBarHost, positioned: .above, relativeTo: nil)
     }
 
     /// Apply a new sidebar width from an edge drag. `pointerX` is in this view's
@@ -693,15 +799,22 @@ final class RootView: NSView {
     /// timer and skipping sub-pixel repeats.
     private func syncCEFDuringSidebarTransition() {
         guard case .sidebarTransition = CEFContainerView.sidebarLayout else { return }
-        let size = animatedContentSize()
-        guard size.width >= 1, size.height >= 1 else { return }
+        let animatedBounds =
+            contentArea.layer?.presentation()?.frame ?? contentArea.bounds
+        let browserSize = cefBrowserSize(for: animatedBounds)
+        guard browserSize.width >= 1, browserSize.height >= 1 else { return }
         guard
-            abs(size.width - lastSyncedCEFSize.width) >= 0.5
-                || abs(size.height - lastSyncedCEFSize.height) >= 0.5
+            abs(browserSize.width - lastSyncedCEFSize.width) >= 0.5
+                || abs(browserSize.height - lastSyncedCEFSize.height) >= 0.5
         else { return }
-        lastSyncedCEFSize = size
+        lastSyncedCEFSize = browserSize
+        let inset = viewportChromeInset()
+        CEFContainerView.viewportChromeInset = inset
+        let containerFrame = webContainerFrame(in: animatedBounds)
         for container in tabViews.values {
-            container.applyCEFSize(size)
+            container.clipsToBounds = inset == 0
+            container.frame = containerFrame
+            container.applyCEFSize(browserSize)
         }
     }
 
@@ -710,9 +823,8 @@ final class RootView: NSView {
         guard case .sidebarTransition = CEFContainerView.sidebarLayout else { return }
         stopSidebarTransitionSync()
         CEFContainerView.sidebarLayout = .normal
-        let size = contentArea.bounds.size
+        syncWebContentFrames()
         for container in tabViews.values {
-            container.applyCEFSize(size)
             container.needsLayout = true
             container.layoutSubtreeIfNeeded()
         }
@@ -746,67 +858,6 @@ final class RootView: NSView {
             })
     }
 
-    // MARK: - Sidebar tab drag vs window drag
-
-    /// Local `mouseDown` runs before AppKit dispatches the click — flip window
-    /// movability off early enough that tab drags never pick up the window.
-    private func installSidebarTabDragWindowGuard() {
-        tabDragMouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) {
-            [weak self] event in
-            guard let self else { return event }
-            MainActor.assumeIsolated { self.handleSidebarTabMouseDown(event) }
-            return event
-        }
-    }
-
-    private func handleSidebarTabMouseDown(_ event: NSEvent) {
-        guard let window = self.window ?? event.window else { return }
-        let point = convert(event.locationInWindow, from: nil)
-        guard isPointInSidebarTabRegion(point) else { return }
-
-        window.isMovableByWindowBackground = false
-
-        if let tabDragMouseUpMonitor {
-            NSEvent.removeMonitor(tabDragMouseUpMonitor)
-        }
-        tabDragMouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) {
-            [weak self] event in
-            event.window?.isMovableByWindowBackground = true
-            if let monitor = self?.tabDragMouseUpMonitor {
-                NSEvent.removeMonitor(monitor)
-                self?.tabDragMouseUpMonitor = nil
-            }
-            return event
-        }
-    }
-
-    /// Pinned strip + scroll list in either sidebar host (pinned column or float).
-    private func isPointInSidebarTabRegion(_ point: NSPoint) -> Bool {
-        let bottomInset =
-            isPrivate ? Self.privateSidebarTabRegionBottomInset : Self.sidebarTabRegionBottomInset
-
-        if sidebarPinned {
-            let local = convert(point, to: sidebarHost)
-            if sidebarHost.bounds.contains(local),
-                local.y >= bottomInset,
-                local.y < sidebarHost.bounds.height - Self.sidebarTabRegionTopInset
-            {
-                return true
-            }
-        }
-
-        if floatingShown, !floatingHost.isHidden, floatingHost.alphaValue > 0 {
-            let local = convert(point, to: floatingHost)
-            if floatingHost.bounds.contains(local),
-                local.y >= bottomInset,
-                local.y < floatingHost.bounds.height - Self.sidebarTabRegionTopInset
-            {
-                return true
-            }
-        }
-
-        return false
-    }
 }
 
 /// The draggable seam between the sidebar and the content region. It shows a
@@ -818,11 +869,9 @@ final class RootView: NSView {
 /// arrive here. `acceptsFirstMouse` lets a resize begin even when the window was
 /// inactive, matching native split-view behaviour.
 ///
-/// The window is movable by its background (so the sidebar body drags it,
-/// Arc-style), and AppKit gates that on the hit view's `mouseDownCanMoveWindow`.
-/// A transparent view defaults to `true`, which would let a grab on this strip
-/// move the window instead of resizing. Return `false` so the seam owns its drag
-/// exclusively — an exclusive resize strip carved out of the draggable sidebar.
+/// A transparent view defaults to `mouseDownCanMoveWindow == true`, which would
+/// let a grab on this strip move the window instead of resizing. Return `false`
+/// so the seam owns its drag exclusively.
 final class SidebarResizeHandle: NSView {
     var onDragBegin: (() -> Void)?
     var onDrag: ((CGFloat) -> Void)?

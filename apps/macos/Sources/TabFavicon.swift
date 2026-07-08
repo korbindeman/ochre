@@ -24,9 +24,10 @@ struct TabFavicon: View {
             }
         }
         .task(id: "\(tab.host)#\(tab.faviconVersion)") {
-            image = tab.host.isEmpty
+            image =
+                tab.host.isEmpty
                 ? nil
-                : await FaviconLoader.shared.icon(for: tab.host, allowWebFallback: false)
+                : await FaviconLoader.shared.icon(for: tab.host, allowWebFallback: true)
         }
     }
 }

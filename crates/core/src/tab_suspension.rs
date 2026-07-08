@@ -3,74 +3,77 @@
 //! ADR-0013's lazy hydration handles *restore-at-launch*; this module handles
 //! *discard-while-running*: free renderer memory for tabs the user is not on,
 //! reusing the same `browser: None` + `restore_tab` re-entry path.
+//!
+//! v2 policy (budget + recency): keep a warm pool of background tabs and only
+//! discard the least-recently-shown ones when the pool is full. A two-tab session
+//! stays fully warm; large sessions shed LRU tabs instead of suspending everything
+//! on a fixed timer.
 
-use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 use cef::*;
 
-use crate::tabs::{self, SpaceId, TabId};
+use crate::tabs::{self, TabId};
 
-/// Grace before a tab left by tab-switch is suspended. Cancelled if the user
-/// returns before this fires.
-const SUSPEND_GRACE_MS: i64 = 30_000;
+/// Hydrated background tabs we try to keep warm before discarding LRU ones.
+const MAX_WARM_BACKGROUND: usize = 8;
 
-static PENDING_GENERATION: LazyLock<Mutex<HashMap<TabId, u64>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Minimum idle time after a tab switch before budget reconciliation runs.
+const RECONCILE_GRACE_MS: i64 = 180_000;
+
+static PENDING_RECONCILE: LazyLock<Mutex<u64>> = LazyLock::new(|| Mutex::new(0));
 
 /// Called from [`tabs::structural`] after a visibility / space change.
 pub fn on_visibility_changed(
     old_visible: Option<TabId>,
     new_visible: Option<TabId>,
-    old_space: SpaceId,
-    new_space: SpaceId,
+    old_space: tabs::SpaceId,
+    new_space: tabs::SpaceId,
 ) {
-    if new_space != old_space {
-        suspend_hydrated_in_space(old_space, new_visible);
-    }
     if let Some(new_id) = new_visible {
-        cancel_pending(new_id);
+        tabs::note_tab_shown(new_id);
     }
-    if let Some(old_id) = old_visible {
-        if Some(old_id) != new_visible && !tabs::is_favorite(old_id) {
-            schedule_suspend(old_id);
-        }
+    if new_space != old_space {
+        reconcile_warm_budget();
+    } else if old_visible != new_visible {
+        schedule_reconcile();
     }
 }
 
-/// Immediately suspend every hydrated, non-favorite background tab in `space`.
-fn suspend_hydrated_in_space(space: SpaceId, keep_visible: Option<TabId>) {
-    let ids = tabs::hydrated_background_in_space(space, keep_visible);
-    for id in ids {
-        cancel_pending(id);
+/// Returns ids of hydrated background tabs that exceed the warm budget.
+/// Candidates are ordered least-recently-shown first (`last_shown_at` ascending).
+fn excess_warm_tab_ids(candidates: &[(TabId, i64)], budget: usize) -> Vec<TabId> {
+    if candidates.len() <= budget {
+        return Vec::new();
+    }
+    let mut sorted = candidates.to_vec();
+    sorted.sort_by_key(|(_, shown)| *shown);
+    let excess = sorted.len() - budget;
+    sorted.into_iter().take(excess).map(|(id, _)| id).collect()
+}
+
+/// Suspend hydrated background tabs until the warm pool fits the budget.
+fn reconcile_warm_budget() {
+    let candidates = tabs::hydrated_background_candidates(None, None);
+    for id in excess_warm_tab_ids(&candidates, MAX_WARM_BACKGROUND) {
         tabs::suspend_tab(id);
     }
 }
 
-fn schedule_suspend(id: TabId) {
+fn schedule_reconcile() {
     let generation = {
-        let mut guard = PENDING_GENERATION
+        let mut guard = PENDING_RECONCILE
             .lock()
-            .expect("suspend generation lock poisoned");
-        let entry = guard.entry(id).or_insert(0);
-        *entry += 1;
-        *entry
+            .expect("suspend reconcile lock poisoned");
+        *guard += 1;
+        *guard
     };
-    let mut task = SuspendTabTask::new(id, generation);
-    post_delayed_task(ThreadId::UI, Some(&mut task), SUSPEND_GRACE_MS);
-}
-
-fn cancel_pending(id: TabId) {
-    let mut guard = PENDING_GENERATION
-        .lock()
-        .expect("suspend generation lock poisoned");
-    let entry = guard.entry(id).or_insert(0);
-    *entry += 1;
+    let mut task = ReconcileWarmBudgetTask::new(generation);
+    post_delayed_task(ThreadId::UI, Some(&mut task), RECONCILE_GRACE_MS);
 }
 
 wrap_task! {
-    struct SuspendTabTask {
-        id: TabId,
+    struct ReconcileWarmBudgetTask {
         generation: u64,
     }
 
@@ -78,14 +81,41 @@ wrap_task! {
         fn execute(&self) {
             debug_assert_ne!(currently_on(ThreadId::UI), 0);
             let still_valid = {
-                let guard = PENDING_GENERATION
+                let guard = PENDING_RECONCILE
                     .lock()
-                    .expect("suspend generation lock poisoned");
-                guard.get(&self.id) == Some(&self.generation)
+                    .expect("suspend reconcile lock poisoned");
+                *guard == self.generation
             };
             if still_valid {
-                tabs::suspend_tab(self.id);
+                reconcile_warm_budget();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn excess_warm_tab_ids_keeps_small_sessions_warm() {
+        let candidates = vec![(1, 100), (2, 200)];
+        assert!(excess_warm_tab_ids(&candidates, MAX_WARM_BACKGROUND).is_empty());
+    }
+
+    #[test]
+    fn excess_warm_tab_ids_discards_least_recent_first() {
+        let candidates: Vec<_> = (1..=10).map(|id| (id, i64::from(id) * 1000)).collect();
+        let excess = excess_warm_tab_ids(&candidates, 8);
+        assert_eq!(excess, vec![1, 2]);
+    }
+
+    #[test]
+    fn excess_warm_tab_ids_never_shown_are_first_out() {
+        let candidates = vec![(1, 0), (2, 5000), (3, 0), (4, 9000)];
+        let excess = excess_warm_tab_ids(&candidates, 2);
+        assert_eq!(excess.len(), 2);
+        assert!(excess.contains(&1));
+        assert!(excess.contains(&3));
     }
 }

@@ -33,6 +33,7 @@ void browser_crash_report_swift_exception(const char *name, const char *reason);
 //   6  TabNavStateChanged payload = "bf" — back/forward enablement as '0'/'1'
 //   7  OpenTabRequested   payload = url; id = 1 foreground / 0 background
 //   8  TabSuspended       no payload — host detaches the CEF view (ADR-0033)
+//   9  TabThemeColorChanged payload = CSS color string (viewport URL bar tint)
 
 // Register (or clear, with NULL) the tab/space event callback. Invoked on the
 // main thread. `payload` is owned by the core and valid only during the call.
@@ -109,6 +110,11 @@ void browser_rename_folder(int32_t id, const char *name);
 // icon, shown in the switcher) and switch to it.
 int32_t browser_create_space(const char *name, const char *icon);
 void browser_select_space(int32_t id);
+// Keyboard shortcuts (style §9) — main window, active space.
+bool browser_tab_select_by_index(int32_t index);   // 1…8, 9 = last
+bool browser_tab_select_adjacent(int32_t delta);   // -1 prev, +1 next
+bool browser_space_select_adjacent(int32_t delta); // -1 prev, +1 next
+bool browser_tab_move_visible(int32_t delta);      // -1 up, +1 down
 void browser_rename_space(int32_t id, const char *name);
 void browser_set_space_icon(int32_t id, const char *icon);
 // Delete space `id` and close its tabs (refused for the last space).
@@ -119,6 +125,13 @@ void browser_delete_space(int32_t id);
 // (its pinned tabs move in, its ephemeral tabs are closed) → new folder id.
 int32_t browser_folder_to_space(int32_t id);
 int32_t browser_space_to_folder(int32_t id);
+
+// Arc sidebar import (`StorableSidebar.json`). Preview counts without mutating
+// the tab store; import merges or replaces the session. JSON envelopes — free
+// with browser_string_free. Main thread only.
+char *browser_import_arc_default_path(void);
+char *browser_import_arc_preview(const char *path);
+char *browser_import_arc(const char *path, bool replace);
 
 // Run the CEF message loop. Blocks until browser_quit / all browsers close.
 void browser_run_message_loop(void);
@@ -196,6 +209,8 @@ char *browser_private_structure_json(int32_t window_id);
 int32_t browser_private_tab_create(int32_t window_id, void *parent_view,
                                    int32_t width, int32_t height, const char *url);
 void browser_private_tab_select(int32_t window_id, int32_t id);
+bool browser_private_tab_select_by_index(int32_t window_id, int32_t index);
+bool browser_private_tab_select_adjacent(int32_t window_id, int32_t delta);
 void browser_private_tab_close(int32_t window_id, int32_t id);
 void browser_private_destroy_window(int32_t window_id);
 bool browser_private_adblock_site_allowlisted(int32_t window_id);

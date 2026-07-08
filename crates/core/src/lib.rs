@@ -23,6 +23,7 @@ pub mod embed;
 pub mod favicon_selftest;
 pub mod fuzzy;
 pub mod history;
+pub mod import;
 pub mod inject;
 pub mod mac;
 pub mod native_shell;
@@ -35,6 +36,7 @@ pub mod settings;
 pub mod tab_suspension;
 pub mod tabs;
 pub mod theme;
+pub mod theme_color;
 pub mod vault;
 
 use cef::{
@@ -77,7 +79,10 @@ fn run_browser_process(main_args: &MainArgs, cmd_line: &cef::CommandLine) {
     let switch = cef::CefString::from("type");
     let is_browser_process = cmd_line.has_switch(Some(&switch)) != 1;
 
-    let ret = execute_process(Some(main_args), None, std::ptr::null_mut());
+    // Pass `BrowserApp` so helper subprocesses run `on_before_command_line_processing`
+    // and pick up `use-mock-keychain` (see `app::append_mock_keychain_switch`).
+    let mut app = app::BrowserApp::new();
+    let ret = execute_process(Some(main_args), Some(&mut app), std::ptr::null_mut());
 
     if is_browser_process {
         eprintln!("[browser] launch browser process");
@@ -88,8 +93,6 @@ fn run_browser_process(main_args: &MainArgs, cmd_line: &cef::CommandLine) {
         assert!(ret >= 0, "cannot execute helper process");
         return;
     }
-
-    let mut app = app::BrowserApp::new();
 
     let settings = Settings {
         no_sandbox: !cfg!(feature = "sandbox") as _,

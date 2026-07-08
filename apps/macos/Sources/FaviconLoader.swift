@@ -8,8 +8,8 @@ import AppKit
 ///      autocomplete).
 ///   3. **None** — globe glyph.
 ///
-/// Tab rows use captured icons only (`allowWebFallback: false`). The engine
-/// emits `TabFaviconChanged` once bytes land in the store.
+/// Tab rows prefer captured icons; web fallback covers sites the engine has not
+/// cached yet (or SVG-only hosts where capture is still in flight).
 @MainActor
 final class FaviconLoader: ObservableObject {
     static let shared = FaviconLoader()
@@ -52,17 +52,25 @@ final class FaviconLoader: ObservableObject {
     }
 
     private func fetchWebFallback(_ host: String) async -> NSImage? {
-        if let image = await fetchImage(from: URL(string: "https://\(host)/favicon.ico")) {
-            return image
+        let paths = [
+            "https://\(host)/favicon.ico",
+            "https://\(host)/apple-touch-icon.png",
+            "https://\(host)/apple-touch-icon-precomposed.png",
+            "https://icons.duckduckgo.com/ip3/\(host).ico",
+        ]
+        for path in paths {
+            if let image = await fetchImage(from: URL(string: path)) {
+                return image
+            }
         }
-        return await fetchImage(from: URL(string: "https://icons.duckduckgo.com/ip3/\(host).ico"))
+        return nil
     }
 
     private func fetchImage(from url: URL?) async -> NSImage? {
         guard let url,
-              let (data, response) = try? await URLSession.shared.data(from: url),
-              let http = response as? HTTPURLResponse,
-              (200 ..< 300).contains(http.statusCode)
+            let (data, response) = try? await URLSession.shared.data(from: url),
+            let http = response as? HTTPURLResponse,
+            (200..<300).contains(http.statusCode)
         else {
             return nil
         }

@@ -51,11 +51,16 @@ struct Sidebar: View {
                 ReloadButton()
             }
             .padding(.top, 13)
+            .windowDragHandleBackground()
 
             // Lifted above the tab list so its inline autocomplete drops down as a
-            // floating card without reflowing the rows beneath it.
-            URLBar(isVisible: isVisible)
-                .zIndex(1)
+            // floating card without reflowing the rows beneath it. Hidden when the
+            // address bar floats over the page viewport instead (Safari-style).
+            if !state.isViewportURLBarEnabled {
+                URLBar(placement: .sidebar, isVisible: isVisible)
+                    .windowDragHandleBackground()
+                    .zIndex(1)
+            }
 
             if !isPrivate {
                 PinnedTabStrip(drag: tabDrag)
@@ -82,7 +87,6 @@ struct Sidebar: View {
                 .scrollIndicators(.never)
             }
             .frame(maxHeight: .infinity)
-            .blocksWindowDragPassthrough()
 
             if isPrivate {
                 HStack(spacing: 6) {
@@ -101,14 +105,7 @@ struct Sidebar: View {
         .padding(.horizontal, 12)
         .padding(.bottom, 10)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background {
-            Color.clear
-                .contentShape(.rect)
-                .onTapGesture {
-                    URLBarModel.shared.endEditing()
-                    BrowserState.shared.clearTabSelection()
-                }
-        }
+        .background { SidebarPageTintBackground(isPrivate: isPrivate) }
     }
 }
 

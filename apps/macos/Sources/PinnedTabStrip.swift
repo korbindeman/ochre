@@ -13,6 +13,7 @@ struct PinnedTabStrip: View {
 
     private let rowHeight: CGFloat = 40
     private let spacing: CGFloat = 6
+    @State private var stripWidth: CGFloat = 0
 
     private var isDraggingFavorite: Bool {
         guard let id = drag.draggingId else { return false }
@@ -26,7 +27,9 @@ struct PinnedTabStrip: View {
                 emptyPinDropZone
             }
         } else {
-            let layout = PinnedGridLayout.forCount(tabs.count)
+            let layout = PinnedGridLayout.forWidth(
+                stripWidth, tabCount: tabs.count, itemSize: rowHeight, spacing: spacing
+            )
             VStack(alignment: .leading, spacing: spacing) {
                 ForEach(0..<layout.rows, id: \.self) { row in
                     pinnedRow(row, layout: layout, tabs: tabs)
@@ -34,7 +37,12 @@ struct PinnedTabStrip: View {
             }
             .padding(.vertical, 2)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .blocksWindowDragPassthrough()
+            .background {
+                GeometryReader { geo in
+                    Color.clear.preference(key: PinnedStripWidthKey.self, value: geo.size.width)
+                }
+            }
+            .onPreferenceChange(PinnedStripWidthKey.self) { stripWidth = $0 }
         }
     }
 
@@ -45,17 +53,25 @@ struct PinnedTabStrip: View {
 
         HStack(spacing: spacing) {
             ForEach(items, id: \.tab.id) { item in
+                if drag.slot == .before(item.tab.id) {
+                    FavoriteDropPlaceholder()
+                        .frame(width: rowHeight, height: rowHeight)
+                }
                 pinnedButton(item.tab, next: item.nextId)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: rowHeight)
+                    .frame(width: rowHeight, height: rowHeight)
             }
-            if isLastRow {
+            if isLastRow, drag.slot == .endOf(.favorite) {
+                FavoriteDropPlaceholder()
+                    .frame(width: rowHeight, height: rowHeight)
+            }
+            if isLastRow, drag.draggingId != nil {
                 stripDropTarget()
             }
             if isLastRow, !state.dismissedFavorites.isEmpty {
                 dismissedMenu(state.dismissedFavorites)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -74,17 +90,18 @@ struct PinnedTabStrip: View {
     /// Full-width target when the strip is empty but a sidebar tab is mid-drag.
     @ViewBuilder
     private var emptyPinDropZone: some View {
-        Color.clear
-            .frame(height: rowHeight)
-            .frame(maxWidth: .infinity)
-            .contentShape(.rect)
-            .overlay {
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(Color.accentColor, lineWidth: 2)
-                    .opacity(drag.slot == .endOf(.favorite) ? 1 : 0.35)
+        Group {
+            if drag.slot == .endOf(.favorite) {
+                FavoriteDropPlaceholder()
+            } else {
+                FavoriteDropPlaceholder()
+                    .opacity(0.35)
             }
-            .onDrop(of: [.text], delegate: FavoriteStripDropDelegate(drag: drag))
-            .blocksWindowDragPassthrough()
+        }
+        .frame(height: rowHeight)
+        .frame(maxWidth: .infinity)
+        .contentShape(.rect)
+        .onDrop(of: [.text], delegate: FavoriteStripDropDelegate(drag: drag))
     }
 
     /// Trailing drop target on the last row — pins a dragged tab at the end.
@@ -93,10 +110,6 @@ struct PinnedTabStrip: View {
         Color.clear
             .frame(width: 12, height: rowHeight)
             .contentShape(.rect)
-            .overlay(alignment: .leading) {
-                VerticalInsertionIndicator()
-                    .opacity(drag.slot == .endOf(.favorite) ? 1 : 0)
-            }
             .onDrop(
                 of: [.text],
                 delegate: FavoriteStripDropDelegate(drag: drag)
@@ -135,18 +148,22 @@ struct PinnedTabStrip: View {
     }
 }
 
-/// How many columns and rows the pinned strip uses for a given tab count.
+/// How many columns and rows the pinned strip uses for the available width.
 private struct PinnedGridLayout {
     let columns: Int
     let rows: Int
 
-    static func forCount(_ count: Int) -> PinnedGridLayout {
-        guard count > 0 else { return PinnedGridLayout(columns: 0, rows: 0) }
-        if count <= 3 {
-            return PinnedGridLayout(columns: count, rows: 1)
+    static func forWidth(
+        _ width: CGFloat, tabCount: Int, itemSize: CGFloat, spacing: CGFloat
+    ) -> PinnedGridLayout {
+        guard tabCount > 0 else { return PinnedGridLayout(columns: 0, rows: 0) }
+        let columns: Int
+        if width > 0 {
+            columns = max(1, Int((width + spacing) / (itemSize + spacing)))
+        } else {
+            columns = tabCount
         }
-        let columns = Int(ceil(sqrt(Double(count))))
-        let rows = Int(ceil(Double(count) / Double(columns)))
+        let rows = Int(ceil(Double(tabCount) / Double(columns)))
         return PinnedGridLayout(columns: columns, rows: rows)
     }
 }
@@ -176,7 +193,7 @@ private struct PinnedTabButton: View {
                         .matchedGeometryEffect(id: SidebarSelection.pill, in: selection)
                 }
             }
-            .contentShape(.rect(cornerRadius: 10))
+            .contentShape(.rect)
             .onTapGesture(perform: onSelect)
             .onHover { hovering = $0 }
             .help(tab.displayTitle)
@@ -192,16 +209,6 @@ private struct PinnedTabMenu: View {
         Button("Unpin Tab") { app?.setTabFavorite(tab.id, false) }
         Divider()
         Button("Close Pinned Tab") { app?.closeTab(tab.id) }
-    }
-}
-
-/// Accent line for horizontal reordering in the pinned strip.
-struct VerticalInsertionIndicator: View {
-    var body: some View {
-        Capsule()
-            .fill(Color.accentColor)
-            .frame(width: 2.5)
-            .padding(.vertical, 6)
     }
 }
 
@@ -225,17 +232,12 @@ private struct PinnedTabDrag: ViewModifier {
                 }
             )
             .onPreferenceChange(PinnedTabWidthKey.self) { width = $0 }
-            .overlay(alignment: .leading) {
-                VerticalInsertionIndicator().opacity(drag.slot == slotBefore ? 1 : 0)
-            }
-            .overlay(alignment: .trailing) {
-                VerticalInsertionIndicator()
-                    .opacity(next == nil && drag.slot == .endOf(.favorite) ? 1 : 0)
-            }
             .onDrag {
                 let id = tab.id
                 DispatchQueue.main.async { drag.begin(id) }
                 return NSItemProvider(object: String(id) as NSString)
+            } preview: {
+                FavoriteDragPreview(tab: tab)
             }
             .onDrop(
                 of: [.text],
@@ -255,6 +257,11 @@ private struct PinnedTabWidthKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
+private struct PinnedStripWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
 private struct PinnedTabDropDelegate: DropDelegate {
     let tabId: Int32
     let slotBefore: DropSlot
@@ -268,9 +275,6 @@ private struct PinnedTabDropDelegate: DropDelegate {
         update(info)
         return DropProposal(operation: .move)
     }
-    func dropExited(info: DropInfo) {
-        if drag.slot == slotBefore || drag.slot == slotAfter { drag.slot = nil }
-    }
     func performDrop(info: DropInfo) -> Bool {
         update(info)
         drag.commit()
@@ -279,11 +283,11 @@ private struct PinnedTabDropDelegate: DropDelegate {
 
     private func update(_ info: DropInfo) {
         guard let dragging = drag.draggingId, tabId != dragging else {
-            drag.slot = nil
+            drag.updateSlot(nil)
             return
         }
         let slot = info.location.x < tabWidth() / 2 ? slotBefore : slotAfter
-        drag.slot = slot == .before(dragging) ? nil : slot
+        drag.updateSlot(slot)
     }
 }
 
@@ -292,18 +296,27 @@ private struct FavoriteStripDropDelegate: DropDelegate {
     let drag: TabDragModel
 
     func validateDrop(info: DropInfo) -> Bool { drag.draggingId != nil }
-    func dropEntered(info: DropInfo) { drag.slot = .endOf(.favorite) }
+    func dropEntered(info: DropInfo) { drag.updateSlot(.endOf(.favorite)) }
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        drag.slot = .endOf(.favorite)
+        drag.updateSlot(.endOf(.favorite))
         return DropProposal(operation: .move)
     }
-    func dropExited(info: DropInfo) {
-        if drag.slot == .endOf(.favorite) { drag.slot = nil }
-    }
     func performDrop(info: DropInfo) -> Bool {
-        drag.slot = .endOf(.favorite)
+        drag.updateSlot(.endOf(.favorite))
         drag.commit()
         return true
+    }
+}
+
+/// Floating drag image for a pinned favorite — full 40×40 icon chrome.
+private struct FavoriteDragPreview: View {
+    let tab: TabItem
+
+    var body: some View {
+        TabFavicon(tab: tab)
+            .frame(width: 20, height: 20)
+            .frame(width: 40, height: 40)
+            .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary))
     }
 }
 

@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "sidebar": {
+    "containers": [
+      { "global": {} },
+      {
+        "spaces": [
+          {
+            "id": "space-work",
+            "title": "Work",
+            "newContainerIDs": [{ "pinned": {} }, "pinned-root-work"],
+            "customInfo": {
+              "iconType": { "emoji_v2": "💻" }
+            }
+          },
+          {
+            "id": "space-personal",
+            "title": "Personal",
+            "newContainerIDs": [{ "pinned": {} }, "pinned-root-personal"],
+            "customInfo": {
+              "iconType": { "emoji_v2": "🏠" }
+            }
+          }
+        ],
+        "items": [
+          {
+            "id": "pinned-root-work",
+            "childrenIds": ["tab-loose", "folder-docs"],
+            "data": { "itemContainer": {} }
+          },
+          {
+            "id": "tab-loose",
+            "parentID": "pinned-root-work",
+            "data": {
+              "tab": {
+                "savedURL": "https://example.com/a",
+                "savedTitle": "Loose Tab"
+              }
+            }
+          },
+          {
+            "id": "folder-docs",
+            "title": "Docs",
+            "parentID": "pinned-root-work",
+            "childrenIds": ["tab-in-folder"],
+            "data": { "list": {} }
+          },
+          {
+            "id": "tab-in-folder",
+            "parentID": "folder-docs",
+            "data": {
+              "tab": {
+                "savedURL": "https://example.com/b",
+                "savedTitle": "In Folder"
+              }
+            }
+          },
+          {
+            "id": "pinned-root-personal",
+            "childrenIds": [],
+            "data": { "itemContainer": {} }
+          },
+          {
+            "id": "fav-root",
+            "childrenIds": ["fav-tab"],
+            "data": { "itemContainer": {} }
+          },
+          {
+            "id": "fav-tab",
+            "parentID": "fav-root",
+            "data": {
+              "tab": {
+                "savedURL": "https://example.com/fav",
+                "savedTitle": "Favorite"
+              }
+            }
+          }
+        ],
+        "topAppsContainerIDs": [{ "default": true }, "fav-root"],
+        "spaceModels": []
+      }
+    ]
+  },
+  "firebaseSyncState": {
+    "syncData": {
+      "orderedSpaceIDs": {
+        "value": ["space-work", "space-personal"]
+      }
+    }
+  }
+}

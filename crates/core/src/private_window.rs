@@ -307,6 +307,68 @@ pub fn select_tab(window_id: WindowId, id: TabId) {
     }
 }
 
+/// Select a tab by its 1-based position (`1`…`8`, or `9` = last) in a private
+/// window's flat tab list.
+pub fn select_tab_by_index(window_id: WindowId, index: u8) -> bool {
+    let id = with_window(window_id, |window| {
+        if window.tabs.is_empty() {
+            return None;
+        }
+        let idx = if index == 9 {
+            window.tabs.len() - 1
+        } else if (1..=8).contains(&index) {
+            index as usize - 1
+        } else {
+            return None;
+        };
+        if idx >= window.tabs.len() {
+            return None;
+        }
+        Some(window.tabs[idx].id)
+    })
+    .flatten();
+    let Some(id) = id else {
+        return false;
+    };
+    select_tab(window_id, id);
+    true
+}
+
+/// Select the next (`delta = 1`) or previous (`delta = -1`) tab in a private
+/// window, wrapping at the ends.
+pub fn select_adjacent_tab(window_id: WindowId, delta: i32) -> bool {
+    if !matches!(delta, -1 | 1) {
+        return false;
+    }
+    let id = with_window(window_id, |window| {
+        if window.tabs.is_empty() {
+            return None;
+        }
+        let order: Vec<TabId> = window.tabs.iter().map(|t| t.id).collect();
+        let next = match window
+            .active_tab
+            .and_then(|id| order.iter().position(|&t| t == id))
+        {
+            None => order[0],
+            Some(pos) => {
+                if order.len() < 2 {
+                    return None;
+                }
+                let len = order.len() as i32;
+                let next_pos = (pos as i32 + delta).rem_euclid(len) as usize;
+                order[next_pos]
+            }
+        };
+        Some(next)
+    })
+    .flatten();
+    let Some(id) = id else {
+        return false;
+    };
+    select_tab(window_id, id);
+    true
+}
+
 fn reconcile_visibility(window_id: WindowId) {
     let visible = with_window(window_id, |w| w.active_tab).flatten();
     with_window_mut(window_id, |window| {
@@ -551,6 +613,19 @@ pub fn note_load_state(
     if nav_changed {
         let code = format!("{}{}", u8::from(can_go_back), u8::from(can_go_forward));
         emit(window_id, Event::TabNavStateChanged, id, Some(&code));
+    }
+    true
+}
+
+/// Ingest a sampled page theme/background color. Returns true when the browser
+/// belonged to a private window (handled here); false for the normal window.
+pub fn note_theme_color(cef_id: i32, color: &str) -> bool {
+    let Some(window_id) = window_id_for_cef(cef_id) else {
+        return false;
+    };
+    let id = note_content(window_id, cef_id, |_| true);
+    if let Some(id) = id {
+        emit(window_id, Event::TabThemeColorChanged, id, Some(color));
     }
     true
 }

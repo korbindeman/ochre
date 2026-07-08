@@ -31,6 +31,11 @@ path = "src/bin/bundle.rs"
 # configuration. Enable with `--features sandbox` once that wiring lands.
 default = []
 sandbox = ["cef/sandbox"]
+# Use Chromium's real macOS keychain for cookie/password encryption and passkeys.
+# Off by default: unsigned/ad-hoc dev and dogfood builds use the in-memory mock
+# keychain instead (see `app::append_mock_keychain_switch`). Enable only for
+# signed production CI builds once Apple signing lands (backlog P0-2).
+production-keychain = []
 # Pulls the RSA/rand deps the ignored live-server harness needs to register a
 # fresh Vaultwarden account (see `tests/vault_live.rs`). Off by default so normal
 # `cargo test` / `just verify` never compiles them.
@@ -70,6 +75,16 @@ psl = { workspace = true }
 csv = { workspace = true }
 # Native request-path ad-blocking on the CEF resource path (ADR-0019, spec §11).
 adblock = { workspace = true }
+# Favicon raster decode (ICO/PNG/JPEG/WebP/GIF → PNG) and SVG rasterization.
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+    "ico",
+] }
+resvg = "0.44"
+usvg = "0.44"
 # Live-test-only (feature `live-tests`): RSA keypair for Vaultwarden registration.
 rsa = { version = "0.9", optional = true }
 rand = { version = "0.8", optional = true }

@@ -155,33 +155,32 @@ private struct GeneralPane: View {
         SettingsHeader(title: "General", subtitle: "Basics for how Browser behaves on this Mac.")
         SettingsGroup("Default Browser") {
             SettingsRow(
-                title: "Make Browser the default",
-                subtitle: model.isDefaultBrowser
-                    ? "Browser is your default for web links."
-                    : "Open http and https links in Browser."
+                title: model.isDefaultBrowser
+                    ? "Browser is the default" : "Browser is not the default",
+                subtitle: "Opens http and https links from other apps."
             ) {
                 if !model.isDefaultBrowser {
                     Button("Set as Default") { model.setAsDefaultBrowser() }
                         .buttonStyle(.glass)
                 } else {
-                    Image(systemName: "checkmark.circle.fill")
+                    Label("Default", systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.green)
                 }
             }
         }
         SettingsGroup("Search") {
-            Picker("Search engine", selection: $model.searchEngine) {
+            SettingsControlLabel("Default search engine")
+            Picker("Default search engine", selection: $model.searchEngine) {
                 ForEach(SearchEngineOption.allCases) { option in
                     Text(option.label).tag(option)
                 }
             }
+            .labelsHidden()
             .onChange(of: model.searchEngine) { _, value in
                 model.setSearchEngine(value)
             }
-            Text("Used for address-bar searches and the command bar.")
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
-                .padding(.top, 4)
+            SettingsFootnote("Used for searches from the address bar and command bar.")
         }
         SettingsGroup("About") {
             SettingsRow(
@@ -207,8 +206,9 @@ private struct AppearancePane: View {
             title: "Appearance",
             subtitle: "One theme for native chrome and web content (ADR-0030)."
         )
-        SettingsGroup("Color Scheme") {
-            Picker("Appearance", selection: $model.themePreference) {
+        SettingsGroup("Theme") {
+            SettingsControlLabel("Color scheme")
+            Picker("Color scheme", selection: $model.themePreference) {
                 Text("System").tag(Int32(0))
                 Text("Light").tag(Int32(1))
                 Text("Dark").tag(Int32(2))
@@ -218,10 +218,32 @@ private struct AppearancePane: View {
             .onChange(of: model.themePreference) { _, value in
                 model.applyTheme(value)
             }
-            Text("System tracks macOS. Light and Dark pin the browser regardless of the OS.")
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
-                .padding(.top, 4)
+            SettingsFootnote(
+                "System follows macOS. Light and Dark stay fixed regardless of the OS.")
+        }
+        SettingsGroup("Address Bar") {
+            SettingsControlLabel("Show in")
+            Picker("Show in", selection: $model.addressBarPlacement) {
+                ForEach(AddressBarPlacement.allCases) { placement in
+                    Text(placement.label).tag(placement)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .onChange(of: model.addressBarPlacement) { _, value in
+                model.setAddressBarPlacement(value)
+            }
+            SettingsFootnote(
+                "Sidebar keeps the URL chip in the tab list. Page floats it over the web content."
+            )
+        }
+        SettingsGroup("Sidebar") {
+            SettingsToggle(title: "Match page color", isOn: $model.sidebarPageTintEnabled) {
+                model.setSidebarPageTintEnabled($0)
+            }
+            SettingsFootnote(
+                "Tints the sidebar to the active tab's theme color. Updates when you navigate."
+            )
         }
     }
 }
@@ -236,23 +258,17 @@ private struct PrivacyPane: View {
             title: "Privacy & Security",
             subtitle: "Ad blocking and cookie-consent handling."
         )
-        SettingsGroup("Adblock") {
-            SettingsToggle(
-                title: "Block ads and trackers",
-                subtitle: "Network-level blocking on by default.",
-                isOn: $model.adblockEnabled
-            ) {
+        SettingsGroup("Blocking") {
+            SettingsToggle(title: "Ads and trackers", isOn: $model.adblockEnabled) {
                 model.setAdblockEnabled($0)
             }
-        }
-        SettingsGroup("Cookie Notices") {
-            SettingsToggle(
-                title: "Block cookie notices",
-                subtitle: "Reject known consent prompts and hide leftover banners.",
-                isOn: $model.consentEnabled
-            ) {
+            Divider().opacity(0.5)
+            SettingsToggle(title: "Cookie notices", isOn: $model.consentEnabled) {
                 model.setConsentEnabled($0)
             }
+            SettingsFootnote(
+                "Ads and trackers are blocked on the network. Cookie notices reject consent prompts and hide leftover banners."
+            )
         }
     }
 }
@@ -270,26 +286,22 @@ private struct PasswordsPane: View {
             subtitle: "Vault security and quick access to saved logins."
         )
         SettingsGroup("Auto-Lock") {
+            SettingsControlLabel("Lock vault")
             Picker("Lock vault", selection: $model.vaultAutoLock) {
                 ForEach(VaultAutoLockPolicy.allCases) { option in
                     Text(option.label).tag(option)
                 }
             }
+            .labelsHidden()
             .onChange(of: model.vaultAutoLock) { _, value in
                 model.setVaultAutoLock(value)
             }
-            Text(model.vaultAutoLock.help)
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
-                .padding(.top, 4)
+            SettingsFootnote(model.vaultAutoLock.help)
         }
         SettingsGroup("Unlock") {
-            SettingsToggle(
-                title: "Unlock with Touch ID",
-                subtitle: "Requires a signed build — coming soon.",
-                isOn: .constant(false)
-            ) { _ in }
-            .disabled(true)
+            SettingsToggle(title: "Touch ID", isOn: .constant(false)) { _ in }
+                .disabled(true)
+            SettingsFootnote("Requires a signed build — coming soon.")
         }
         SettingsGroup("Manage") {
             SettingsRow(
@@ -384,9 +396,36 @@ private struct SettingsRow<Trailing: View>: View {
     }
 }
 
+private struct SettingsControlLabel: View {
+    let title: String
+
+    init(_ title: String) {
+        self.title = title
+    }
+
+    var body: some View {
+        Text(title)
+            .font(.system(size: 13, weight: .medium))
+    }
+}
+
+private struct SettingsFootnote: View {
+    let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 private struct SettingsToggle: View {
     let title: String
-    let subtitle: String
     @Binding var isOn: Bool
     let onChange: (Bool) -> Void
 
@@ -400,19 +439,28 @@ private struct SettingsToggle: View {
                 }
             )
         ) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 13, weight: .medium))
-                Text(subtitle)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
         }
         .toggleStyle(.switch)
     }
 }
 
 // ─── Model ────────────────────────────────────────────────────────────────
+
+enum AddressBarPlacement: String, CaseIterable, Identifiable {
+    case sidebar
+    case page
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .sidebar: return "Sidebar"
+        case .page: return "Page"
+        }
+    }
+}
 
 enum SearchEngineOption: Int32, CaseIterable, Identifiable {
     case google = 0
@@ -496,6 +544,8 @@ final class SettingsModel: ObservableObject {
     @Published var vaultConfigured = false
     @Published var vaultLocked = true
     @Published var isDefaultBrowser = false
+    @Published var addressBarPlacement: AddressBarPlacement = .sidebar
+    @Published var sidebarPageTintEnabled = false
 
     var appVersion: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1"
@@ -513,6 +563,19 @@ final class SettingsModel: ObservableObject {
         vaultConfigured = browser_vault_is_configured()
         vaultLocked = browser_vault_is_locked()
         isDefaultBrowser = DefaultBrowser.isDefault
+        addressBarPlacement =
+            BrowserState.shared.isViewportURLBarEnabled ? .page : .sidebar
+        sidebarPageTintEnabled = BrowserState.shared.isSidebarPageTintEnabled
+    }
+
+    func setSidebarPageTintEnabled(_ enabled: Bool) {
+        BrowserState.shared.setSidebarPageTintEnabled(enabled)
+        sidebarPageTintEnabled = enabled
+    }
+
+    func setAddressBarPlacement(_ placement: AddressBarPlacement) {
+        BrowserState.shared.setViewportURLBarEnabled(placement == .page)
+        addressBarPlacement = placement
     }
 
     func applyTheme(_ preference: Int32) {

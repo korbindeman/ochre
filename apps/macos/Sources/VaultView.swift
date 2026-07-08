@@ -87,7 +87,9 @@ private struct SetupView: View {
                     }
                     field("Email", text: $email)
                     secureField("Master password", text: $password)
-                    field(twoFactor == nil ? "Two-factor code (if enabled)" : "Two-factor code", text: $code)
+                    field(
+                        twoFactor == nil ? "Two-factor code (if enabled)" : "Two-factor code",
+                        text: $code)
                 }
             }
             .frame(maxWidth: 320)
@@ -168,7 +170,9 @@ private struct SetupView: View {
 /// account-setup + online-login flow (server URL, email, 2FA) is a follow-up.
 private struct UnlockView: View {
     @ObservedObject var model: VaultModel
+    @ObservedObject private var state = BrowserState.shared
     @State private var password = ""
+    @FocusState private var passwordFocused: Bool
 
     var body: some View {
         VStack(spacing: 16) {
@@ -188,6 +192,7 @@ private struct UnlockView: View {
                 .padding(.vertical, 8)
                 .glassEffect(.regular, in: .capsule)
                 .frame(maxWidth: 300)
+                .focused($passwordFocused)
                 .onSubmit { model.unlock(password: password) }
 
             if let error = model.actionError {
@@ -211,6 +216,19 @@ private struct UnlockView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)
+        .onAppear { focusPassword() }
+        .onChange(of: state.isVaultOpen) { _, open in
+            if open { focusPassword() }
+        }
+        .onChange(of: model.isLocked) { _, locked in
+            if locked { focusPassword() }
+        }
+    }
+
+    /// Defer one runloop so `RootView`'s `makeFirstResponder(vaultHost)` wins
+    /// before SwiftUI assigns field focus (same pattern as FindBar / URL bar).
+    private func focusPassword() {
+        DispatchQueue.main.async { passwordFocused = true }
     }
 }
 
@@ -260,7 +278,9 @@ private struct Toolbar: View {
             HStack(spacing: 12) {
                 // Leading dismiss — mirrors History (ADR-0010): a surface is exclusive
                 // with the tabs, so ✕ returns to the page (Escape also works).
-                Button { BrowserState.shared.closeVault() } label: {
+                Button {
+                    BrowserState.shared.closeVault()
+                } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 12, weight: .semibold))
                 }
@@ -342,7 +362,9 @@ private struct SearchField: View {
             TextField("Search passwords", text: $text)
                 .textFieldStyle(.plain)
             if !text.isEmpty {
-                Button { text = "" } label: {
+                Button {
+                    text = ""
+                } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
@@ -426,7 +448,9 @@ private struct VaultRow: View {
         .contentShape(.rect)
         .onHover { hovering = $0 }
         .contextMenu {
-            Button("Edit…") { model.editing = EditorTarget(detail: model.loginDetail(id: login.id)) }
+            Button("Edit…") {
+                model.editing = EditorTarget(detail: model.loginDetail(id: login.id))
+            }
             Divider()
             Button("Copy Username") { copy(login.username ?? "") }
             Button("Copy Password") { copyPassword() }
@@ -611,8 +635,8 @@ struct VaultLogin: Decodable, Identifiable {
     }
 }
 
-private extension String {
-    var nonEmpty: String? { isEmpty ? nil : self }
+extension String {
+    fileprivate var nonEmpty: String? { isEmpty ? nil : self }
 }
 
 /// A login's full detail (incl. password + notes) for the editor, from
@@ -750,7 +774,9 @@ final class VaultModel: ObservableObject {
         Task {
             let raw = await Task.detached {
                 data.withCString { d -> String in
-                    let ptr = isJSON ? browser_vault_import_bitwarden_json(d) : browser_vault_import_csv(d)
+                    let ptr =
+                        isJSON
+                        ? browser_vault_import_bitwarden_json(d) : browser_vault_import_csv(d)
                     guard let ptr else { return "" }
                     defer { browser_string_free(ptr) }
                     return String(cString: ptr)
@@ -760,7 +786,8 @@ final class VaultModel: ObservableObject {
             let result = VaultEnvelope.parse(raw)
             if result.ok {
                 let n = result.imported ?? 0
-                importStatus = n == 0 ? "Nothing new to import" : "Imported \(n) login\(n == 1 ? "" : "s")"
+                importStatus =
+                    n == 0 ? "Nothing new to import" : "Imported \(n) login\(n == 1 ? "" : "s")"
                 reload()
             } else {
                 importStatus = result.error ?? "Import failed"
@@ -786,7 +813,11 @@ final class VaultModel: ObservableObject {
 
     /// Wrap a 5-arg C-string FFI call in a detached task returning its envelope.
     nonisolated private static func envelope5(
-        _ call: @escaping (UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
+        _ call:
+            @escaping (
+                UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?,
+                UnsafePointer<CChar>?, UnsafePointer<CChar>?
+            ) -> UnsafeMutablePointer<CChar>?
     ) -> (String, String, String, String, String) async -> VaultEnvelope {
         { a, b, c, d, e in
             await Task.detached {
@@ -803,15 +834,20 @@ final class VaultModel: ObservableObject {
 
     /// Wrap a 2-arg C-string FFI call in a detached task returning its envelope.
     nonisolated private static func envelope2(
-        _ call: @escaping (UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
+        _ call:
+            @escaping (UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
     ) -> (String, String) async -> VaultEnvelope {
         { a, b in
             await Task.detached {
-                a.withCString { pa in b.withCString { pb in
-                    guard let raw = call(pa, pb) else { return VaultEnvelope(ok: false, error: "no response") }
-                    defer { browser_string_free(raw) }
-                    return VaultEnvelope.parse(String(cString: raw))
-                } }
+                a.withCString { pa in
+                    b.withCString { pb in
+                        guard let raw = call(pa, pb) else {
+                            return VaultEnvelope(ok: false, error: "no response")
+                        }
+                        defer { browser_string_free(raw) }
+                        return VaultEnvelope.parse(String(cString: raw))
+                    }
+                }
             }.value
         }
     }
@@ -823,7 +859,9 @@ final class VaultModel: ObservableObject {
         { a in
             await Task.detached {
                 a.withCString { pa in
-                    guard let raw = call(pa) else { return VaultEnvelope(ok: false, error: "no response") }
+                    guard let raw = call(pa) else {
+                        return VaultEnvelope(ok: false, error: "no response")
+                    }
                     defer { browser_string_free(raw) }
                     return VaultEnvelope.parse(String(cString: raw))
                 }
@@ -847,7 +885,10 @@ final class VaultModel: ObservableObject {
     func save(id: String?, draft: LoginDraft) {
         run {
             await Task.detached {
-                withCStrings([id ?? "", draft.name, draft.username, draft.password, draft.uri, draft.totp, draft.notes]) { p in
+                withCStrings([
+                    id ?? "", draft.name, draft.username, draft.password, draft.uri, draft.totp,
+                    draft.notes,
+                ]) { p in
                     let raw: UnsafeMutablePointer<CChar>? =
                         (id?.isEmpty == false)
                         ? browser_vault_update_login(p[0], p[1], p[2], p[3], p[4], p[5], p[6])

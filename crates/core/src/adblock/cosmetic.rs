@@ -47,8 +47,8 @@ pub fn handle(msg: &Message) -> Option<serde_json::Value> {
 /// `documentElement` because `<head>` may not exist yet at document-start; the
 /// stylesheet still applies to the whole document.
 const INJECT_SCRIPT: &str = r#"(function () {
-  if (!window.__browserCore || window.__cosmeticFilter) return;
-  window.__cosmeticFilter = true;
+  if (!window.__browserCore || document.documentElement.hasAttribute('data-cosmetic-filter')) return;
+  document.documentElement.setAttribute('data-cosmetic-filter', '');
   window.__browserCore.send('cosmetic', { type: 'rules', url: location.href })
     .then(function (res) {
       var css = res && res.css;

@@ -107,27 +107,73 @@ wrap_display_handler! {
 }
 
 /// Whether a window-open request should become an app tab instead of a bare CEF
-/// popup. `target="_blank"` and ordinary new-tab dispositions route here; sized
-/// `window.open` popups and same-tab navigations are left to CEF.
-fn should_open_as_tab(
+/// popup. `target="_blank"` and ordinary new-tab dispositions route here;
+/// same-tab navigations are left to CEF.
+fn should_open_as_tab(disposition: WindowOpenDisposition) -> bool {
+    !matches!(
+        disposition,
+        WindowOpenDisposition::CURRENT_TAB
+            | WindowOpenDisposition::SINGLETON_TAB
+            | WindowOpenDisposition::SWITCH_TO_TAB
+            | WindowOpenDisposition::SAVE_TO_DISK
+            | WindowOpenDisposition::OFF_THE_RECORD
+            | WindowOpenDisposition::IGNORE_ACTION
+            | WindowOpenDisposition::NEW_PICTURE_IN_PICTURE
+            | WindowOpenDisposition::NEW_SPLIT_VIEW
+    )
+}
+
+/// Whether a window-open request must stay a real CEF popup window.
+///
+/// OAuth and similar flows rely on `window.opener` and `window.close()` on a
+/// script-opened popup — routing those to app tabs breaks login (the callback
+/// never reaches the opener). Defer when:
+/// - the URL is blank (the `window.open(''); w.location = url` pattern),
+/// - Chromium marked it `NEW_POPUP`, or
+/// - the page supplied explicit popup dimensions (a sized popup, not a tab link).
+fn should_defer_popup_to_cef(
+    url: &str,
     disposition: WindowOpenDisposition,
-    features: Option<&PopupFeatures>,
+    popup_features: Option<&PopupFeatures>,
 ) -> bool {
-    if disposition == WindowOpenDisposition::CURRENT_TAB
-        || disposition == WindowOpenDisposition::SINGLETON_TAB
-        || disposition == WindowOpenDisposition::SWITCH_TO_TAB
-        || disposition == WindowOpenDisposition::SAVE_TO_DISK
-        || disposition == WindowOpenDisposition::OFF_THE_RECORD
-        || disposition == WindowOpenDisposition::IGNORE_ACTION
-        || disposition == WindowOpenDisposition::NEW_PICTURE_IN_PICTURE
-        || disposition == WindowOpenDisposition::NEW_SPLIT_VIEW
-    {
-        return false;
+    if url.is_empty() || url == crate::inject::BLANK_URL {
+        return true;
     }
     if disposition == WindowOpenDisposition::NEW_POPUP {
-        return features.is_none_or(|f| f.width_set == 0 && f.height_set == 0);
+        return true;
     }
-    true
+    if let Some(features) = popup_features {
+        if features.width_set != 0 && features.height_set != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Alloy popup `WindowInfo` for the rare opens we intentionally leave to CEF.
+fn configure_popup_window_info(
+    window_info: Option<&mut WindowInfo>,
+    popup_features: Option<&PopupFeatures>,
+) {
+    let Some(info) = window_info else {
+        return;
+    };
+    info.runtime_style = RuntimeStyle::ALLOY;
+    let (x, y, width, height) = match popup_features {
+        Some(features) if features.width_set != 0 && features.height_set != 0 => (
+            if features.x_set != 0 { features.x } else { 100 },
+            if features.y_set != 0 { features.y } else { 100 },
+            features.width.max(100),
+            features.height.max(100),
+        ),
+        _ => (100, 100, 500, 600),
+    };
+    info.bounds = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
 }
 
 wrap_task! {
@@ -168,16 +214,20 @@ wrap_life_span_handler! {
             target_disposition: WindowOpenDisposition,
             _user_gesture: i32,
             popup_features: Option<&PopupFeatures>,
-            _window_info: Option<&mut WindowInfo>,
+            window_info: Option<&mut WindowInfo>,
             _client: Option<&mut Option<Client>>,
             _settings: Option<&mut BrowserSettings>,
             _extra_info: Option<&mut Option<DictionaryValue>>,
             _no_javascript_access: Option<&mut i32>,
         ) -> i32 {
-            if !should_open_as_tab(target_disposition, popup_features) {
+            if !should_open_as_tab(target_disposition) {
                 return 0;
             }
             let url = target_url.map(CefString::to_string).unwrap_or_default();
+            if should_defer_popup_to_cef(&url, target_disposition, popup_features.as_deref()) {
+                configure_popup_window_info(window_info, popup_features);
+                return 0;
+            }
             let foreground = target_disposition != WindowOpenDisposition::NEW_BACKGROUND_TAB;
             let source_cef_id = browser.as_deref().map(|b| b.identifier()).unwrap_or(-1);
             let mut task = OpenTabTask::new(url, foreground, source_cef_id);
@@ -191,6 +241,11 @@ wrap_life_span_handler! {
             // (ADR-0017). Reborrow so `browser` is still handed to the handler.
             let mut browser = browser;
             if let Some(browser) = browser.as_deref_mut() {
+                let id = browser.identifier();
+                // Claim before install: `install_for_browser` returns early when no
+                // inject consumers are registered, but staged first navigations must
+                // still attach (the about:blank hop path, if used).
+                crate::inject::claim_staged_navigation(id);
                 crate::inject::install_for_browser(browser);
             }
             let mut inner = self.inner.lock().expect("Failed to lock handler");
@@ -255,11 +310,20 @@ wrap_load_handler! {
 
         fn on_load_end(
             &self,
-            _browser: Option<&mut Browser>,
-            _frame: Option<&mut Frame>,
+            browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
             http_status_code: i32,
         ) {
             eprintln!("[client] on_load_end status={http_status_code}");
+            if let (Some(browser), Some(frame)) = (browser, frame) {
+                crate::inject::dispatch_pending_navigation(browser, frame);
+                crate::inject::bootstrap_on_load_end(browser, frame);
+                if frame.is_main() != 0 {
+                    let cef_id = browser.identifier();
+                    let inner = self.inner.lock().expect("Failed to lock handler");
+                    inner.on_load_end_favicon(cef_id, http_status_code);
+                }
+            }
             // Autofill no longer hooks here: it rides the injection substrate
             // (isolated world, ask-the-core, gesture-gated) via `crate::inject`
             // — see `crate::vault::autofill` (P2-15, ADR-0017). The v0 main-world,
@@ -509,47 +573,68 @@ wrap_browser_view_delegate! {
 mod tests {
     use cef::*;
 
-    use super::should_open_as_tab;
+    use super::{should_defer_popup_to_cef, should_open_as_tab};
 
     #[test]
     fn target_blank_dispositions_open_as_tab() {
         assert!(should_open_as_tab(
-            WindowOpenDisposition::NEW_FOREGROUND_TAB,
-            None
+            WindowOpenDisposition::NEW_FOREGROUND_TAB
         ));
         assert!(should_open_as_tab(
-            WindowOpenDisposition::NEW_BACKGROUND_TAB,
-            None
+            WindowOpenDisposition::NEW_BACKGROUND_TAB
         ));
-        assert!(should_open_as_tab(WindowOpenDisposition::NEW_WINDOW, None));
+        assert!(should_open_as_tab(WindowOpenDisposition::NEW_WINDOW));
+        assert!(should_open_as_tab(WindowOpenDisposition::NEW_POPUP));
     }
 
     #[test]
-    fn unsized_popup_opens_as_tab_sized_popup_does_not() {
-        assert!(should_open_as_tab(
-            WindowOpenDisposition::NEW_POPUP,
-            Some(&PopupFeatures::default())
+    fn sized_popup_opens_as_tab() {
+        assert!(should_open_as_tab(WindowOpenDisposition::NEW_POPUP));
+    }
+
+    #[test]
+    fn blank_or_empty_urls_defer_to_cef_popup() {
+        assert!(should_defer_popup_to_cef(
+            "about:blank",
+            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            None,
         ));
-        let sized = PopupFeatures {
-            width_set: 1,
-            width: 640,
-            ..PopupFeatures::default()
-        };
-        assert!(!should_open_as_tab(
+        assert!(should_defer_popup_to_cef(
+            "",
+            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            None,
+        ));
+    }
+
+    #[test]
+    fn new_popup_and_sized_opens_defer_to_cef_popup() {
+        assert!(should_defer_popup_to_cef(
+            "https://accounts.google.com/o/oauth2/auth",
             WindowOpenDisposition::NEW_POPUP,
-            Some(&sized)
+            None,
+        ));
+        let features = PopupFeatures {
+            width_set: 1,
+            height_set: 1,
+            width: 500,
+            height: 600,
+            ..Default::default()
+        };
+        assert!(should_defer_popup_to_cef(
+            "https://accounts.google.com/o/oauth2/auth",
+            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            Some(&features),
+        ));
+        assert!(!should_defer_popup_to_cef(
+            "https://example.com",
+            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            None,
         ));
     }
 
     #[test]
     fn same_tab_dispositions_stay_with_cef() {
-        assert!(!should_open_as_tab(
-            WindowOpenDisposition::CURRENT_TAB,
-            None
-        ));
-        assert!(!should_open_as_tab(
-            WindowOpenDisposition::SWITCH_TO_TAB,
-            None
-        ));
+        assert!(!should_open_as_tab(WindowOpenDisposition::CURRENT_TAB));
+        assert!(!should_open_as_tab(WindowOpenDisposition::SWITCH_TO_TAB));
     }
 }

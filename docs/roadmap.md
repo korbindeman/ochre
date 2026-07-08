@@ -43,7 +43,7 @@ Three things, together, that no competitor holds all of:
 | Audience | What makes them switch | Our answer |
 |---|---|---|
 | **Design / aesthetics** (Arc & Zen refugees) | Native-feeling chrome, minimalism, smooth animation, "can't be killed" | Native Liquid Glass chrome + OSS durability (§1.2) |
-| **Power users** | Command palette, keyboard-first, vertical tabs + spaces, **low memory**, extensions | Command bar + spaces (MVP) → palette/split/sessions (§5.4); native ad-block *instead of* extensions (§3.1) |
+| **Power users** | Command palette, keyboard-first, vertical tabs + spaces, **low memory**, extensions | Command bar + spaces (MVP) → **Commands** in ⌘T + ⌘K palette/split/sessions (§5.3/§5.4); native ad-block *instead of* extensions (§3.1) |
 | **Developers** | Real DevTools, CDP/automation, scriptability, OSS + hackable, MCP/agent surface | CDP is near-free (§3.5), userscript engine (§3.1), clean readable Rust codebase as a growth channel |
 
 ### 1.4 The one-line pitch
@@ -213,8 +213,9 @@ raw CDP) is a thin later layer on top.
 
 **Recommendation:**
 - **Phase 3:** ship the **CDP automation surface** (loopback, flag/consent-gated) — cheap, high dev value.
-- **Phase 4:** sidebar assistant + chat-with-tabs + auto-organization; **MCP host/client** and **BYOM/local
-  models** as the dev-facing differentiators; a native semantic MCP server.
+- **Phase 4:** sidebar assistant + chat-with-tabs + auto-organization; **agentic create/edit of Commands**
+  in-app (natural language → TypeScript in the manager, same consent gates — ADR-0034); **MCP host/client**
+  and **BYOM/local models** as the dev-facing differentiators; a native semantic MCP server.
 - **Safety is the product position:** never run agents on authenticated sessions without human-in-the-loop;
   adopt an approved-sites model for any autonomous action; treat prompt-injection defense as first-class (§8.4).
   Market **"local-first, transparent, yours."**
@@ -378,8 +379,12 @@ a blocking gap. **Risks:** the password-vault build; import fidelity; and the mo
 1.0 credible. This is where we win the power/dev audiences, not just avoid losing the mainstream one.
 
 **Scope — power-user toolbox** (ranked by "disproportionately wins the audience"):
-1. **Command palette** (⌘K do-anything) — the single highest-leverage power feature.
-2. **Keyboard-first navigation** — customizable shortcuts + link-hint ("vim") mode; the qutebrowser credibility play.
+1. **Commands** (ADR-0034) — user-defined browser automation (Glide-class: tab/process/path APIs, TypeScript,
+   vibe-coded). **Primary surface: the ⌘T command bar** — URLs, tabs, history, search, *and* Commands in one
+   unified ranked list; new-tab navigation stays first-class. **Secondary surface: a ⌘K command palette** biased
+   toward actions (built-ins + the same Command registry; no URL/search navigation). Settings manager + cookbook.
+2. **Keyboard-first navigation** — customizable shortcuts + link-hint ("vim") mode; optional per-Command key
+   bindings; the qutebrowser credibility play.
 3. **Tab search / switcher** + **tab suspension** (native, Vivaldi-granular per-space/stack hibernation).
 4. **Split view** — grid + workspace tiling (Vivaldi-depth, since a 2-pane split is now Firefox-baseline).
 5. **Named session management** (save/restore, auto-backup — the genuine Vivaldi moat).
@@ -423,9 +428,10 @@ native feel + speed + hackability + OSS trust. **Risks:** scope discipline (§9)
 
 **Goal:** genuine top-tier, cross-platform, with the AI layer done cleanly and safely.
 **Scope:**
-- **AI (§3.5):** sidebar assistant + chat-with-tabs + tab/download auto-organization; **MCP host/client** +
-  **BYOM/local models** (Ollama); a native semantic MCP server exposing our spaces/vault/adblock; safe-by-design
-  agentic actions (approved-sites, human-in-loop, prompt-injection defenses).
+- **AI (§3.5):** sidebar assistant + chat-with-tabs + tab/download auto-organization; **agentic create/edit
+  of Commands** (and Tweaks) in-app — propose TypeScript/CSS, user reviews and enables; **MCP host/client** +
+  **BYOM/local models** (Ollama); a native semantic MCP server exposing our spaces/vault/adblock/Commands;
+  safe-by-design agentic actions (approved-sites, human-in-loop, prompt-injection defenses).
 - **Windows** (spec §8) — `windows-reactor`/WinUI mirror (Mica/Fluent), keeping the app all-Rust if the reactor holds.
 - **Mobile companion** (§3.6) as a sync target.
 - **Depth:** theming/Mods, mouse gestures, notes/annotations, advanced spaces — each gated on usage data.

@@ -73,8 +73,8 @@ final class SuggestionController: ObservableObject {
     /// get "github.com"). Nil when there is nothing to complete. Only ever set
     /// on a forward edit, so it never fights the user deleting.
     @Published private(set) var inline: String?
-    /// The most recent query fed to `update` — what a host opens when the user
-    /// presses return with nothing highlighted.
+    /// The most recent typed query fed to `update` (never an inline tail) — what
+    /// a host opens when the user presses Return without an explicit selection.
     private(set) var currentQuery = ""
 
     private let localProviders: [any SuggestionProvider]
@@ -163,7 +163,8 @@ final class SuggestionController: ObservableObject {
         currentQuery = query
     }
 
-    /// The highlighted suggestion, if any.
+    /// The keyboard-highlighted suggestion (arrow navigation), if any. Hover does
+    /// not count — return commits the field text unless the user arrowed to a row.
     func selected() -> Suggestion? {
         guard let selection, suggestions.indices.contains(selection) else { return nil }
         return suggestions[selection]
@@ -180,15 +181,17 @@ final class SuggestionController: ObservableObject {
 
     private func publishLocal(_ locals: [Suggestion]) {
         // Score-first merge across providers, then float the best URL-prefix
-        // match for inline autocomplete (and Return-without-selection).
+        // match to the top of the dropdown. Inline completion and Return-without-
+        // selection are separate: only a true URL prefix drives the inline tail;
+        // Return always commits `currentQuery` (search/navigate the typed text).
         var ordered = locals.sorted { $0.score > $1.score }
         if let idx = ordered.firstIndex(where: { prefixFill($0, currentQuery) != nil }), idx != 0 {
             ordered.insert(ordered.remove(at: idx), at: 0)
         }
         localResults = ordered
         suggestions = dedupe(ordered)
-        selection = suggestions.isEmpty ? nil : 0
-        inline = allowInline ? ordered.first.flatMap { prefixFill($0, currentQuery) } : nil
+        selection = nil
+        inline = allowInline ? bestPrefixFill(in: ordered, typed: currentQuery) : nil
     }
 
     private func publishRemote(_ remotes: [Suggestion]) {
@@ -203,11 +206,17 @@ final class SuggestionController: ObservableObject {
         }
         let merged = head + remotes.sorted { $0.score > $1.score } + tail
         suggestions = dedupe(merged)
-        // Keep the current highlight if still valid; otherwise re-anchor to the
-        // top. Never disturb the inline completion — remote rows never drive it.
+        // Keep the current highlight if still valid; otherwise clear it. Never
+        // disturb the inline completion — remote rows never drive it.
         if let s = selection, !suggestions.indices.contains(s) {
-            selection = suggestions.isEmpty ? nil : 0
+            selection = nil
         }
+    }
+
+    /// The best inline completion across `list`, or nil when nothing is a clean
+    /// URL prefix of what the user typed (fuzzy-ranked rows never qualify).
+    private func bestPrefixFill(in list: [Suggestion], typed: String) -> String? {
+        list.lazy.compactMap { self.prefixFill($0, typed) }.first
     }
 
     /// The inline completion for `suggestion` given the user typed `typed`, or
@@ -254,26 +263,40 @@ final class SuggestionController: ObservableObject {
 
 // ─── List view ─────────────────────────────────────────────────────────────
 
-/// Renders the controller's suggestions. Purely presentational: selection lives
-/// in the controller so keyboard and hover agree, and clicking a row calls
+/// Renders the controller's suggestions. Purely presentational: keyboard
+/// selection lives in the controller (arrows + return); hover highlight is
+/// local so return still commits the field text. Clicking a row calls
 /// `onChoose` (the host wires that to "run the suggestion, then dismiss"). Drop
 /// it into any host below its text field.
 struct AutocompleteList: View {
     @ObservedObject var controller: SuggestionController
     let onChoose: (Suggestion) -> Void
+    /// Visual hover highlight only — does not affect return-key behaviour.
+    @State private var hoverIndex: Int?
 
     var body: some View {
         VStack(spacing: 1) {
             ForEach(Array(controller.suggestions.enumerated()), id: \.element.id) {
                 index, suggestion in
-                SuggestionRow(suggestion: suggestion, isSelected: controller.selection == index)
-                    .contentShape(.rect)
-                    .onHover { hovering in
-                        if hovering { controller.selection = index }
-                    }
-                    .onTapGesture { onChoose(suggestion) }
+                SuggestionRow(
+                    suggestion: suggestion,
+                    isSelected: isHighlighted(index)
+                )
+                .contentShape(.rect)
+                .onHover { hovering in
+                    hoverIndex = hovering ? index : (hoverIndex == index ? nil : hoverIndex)
+                }
+                .onTapGesture { onChoose(suggestion) }
             }
         }
+        .onChange(of: controller.suggestions.count) { _, _ in
+            hoverIndex = nil
+        }
+    }
+
+    private func isHighlighted(_ index: Int) -> Bool {
+        if let selection = controller.selection { return selection == index }
+        return hoverIndex == index
     }
 }
 
@@ -384,6 +407,8 @@ struct AutocompleteField: View {
     /// Notified when the field gains or loses focus. The sidebar URL bar
     /// dismisses itself on focus loss; the command bar (a key panel) ignores it.
     var onFocusChange: (Bool) -> Void = { _ in }
+    /// Select the entire field on focus and on click — standard address-bar UX.
+    var selectAllOnFocus: Bool = false
 
     /// The text shown in the field, which may carry an inline-autocomplete tail
     /// beyond what the user typed.
@@ -402,17 +427,29 @@ struct AutocompleteField: View {
         initialQuery: String = "",
         placeholder: String = "Search or enter URL",
         font: Font = .system(size: 18),
-        onFocusChange: @escaping (Bool) -> Void = { _ in }
+        onFocusChange: @escaping (Bool) -> Void = { _ in },
+        selectAllOnFocus: Bool = false
     ) {
         _controller = ObservedObject(wrappedValue: controller)
         self.placeholder = placeholder
         self.font = font
         self.onFocusChange = onFocusChange
+        self.selectAllOnFocus = selectAllOnFocus
         _fieldText = State(initialValue: initialQuery)
         _userText = State(initialValue: initialQuery)
     }
 
     var body: some View {
+        Group {
+            if selectAllOnFocus {
+                coreField.simultaneousGesture(TapGesture().onEnded { selectAllText() })
+            } else {
+                coreField
+            }
+        }
+    }
+
+    private var coreField: some View {
         TextField(placeholder, text: $fieldText, selection: $selection)
             .textFieldStyle(.plain)
             .font(font)
@@ -432,15 +469,25 @@ struct AutocompleteField: View {
                 controller.update(query: newValue, allowInline: forward)
             }
             .onReceive(controller.$inline) { applyInline($0) }
-            .onChange(of: focused) { _, isFocused in onFocusChange(isFocused) }
+            .onChange(of: focused) { _, isFocused in
+                onFocusChange(isFocused)
+                if isFocused && selectAllOnFocus { selectAllText() }
+            }
             .onAppear {
                 focused = true
-                // A prefilled field (edit-in-place) starts fully selected, so the
-                // first keystroke replaces it (matching ⌘L in Safari/Arc).
-                if !fieldText.isEmpty {
+                if selectAllOnFocus {
+                    selectAllText()
+                } else if !fieldText.isEmpty {
+                    // A prefilled field (edit-in-place) starts fully selected, so the
+                    // first keystroke replaces it (matching ⌘L in Safari/Arc).
                     selection = TextSelection(range: fieldText.startIndex..<fieldText.endIndex)
                 }
             }
+    }
+
+    private func selectAllText() {
+        guard !fieldText.isEmpty else { return }
+        selection = TextSelection(range: fieldText.startIndex..<fieldText.endIndex)
     }
 
     /// Show `fill` in the field with everything past what the user typed
@@ -467,9 +514,9 @@ struct AutocompleteField: View {
 
 extension View {
     /// SwiftUI-native keyboard routing for hosts that keep focus in an ordinary
-    /// `TextField`: arrows move the selection, return chooses the highlighted
-    /// suggestion (via `onChoose`) or calls `onSubmit` when nothing is
-    /// highlighted, escape calls `onCancel`.
+    /// `TextField`: arrows move the keyboard selection, return chooses the
+    /// arrow-highlighted suggestion (via `onChoose`) or calls `onSubmit` when
+    /// nothing was arrowed to (hover does not count), escape calls `onCancel`.
     ///
     /// Note: hosts embedded in a borderless `NSPanel` (like the command bar) may
     /// prefer an AppKit key monitor, which intercepts arrow keys before the

@@ -17,6 +17,7 @@
 //! on-disk file format is SQLite-compatible, so that swap needs no data
 //! migration.
 
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -453,8 +454,28 @@ pub fn update_title(url: &str, title: &str) {
     with_store(|h| h.update_title(url, title));
 }
 
+/// In-memory favicons for private windows and other sessions that must not
+/// persist icon bytes to disk.
+static SESSION_FAVICONS: OnceLock<Mutex<HashMap<String, Vec<u8>>>> = OnceLock::new();
+
+fn session_favicons() -> &'static Mutex<HashMap<String, Vec<u8>>> {
+    SESSION_FAVICONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Cache a favicon PNG for `host` without writing to the history database.
+pub fn store_session_favicon(host: &str, png: &[u8]) {
+    if host.is_empty() {
+        return;
+    }
+    session_favicons()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(host.to_string(), png.to_vec());
+}
+
 /// Cache the favicon PNG for a host.
 pub fn store_favicon(host: &str, png: &[u8]) {
+    store_session_favicon(host, png);
     with_store(|h| h.store_favicon(host, png));
 }
 
@@ -483,7 +504,12 @@ pub fn clear_since(since: i64) -> usize {
 
 /// Cached favicon PNG bytes for a host, if present.
 pub fn favicon(host: &str) -> Option<Vec<u8>> {
-    with_store(|h| h.favicon(host)).flatten()
+    session_favicons()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(host)
+        .cloned()
+        .or_else(|| with_store(|h| h.favicon(host)).flatten())
 }
 
 #[cfg(test)]

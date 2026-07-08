@@ -141,7 +141,7 @@ Goal (rm §5.1 / mvp): the Arc interaction model in native chrome, good enough f
 | P1-M3 | Cmd+T command bar (Liquid Glass morph) | done | ~80k | P1-M2 | mvp M3 · closed 2026-07-08 |
 | P1-M4 | Spaces switcher + multi-space UX | done | ~60k | P1-M1 | mvp M4 · ADR-0005/0006 |
 | P1-7 | Tab folders + pinned/ephemeral split + folder↔space transform | done | ~110k | P1-M4 | ADR-0006; user request 2026-07-06 |
-| P1-M5 | Adblock integration + polish (shortcuts, tab suspension, animation) | next | ~70k | P1-M2 (P0-3 covers the request-path core) | mvp M5 |
+| P1-M5 | Adblock integration + polish (shortcuts, tab suspension, animation) | done | ~70k | P1-M2 (P0-3 covers the request-path core) | mvp M5 |
 | P1-8 | Split `client.rs` (727 L) → `client/{handlers,favicon,devtools}.rs` — one file mixes 8+ CEF handlers, favicon capture, DevTools, error-page HTML | done | ~20k | — | code §3 |
 | P1-9 | Split Swift view monoliths — `BrowserRootView.swift` (8+ view types) + `CommandBar.swift` (panel + key-handling + sizing) into per-component files | done | ~25k | — | code §3 |
 | P1-10 | Omnibox-grade command-bar autocomplete — core fuzzy ranking + match highlighting + inline autocomplete | done | ~55k | — | ADR-0011 · style §6 · spec §9; user request 2026-07-06 |
@@ -161,8 +161,22 @@ Goal (rm §5.1 / mvp): the Arc interaction model in native chrome, good enough f
 | P1-24 | Runtime tab suspension — auto-discard background CEF browsers (30 s grace on tab switch, immediate on space switch), favorites stay resident, `TabSuspended` event + sidebar dimming | done | ~45k | P1-15 | ADR-0033 · mvp risk #3; user request 2026-07-08 |
 | P1-25 | Tab suspension settings + manual controls — grace duration, disable auto-suspend, "Suspend Other Tabs" menu | next | ~25k | P1-24 | ADR-0033 consequences |
 | P1-26 | Session persist coalescing — debounce title/url write-through to `session.json` if profiling shows main-thread pressure | next | ~15k | P1-15 | ADR-0013 consequences |
+| P1-27 | **Tab drag-and-drop reliability** — fix super-buggy sidebar reorder / pin-unpin / folder filing gestures (drop targets, insertion indicator, commit-on-drop vs. structure churn); interactive pass + standing regression where tractable | next | ~40k | P1-7 · P1-23 | ADR-0015 · `TabDrag.swift`; **priority: fix soon** · user bug report 2026-07-08 |
+| P1-28 | **In-page address bar polish** — Safari-style viewport URL bar (`URLBar(placement: .viewport)`): fix interaction/focus bugs (⌘L routing, click-to-dismiss vs. pill hit-test, autocomplete popover, vault/shield flanking controls), layout/chrome-inset sync with CEF scroll-under; **page theme-color chrome always on** when viewport mode is enabled (not a separate toggle) — at `scrollY ≈ 0` fill the transparent strip behind the pill with the sampled color (`theme_color.rs` → `TabThemeColorChanged`); on scroll drop the matched fill so page pixels scroll up behind the bar (`CEFContainerView` scroll-under). Wire `BrowserState.themeColor` into the viewport chrome; interactive pass + extend `focus-selftest` for viewport mode | next | ~30k | P1-M2 · P0-1 | `URLBar.swift` · `RootView.swift` · `theme_color.rs`; **priority: polish soon** · user bug report 2026-07-08 |
 
 Notes (reconciled 2026-07-08):
+- **Landed 2026-07-08 (P1-M5 → done) — mvp M5 polish: shortcuts + animation tuning.**
+  **Shortcuts (style §9):** core sidebar-order primitives in `tabs.rs`
+  (`sidebar_tab_order`, `select_tab_by_index`, `select_adjacent_tab`,
+  `select_adjacent_space`, `move_visible_tab`) + private-window equivalents;
+  FFI + `Window` menu items with `validateMenuItem` gray-out. Wired: ⌘1…⌘8 / ⌘9
+  (last), ⌘⇧[ / ⌘⇧], ⌘⌥← / ⌘⌥→ (spaces), ⌘⌥⇧↑ / ⌘⌥⇧↓ (move tab). Dismisses
+  app-UI surfaces before tab/space select. **Animation:** sidebar pin/unpin
+  duration aligned to the list spring (0.24s). **Verified:** 193 core tests (2
+  new keyboard-order tests) + `just build-macos` **BUILD SUCCEEDED** +
+  `just focus-selftest` all-PASS. **Parity:** shortcuts + sidebar collapse → ✅.
+  **Deferred:** P1-25 (suspension settings UI); command-bar morph *feel* tuning
+  (subjective `just run` pass); MVP DoD passkeys (P0-2 blocked on enrollment).
 - **Landed 2026-07-08 (P1-M3 → done) — Cmd+T Liquid Glass morph (mvp M3).** Replaced the spring
   `scaleEffect` entrance with the platform's `glassEffectID` morph inside a `GlassEffectContainer`:
   present expands from a compact capsule to the full interactive field (`.regular.interactive()`),
@@ -262,6 +276,24 @@ Notes:
   verify`-equivalent green — 36 core tests (4 new: reorder / pin-into-folder / unpin / foreign-folder
   reject), clippy clean, macOS app builds. **Pending interactive:** the drag *gesture* itself (an
   NSItemProvider drag can't be driven headlessly) rides the standing P0-1 / M2 interactive pass.
+- **User bug report 2026-07-08 — tab drag-and-drop is super buggy in practice.** The ADR-0015 slice
+  landed the core primitive and a first Swift gesture pass, but day-to-day reorder / pin-unpin /
+  folder filing is unreliable enough to block daily-driving. Filed as **P1-27** (priority: fix soon);
+- **In-page address bar needs polish (user 2026-07-08; deferred 2026-07-08).** The Safari-style
+  viewport URL bar (`Settings → Show in page`) is landed but **pill + flanking vault/shield controls
+  are not reliably clickable** — sidebar-chip editing still works. Likely root cause: CEF draws behind
+  the transparent strip (`clipsToBounds` off) and `PassthroughHostingView` / `ViewportURLBarHostingView`
+  hit-test still passes clicks to the page when SwiftUI resolves to the hosting view (no AppKit child).
+  Attempted: `onTapGesture` + `contentShape`, shared `ViewportGlassCapsule`, cluster-rect hit claiming
+  in `ViewportURLBarHostingView` — still broken; needs a deeper pass (PreferenceKey-reported frames,
+  AppKit overlay buttons, or CEF hit-test exclusion in the chrome band). Also: ⌘L routing,
+  dismiss-on-viewport-click, autocomplete popover. Filed as **P1-28**; not blocking sidebar chip.
+- **Page-aware chrome tint (user 2026-07-08).** Viewport address bar: **always** matches page
+  theme-color when viewport mode is on — scroll-gated (matched fill at top, content scrolls behind
+  on scroll). Sidebar: same sampled color, but **optional** (Settings toggle, off by default) and
+  **no scroll-state** — static per-tab tint. Core sampling already streams via `theme_color.rs` /
+  `TabThemeColorChanged`; Swift doesn't consume it yet. Viewport wiring is **P1-28**; sidebar is
+  **P2-37**.
 - **Landed 2026-07-06 (P1-15) — session persistence + lazy restore (ADR-0013).** History already
   persisted (SQLite); this adds the structural session: core `session.rs` write-through JSON
   (`session.json`, atomic tmp+rename on every structure/URL/title change — crash-safe, no save-on-quit
@@ -410,6 +442,7 @@ Phase 1 nears exit.
 | P2-4 | Pinned-tab saved-URL semantics — navigate freely, "close" reverts to the saved URL (tab persists, reopenable), + "Replace URL with current" | later | ~30k | P2-1 | Arc pinned-tab behavior; user 2026-07-06 |
 | P2-5 | Global pinned tabs (Favorites) — pinned across *all* spaces, distinct from the per-space persistent tabs | later | ~35k | P2-1 | user 2026-07-06 |
 | P2-36 | **Pinned tabs** (Arc-like, distinct from saved) — always resident / preloaded in each space's sidebar, separate from the saved/open split; plus a setting for when to clear **open** tabs (never by default) | wip | ~50k | P1-23 | style §4; ADR-0032; user request 2026-07-08 |
+| P2-37 | **Page-aware sidebar tint (optional)** — Settings → Appearance toggle (off by default): tint the sidebar background to the active tab's sampled page color (`theme_color.rs` → `TabThemeColorChanged`); updates on navigation/SPA changes, **no scroll-state gating** (unlike the viewport bar). `ThemeColor.swift` CSS parser + `SidebarPageTintBackground`. | done | ~20k | — | `Sidebar.swift` · `FloatingSidebar.swift` · `SettingsView.swift` · `ThemeColor.swift`; user request 2026-07-08 · landed 2026-07-08 |
 | P2-6 | Downloads indicator + section (Tier-1 downloads manager) | later | ~40k | — | rm §4.1 / §5.2; user 2026-07-06 |
 | P2-7 | Traffic-light native-parity polish — option-key alternate glyphs, VoiceOver labels/traits, green zoom-vs-fullscreen nuance (deferred from P1-14's custom-drawn lights) | later | ~20k | P1-14 | ADR-0012 |
 | P2-8 | Vault crypto core — key hierarchy (KDF → master key → password hash → stretched key → user symmetric key) + Bitwarden `EncString` (AES-256-CBC + HMAC-SHA256), unit-tested in isolation | done | ~35k | — | ADR-0016 · spec §10; user 2026-07-06 |
@@ -828,9 +861,9 @@ Notes:
 ## Phase 3 — 1.0: "power-user & developer browser" · *not current; partially itemized*
 
 Goal (rm §5.3): the differentiators that create the "I can't go back" effect for power users and developers.
-**Only on-request captures are itemized here**; the full §5.3 scope (command palette, keyboard-first nav, tab
-search/suspension, split view, named sessions, sync v1, docked DevTools, network inspection/throttling, …)
-stays at phase granularity in `roadmap.md` until Phase 2 nears exit.
+**Only on-request captures are itemized here**; the full §5.3 scope (Commands in ⌘T + ⌘K palette, keyboard-first
+nav, tab search/suspension, split view, named sessions, sync v1, docked DevTools, network inspection/throttling,
+…) stays at phase granularity in `roadmap.md` until Phase 2 nears exit.
 
 ### Built-in developer/design tools (user request 2026-07-07)
 
@@ -857,6 +890,11 @@ focus); the user asked to plan, not start.
 | P3-11 | **QR for current URL** — core QR generator + native popover; hand the page off to a phone. Trivial, high delight. *Core + native.* | later | ~12k | P3-1 | rm §5.3; user request 2026-07-07 (v2) |
 | P3-12 | **Tech-stack detector** (Wappalyzer-class) — fingerprint framework / CDN / analytics via an injected probe → a summary popover. *Injected content script.* | later | ~30k | P3-1 · P2-14 | rm §5.3; user request 2026-07-07 (v2) |
 | P3-13 | **Split view** — side-by-side tab tiling (2-pane to start; grid/workspaces later). rm §5.3 Tier-3 differentiator; Firefox-baseline parity. Depends on stable multi-tab CEF hosting + focus routing. | later | ~90k | P1-M2 · P0-1 | rm §5.3 · user request 2026-07-08 |
+| P3-14 | **Commands foundation** — core `commands` registry + built-in Commands (tab-by-URL switch, copy URL, …) + `CommandsProvider` in the **⌘T command bar** (unified ranking with URLs/tabs/history). ADR-0034 slice 1. | later | ~40k | P1-M2 · P1-M3 | ADR-0034 · rm §5.3; user request 2026-07-08 |
+| P3-15 | **Commands — user scripts** — TypeScript runtime + `CommandContext` API (`tabs`, `spaces`, `navigate`, `process.exec`, `path`, `clipboard`, `notify`) + per-file store under `commands/` + settings **Commands** section (list, enable/disable, native editor, import/export) + safety gates (show-before-enable, process permission). ADR-0034 slice 2. | later | ~55k | P3-14 | ADR-0034 · rm §5.3 |
+| P3-16 | **Commands — vibe-code UX** — generated API type stubs + editor autocomplete, inline test runner (current-context `:repl`), built-in cookbook import (Glide-class examples: calendar tab, GitHub clone, …). Manual authoring only; in-app agentic create/edit is P4-1. ADR-0034 slice 3. | later | ~35k | P3-15 | ADR-0034 · rm §5.3 |
+| P3-17 | **Command palette (⌘K)** — action-first floating panel sharing the Command registry + built-in browser actions; **no** URL/search navigation (that stays ⌘T). ADR-0034 secondary surface. | later | ~30k | P3-14 | ADR-0034 · rm §5.3 |
+| P3-18 | **Commands — keyboard bindings** — optional per-Command shortcuts; pairs with keyboard-first / hint mode. ADR-0034 slice 4. | later | ~25k | P3-15 · P3-17 | ADR-0034 · rm §5.3 |
 
 Notes:
 - **Sequencing.** **P3-1 is the spine** — the Developer menu + overlay HUD host every other row hangs off;
@@ -875,11 +913,22 @@ Notes:
 - **Positioning.** These are the *lightweight* complement to full Chromium DevTools (separate window, ADR-0021)
   and the automation CDP surface (P0-4) — not a reimplementation. The pitch is native-absorb (rm §3.1): the
   DevTools-adjacent extensions, built in.
+- **Commands (ADR-0034, user 2026-07-08).** Glide-class browser-chrome hackability — distinct from Tweaks
+  (page injection) and the external CDP port. **⌘T stays the primary unified surface** (URLs + tabs + history +
+  search + Commands); **⌘K palette is additive** (action-first, same registry). Sequencing: P3-14 (registry +
+  built-ins + bar provider) → P3-15 (user TS + settings) → P3-16 (vibe-code UX) → P3-17 (⌘K palette) →
+  P3-18 (keyboard bindings). P3-17 can parallel P3-15 once P3-14 lands. **Agentic in-app create/edit** of
+  Commands (natural language → TS in the manager, same consent gates) is a **Phase 4 AI feature** (P4-1) —
+  not required for Commands v1; pairs with the agent layer (spec §19).
 
-## Phase 4 — Top-tier · *not yet itemized*
+## Phase 4 — Top-tier · *partially itemized*
 
-Top-tier (rm §5.4 — AI, Windows, mobile companion, depth) lives in `roadmap.md` at phase granularity. Pull
-items into this backlog as Phase 3 nears.
+Goal (rm §5.4): genuine top-tier, cross-platform, AI done cleanly. Most scope stays at phase granularity
+in `roadmap.md`; pull more rows as Phase 3 nears exit.
+
+| ID | Item | Status | Est | Deps | Refs |
+|----|------|--------|-----|------|------|
+| P4-1 | **Commands — agentic create/edit** — in-app AI authoring in the Commands manager: describe a workflow (or iterate in chat), agent generates/edits TypeScript via `command_upsert`, user reviews code + enables with existing consent gates; execution stays human-initiated. Chrome-automation counterpart to agent-authored Tweaks (§20). | later | ~40k | P3-15 · P3-16 · agent layer | ADR-0034 · spec §19/§21 · rm §5.4; user request 2026-07-08 |
 
 ## Decisions pending (unblock future work)
 

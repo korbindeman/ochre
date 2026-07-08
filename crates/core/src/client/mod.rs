@@ -150,13 +150,26 @@ impl BrowserHandler {
         let Some(host) = history::host_of(&page_url) else {
             return;
         };
-        let candidates = icon_urls.map_or_else(Vec::new, |list| {
-            favicon::rank_icon_urls_from_list(list, &page_url, &host)
-        });
+        let candidates = match icon_urls {
+            Some(list) => favicon::rank_icon_urls_from_list(list, &page_url, &host),
+            None => favicon::rank_icon_urls(&[], &page_url, &host),
+        };
         if candidates.is_empty() {
             return;
         }
         favicon::start_favicon_download(id, host, candidates);
+    }
+
+    /// Sites without declared `<link rel="icon">` tags never fire
+    /// `on_favicon_urlchange`; probe well-known paths once the main frame loads.
+    fn on_load_end_favicon(&self, cef_id: i32, http_status_code: i32) {
+        if !(200..400).contains(&http_status_code) {
+            return;
+        }
+        let Some(page_url) = self.current_url.get(&cef_id).cloned() else {
+            return;
+        };
+        favicon::fetch_favicon_if_missing(cef_id, &page_url);
     }
 
     fn on_after_created(&mut self, browser: Option<&mut Browser>) {

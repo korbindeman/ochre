@@ -160,6 +160,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         privateControllers.removeValue(forKey: windowId)
     }
 
+    /// Recreate the normal window when the app is still running but the host
+    /// window was torn down (e.g. an unexpected close during a popup flow).
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        if normalController.window == nil {
+            reopenNormalWindow()
+        } else if !flag {
+            normalController.window?.makeKeyAndOrderFront(nil)
+        }
+        return true
+    }
+
+    private func reopenNormalWindow() {
+        let windowSize = Self.loadWindowSize()
+        normalController = BrowserWindowController(
+            windowId: 0,
+            isPrivate: false,
+            state: BrowserState.normal
+        )
+        BrowserState.reregisterNormal()
+        normalController.makeWindow(size: windowSize)
+        commandBar.parentWindow = normalController.window
+        findBar.parentWindow = normalController.window
+        normalController.activate()
+        BrowserState.normal.reloadStructure()
+    }
+
     @objc func newPrivateWindow() {
         PrivateWindowPrompt.showIfNeeded()
         let windowId = browser_private_window_create()
@@ -228,17 +257,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         commandBar.toggle()
     }
 
-    /// Edit the active tab's address in place (⌘L / clicking the sidebar URL
-    /// chip): turn the chip into an inline field in the sidebar (ADR-0014). With
-    /// no active tab there is nothing to edit — fall back to the command bar for a
-    /// new tab. Reveal a collapsed sidebar first so the field is on-screen.
+    /// Edit the active tab's address in place (⌘L / clicking the URL chip):
+    /// inline in the sidebar (ADR-0014) or the viewport bar when that mode is on.
+    /// With no active tab there is nothing to edit — fall back to the command bar
+    /// for a new tab. Reveal a collapsed sidebar first when the chip lives there.
     @objc func editCurrentURL() {
         guard !BrowserState.shared.isSurfaceOpen else { return }
         guard BrowserState.shared.activeTab != nil else {
             commandBar.toggle()
             return
         }
-        if !BrowserState.shared.isSidebarPinned {
+        if !BrowserState.shared.isViewportURLBarEnabled,
+            !BrowserState.shared.isSidebarPinned
+        {
             BrowserState.shared.revealSidebar()
         }
         URLBarModel.shared.beginEditing()
@@ -246,6 +277,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func toggleSidebar() {
         BrowserState.shared.toggleSidebarPinned()
+    }
+
+    @objc func toggleViewportURLBar() {
+        BrowserState.shared.toggleViewportURLBar()
+    }
+
+    // Tab / space keyboard shortcuts (style §9, mvp M5). Dismiss any app-UI
+    // surface first so the selected tab is actually visible.
+    @objc func selectTabByNumber(_ sender: NSMenuItem) {
+        BrowserState.shared.closeSurfaces()
+        let index = Int32(sender.tag)
+        if BrowserState.current.isPrivate {
+            _ = browser_private_tab_select_by_index(BrowserState.current.windowId, index)
+        } else {
+            _ = browser_tab_select_by_index(index)
+        }
+    }
+
+    @objc func selectPreviousTab() { selectAdjacentTab(delta: -1) }
+    @objc func selectNextTab() { selectAdjacentTab(delta: 1) }
+
+    private func selectAdjacentTab(delta: Int32) {
+        BrowserState.shared.closeSurfaces()
+        if BrowserState.current.isPrivate {
+            _ = browser_private_tab_select_adjacent(BrowserState.current.windowId, delta)
+        } else {
+            _ = browser_tab_select_adjacent(delta)
+        }
+    }
+
+    @objc func selectPreviousSpace() { selectAdjacentSpace(delta: -1) }
+    @objc func selectNextSpace() { selectAdjacentSpace(delta: 1) }
+
+    private func selectAdjacentSpace(delta: Int32) {
+        guard !BrowserState.current.isPrivate else { return }
+        BrowserState.shared.closeSurfaces()
+        _ = browser_space_select_adjacent(delta)
+    }
+
+    @objc func moveTabUp() { moveVisibleTab(delta: -1) }
+    @objc func moveTabDown() { moveVisibleTab(delta: 1) }
+
+    private func moveVisibleTab(delta: Int32) {
+        guard !BrowserState.current.isPrivate else { return }
+        _ = browser_tab_move_visible(delta)
     }
 
     /// Show/hide the History page (⌘Y) — a native content-area surface, not a
@@ -365,6 +441,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func clearOpenTabsMenu() { clearOpenTabs() }
+
+    @objc func importFromArc(_ sender: Any?) {
+        ArcImportFlow.run(from: sender)
+    }
 
     /// Close open tabs except the multi-selection (or the active tab when nothing
     /// is selected) — the sidebar Open → Clear control.
@@ -579,6 +659,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Whether the visible tab can move up (`-1`) or down (`+1`) in sidebar order.
+    private func canMoveVisibleTab(delta: Int32) -> Bool {
+        guard !BrowserState.current.isPrivate,
+            let active = BrowserState.shared.activeTabId
+        else { return false }
+        let order = BrowserState.shared.sidebarTabOrder
+        guard let from = order.firstIndex(of: active) else { return false }
+        let target = from + Int(delta)
+        return target >= 0 && target < order.count
+    }
+
     // Grey out Back/Forward when there's no history to move to; everything else
     // is always available.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -614,6 +705,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case #selector(setThemeDark):
             menuItem.state = browser_theme_preference() == 2 ? .on : .off
             return true
+        case #selector(toggleViewportURLBar):
+            menuItem.state = BrowserState.shared.isViewportURLBarEnabled ? .on : .off
+            return true
         case #selector(setAsDefaultBrowser):
             menuItem.state = DefaultBrowser.isDefault ? .on : .off
             return !DefaultBrowser.isDefault
@@ -626,6 +720,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ? Set(state.activeTabId.map { [$0] } ?? [])
                 : state.selectedTabIds
             return state.openTabs.contains { !keep.contains($0.id) }
+        case #selector(selectTabByNumber(_:)):
+            let order =
+                BrowserState.current.isPrivate
+                ? BrowserState.current.tabs.map(\.id)
+                : BrowserState.shared.sidebarTabOrder
+            let index = menuItem.tag
+            let idx = index == 9 ? order.count - 1 : index - 1
+            return idx >= 0 && idx < order.count
+        case #selector(selectPreviousTab), #selector(selectNextTab):
+            let count =
+                BrowserState.current.isPrivate
+                ? BrowserState.current.tabs.count
+                : BrowserState.shared.sidebarTabOrder.count
+            return count >= 2
+        case #selector(selectPreviousSpace), #selector(selectNextSpace):
+            return !BrowserState.current.isPrivate && BrowserState.shared.spaces.count >= 2
+        case #selector(moveTabUp):
+            return canMoveVisibleTab(delta: -1)
+        case #selector(moveTabDown):
+            return canMoveVisibleTab(delta: 1)
         default: return true
         }
     }

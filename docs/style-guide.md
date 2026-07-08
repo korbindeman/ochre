@@ -88,7 +88,8 @@ Switchable tab sets — each space owns its tabs (`mvp1.md`). The tab model is s
 The signature interaction (spec §9). A center overlay, Spotlight-positioned, that expands with the native glass morph.
 
 - **Invocation:** `Cmd/Ctrl+T` opens it for a new tab. (`Cmd/Ctrl+L` no longer opens the command bar — it edits the current tab's URL *inline in the sidebar chip*; see below and ADR-0014.) Text field auto-focused.
-- **Unified results:** open tabs, history, and URL/search suggestions in one list, ranked, from the core's `command_bar_query` (spec §5). Typing filters live; the top result is actionable with Enter.
+- **Unified results:** open tabs, history, URL/search suggestions, *and* **Commands** (user-defined browser automation, ADR-0034) in one list, ranked, from the core's `command_bar_query` (spec §5). Typing filters live; the top result is actionable with Enter. Navigation rows (URL, tab, history, search) outrank Commands unless the query clearly matches a Command name/keyword.
+- **⌘K command palette (Phase 3):** a separate, action-first entry point — built-in browser actions plus the same Command registry. No URL/search navigation; that stays in the ⌘T bar.
 - **Keyboard-driven end to end:** arrow keys move selection, Enter commits, Escape (or click-away) dismisses. A power user never touches the mouse here.
 - **Expand animation is the platform's morph** — Spotlight-style on macOS (`glassEffectID`), `ConnectedAnimation`/Composition on Windows. Budget hand-tuning; the feel is the point.
 - **The command bar itself is never a persistent bar.** It's transient — appears on invocation, dismisses on commit or escape. There is no always-visible *full-width* address bar (§3, §13). It is the **new-tab** surface only; editing the current tab's address is inline (below), not a command-bar mode.
@@ -179,13 +180,15 @@ One vocabulary across UI copy, code, and all platforms. Consistency in naming is
 | **tab** | page (for a tab) |
 | **space** | workspace, profile, group |
 | **sidebar** | tab bar, rail, panel |
-| **command bar** | omnibox, address bar, palette, launcher |
+| **command bar** | omnibox, address bar, launcher |
+| **Command** (a user-defined browser automation script) | macro, routine, user script, action |
+| **command palette** | the ⌘K action-only surface (not the command bar) |
 | **web view / content** | viewport, page area |
 | **Tweak** (a per-site customization) | boost, mod, site rule |
 | **Snip** (the element remover) | zap, element picker/zapper (in UI copy) |
 | **adblock** (code) / **the shield** (the affordance) · "block ads and trackers" (copy) | content blocker, Shields, ad guard |
 
-- **"Mod"** is reserved for browser-*chrome* theming (a later, separate feature); page-content customization is always a **Tweak**. **"Script"** is the JS tier of Tweaks; *userscript* is its technical name, not the user-facing umbrella.
+- **"Mod"** is reserved for browser-*chrome* theming (a later, separate feature); page-content customization is always a **Tweak**. **"Script"** is the JS tier of Tweaks; *userscript* is its technical name, not the user-facing umbrella. **"Command"** is browser-chrome automation (tab/process/path APIs, ADR-0034) — not a Tweak, not a page script.
 
 - Match this in identifiers and FFI names too (`switch_space`, `command_bar_query`, …) so code and UI speak the same language.
 

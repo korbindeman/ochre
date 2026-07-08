@@ -56,3 +56,4 @@ rejected and why. Read here before reopening a settled choice.
 | [0031](0031-private-windows-incognito.md) | Private windows — incognito `RequestContext` per window, ephemeral tabs, privacy gates, opt-in vault fill | Accepted |
 | [0032](0032-pinned-tabs-favorites.md) | Pinned tabs (favorites) — Arc-style resident icon strip, dismiss-not-destroy, distinct from saved | Accepted |
 | [0033](0033-runtime-tab-suspension.md) | Runtime tab suspension — reuse lazy hydration, grace-delayed background discard | Accepted |
+| [0034](0034-commands-browser-automation.md) | Commands — user-defined browser automation, unified in the command bar; ⌘K palette additive | Accepted |

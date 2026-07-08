@@ -12,6 +12,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
     let findBar = FindBarController()
 
     private(set) var window: NSWindow?
+    private var viewportClickMonitor: Any?
 
     init(windowId: Int32, isPrivate: Bool, state: BrowserState) {
         self.windowId = windowId
@@ -32,7 +33,9 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.title = title
-        window.isMovableByWindowBackground = true
+        // Tab reorder uses SwiftUI `onDrag` in the sidebar body; background drag
+        // competes with it at `mouseDown`. Top chrome drags via `WindowDragHandle`.
+        window.isMovableByWindowBackground = false
         window.delegate = self
         window.center()
 
@@ -46,6 +49,13 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
         setNativeButtonsHidden(true)
         window.makeKeyAndOrderFront(nil)
         activate()
+
+        viewportClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) {
+            [weak self] event in
+            guard let self, event.window === self.window else { return event }
+            self.rootView.dismissTransientFocusIfViewportClick(event)
+            return event
+        }
 
         if isPrivate {
             state.reloadStructure()
@@ -96,15 +106,18 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
         if isPrivate {
             return !browser_request_close_window(windowId)
         }
-        // Normal window: close only normal browsers; quit when nothing remains.
-        let initiated = browser_request_close_window(0)
-        if !initiated {
+        // Single-window app: closing the normal window quits gracefully (⌘Q path).
+        if !browser_request_close_all() {
             return true
         }
         return false
     }
 
     func windowWillClose(_ notification: Notification) {
+        if let viewportClickMonitor {
+            NSEvent.removeMonitor(viewportClickMonitor)
+            self.viewportClickMonitor = nil
+        }
         if isPrivate {
             browser_private_destroy_window(windowId)
             (NSApp.delegate as? AppDelegate)?.didClosePrivateWindow(windowId)
@@ -120,7 +133,9 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
     private func persistWindowSizeIfNormal() {
         guard !isPrivate, let window, !state.isFullscreen else { return }
         let size = window.contentRect(forFrameRect: window.frame).size
-        UserDefaults.standard.set(Double(size.width), forKey: BrowserProfile.defaultsKey("windowWidth"))
-        UserDefaults.standard.set(Double(size.height), forKey: BrowserProfile.defaultsKey("windowHeight"))
+        UserDefaults.standard.set(
+            Double(size.width), forKey: BrowserProfile.defaultsKey("windowWidth"))
+        UserDefaults.standard.set(
+            Double(size.height), forKey: BrowserProfile.defaultsKey("windowHeight"))
     }
 }

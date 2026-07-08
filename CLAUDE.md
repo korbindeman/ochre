@@ -58,6 +58,19 @@ All via the `justfile` (delegates to `cargo` / `xcodebuild`):
 | macOS SwiftUI app (build only) | `just gen-macos` then `just build-macos` |
 | Latest local crash payload | `just crash-latest` (path) or `just crash-latest --print` (contents) |
 
+### When to add a `just` recipe
+
+The `justfile` is not a catalog of every useful command. **Agents work well with shell** — prefer documenting workflows as plain commands and file paths (see `docs/crashes/README.md`, crash diagnosis in Gotchas below) unless a recipe earns its place.
+
+Add a `just` recipe only when it is:
+
+1. **Human-facing** — a stable entry point humans run by muscle memory (`just run`, `just verify`, `just dogfood`). Discoverability in `just --list` matters more than saving agents a few keystrokes.
+2. **Not reliably reproducible in bare shell** — multi-step orchestration agents get wrong often: work-lease gating (`with-work-gate.sh`), CEF bundle assembly before launch, XcodeGen + xcodebuild wiring, throwaway `$HOME` for selftests. The recipe encodes ordering and env the agent would otherwise have to re-derive from docs every time.
+
+Do **not** add `just` wrappers for: reading docs, listing/searching git-committed files, scaffolding markdown from a template, or any one-liner an agent can run directly (`ls`, `cat`, `rg`, `cp`). Those belong in `CLAUDE.md` or the relevant `docs/` README as described shell.
+
+`just crash-latest` stays because it picks debug vs release support-dir paths — easy to get wrong by hand. Crash **post-mortems** (`docs/crashes/`) intentionally have no recipes; agents copy the template and `rg` the directory.
+
 `just run` builds and launches the native app for the current platform (macOS: the SwiftUI `Browser.app`, embedded CEF via FFI). `just run-native-shell` is a debug-only bisection tool: a pure-Rust AppKit `NSWindow` hosting the embedded browser via `crates/core/src/native_shell.rs` (the same `embed.rs` hosting path the app uses, minus SwiftUI + FFI) — use it to tell whether a blank page / CEF issue lives in the engine or the Swift layer. The standalone `browser` binary in `target/bundle/browser.app` also accepts `--url=https://example.com`, `--use-alloy-style` (ALLOY runtime style), `--use-native` (native popup), and `--native-shell`; run it directly for the CEF-Views path (no dedicated recipe).
 
 ## Critical: CEF must run from a `.app` bundle
@@ -106,7 +119,8 @@ XcodeGen-based: **`project.yml` is the source of truth** (plaintext, agent-edite
 
 ## Gotchas & conventions
 
-- **Diagnosing crashes — read the local payload first.** Every process installs `crates/core/src/crash_report.rs` at startup (Rust panics, fatal signals, uncaught Swift `NSException`). On crash it writes structured JSON to `~/Library/Application Support/Browser Dev/crashes/latest.json` (debug; release uses `Browser/`) and tees stderr to `diagnostics.log` in the same folder. When the user asks "why did it crash?", run `just crash-latest --print` and read that file before guessing — it carries the backtrace, process args, tab/space snapshot, and recent log lines. Timestamped copies live alongside `latest.json` in `crashes/`. Gaps: SIGKILL / force-quit writes nothing; deep Chromium/CEF faults may only appear in `~/Library/Logs/DiagnosticReports/*.ips` (check there if `latest.json` is missing or stale). Opt-in remote Crashpad upload is a later milestone (roadmap); this is dev-first local dumps.
+- **Diagnosing crashes — local dump first, post-mortem second.** (1) Search `docs/crashes/` for a matching `CRASH-NNNN` (`ls docs/crashes/*.md`, `rg` the stack/symptom). (2) `just crash-latest --print` — JSON from `crates/core/src/crash_report.rs` at `~/Library/Application Support/Browser Dev/crashes/latest.json` (release: `Browser/`). (3) If no payload: `ls -t ~/Library/Logs/DiagnosticReports/Browser-*.ips | head -1` (stack overflows and SIGKILL never write JSON). **When a crash is fixed, write a post-mortem in the same change** — copy `docs/crashes/0000-template.md` to the next `NNNN-kebab-title.md`, fill it in, add a row to `docs/crashes/README.md`, link standing lessons here. See **CRASH-0001** for the canonical example.
+- **SwiftUI hit-testing — no full-size overlays on gesture trees** (CRASH-0001). A full-bleed `.overlay` on a `ScrollView` / tab list that already stacks `contentShape` + `onTapGesture` + `onDrag`/`onDrop` can recurse infinitely in `PlatformHitTestingManager` and blow the stack. Sidebar window-drag suppression: `RootView.installSidebarTabDragWindowGuard` (AppKit), not SwiftUI overlays. Prefer `.contentShape(.rect)` on dense lists; `.allowsHitTesting(false)` on hidden drag indicators.
 - **Verifying rendering from an agent session — establish observability BEFORE diagnosing.** Chromium suspends frame production for occluded windows, and it stays suspended even when `NSWindow.occlusionState` reads "visible". An app launched from a background shell lands behind the user's windows, so screenshots show a blank web area even though the page loaded fine (`on_load_end status=200`, title binds). This is indistinguishable from a real rendering bug in a screenshot — an entire debugging session was once wasted chasing it. Tell-tale: gray traffic lights = window inactive = screenshot proves nothing. The reliable protocol (no focus stealing, no user interruption): lldb `[window setLevel:5]` → `screencapture -x -l<windowID>` → `setLevel:0`. Never conclude "CEF isn't rendering" — and never start "fixing" it — from a capture of a window that wasn't verifiably on top.
 - **Never let SwiftUI position or restructure around the CEF platform view.** SwiftUI structural churn (`if`/transitions) and frame animations around the CEF `NSViewRepresentable` stall Chromium's frame pipeline or misplace the view outright. AppKit owns all top-level frames (`apps/macos/Sources/RootView.swift`); SwiftUI renders content only inside hosted `NSHostingView` islands.
 

@@ -11,6 +11,7 @@ struct SpaceContents: View {
     /// Namespace for the sliding active-tab highlight, shared across saved and
     /// open rows so the selection can animate between any of them.
     @Namespace private var selection
+    @State private var sidebarDropFrames: [SidebarDropFrame] = []
 
     var body: some View {
         let folders = state.activeFolders
@@ -19,9 +20,6 @@ struct SpaceContents: View {
         let hasSaved = !folders.isEmpty || !loose.isEmpty
 
         VStack(alignment: .leading, spacing: 4) {
-            if isDraggingFavorite {
-                favoriteOutboundDropZone(open: open, loose: loose, folders: folders)
-            }
             ForEach(folders) { folder in
                 FolderRow(folder: folder, drag: drag, selection: selection)
             }
@@ -30,7 +28,13 @@ struct SpaceContents: View {
                 Divider()
                     .padding(.vertical, 4)
             }
+            if loose.isEmpty, drag.slot == .endOf(.looseSaved) {
+                TabDropPlaceholder()
+            }
             NewTabRow(looseEmpty: loose.isEmpty, firstOpen: open.first?.id, drag: drag)
+            if open.isEmpty, drag.slot == .endOf(.open) {
+                TabDropPlaceholder()
+            }
             if !open.isEmpty {
                 TabSectionHeader(
                     title: "Open",
@@ -40,6 +44,25 @@ struct SpaceContents: View {
                 )
             }
             sectionRows(open, section: .open)
+            // Arc-style: the unfilled scroll viewport below the last row drags the
+            // window; tab rows above keep their own `onDrag` reorder affordance.
+            Spacer(minLength: 0)
+                .frame(maxWidth: .infinity)
+                .overlay {
+                    if !drag.isDragging {
+                        SidebarEmptyDragArea {
+                            URLBarModel.shared.endEditing()
+                            BrowserState.shared.clearTabSelection()
+                        }
+                    }
+                }
+        }
+        .coordinateSpace(.named(SidebarDropSpace.name))
+        .onPreferenceChange(SidebarDropFramesKey.self) { sidebarDropFrames = $0 }
+        .overlay {
+            if isDraggingFavorite {
+                FavoriteSidebarDropLayer(drag: drag, frames: sidebarDropFrames)
+            }
         }
     }
 
@@ -48,43 +71,23 @@ struct SpaceContents: View {
         return state.tabs.first { $0.id == id }?.favorite ?? false
     }
 
-    /// Drop target at the top of the tree while a pinned tab is mid-drag — unpin
-    /// into the first sidebar section or the open list when it is empty.
-    @ViewBuilder
-    private func favoriteOutboundDropZone(
-        open: [TabItem],
-        loose: [TabItem],
-        folders: [FolderItem]
-    ) -> some View {
-        let anchor =
-            loose.first?.id
-            ?? folders.compactMap { state.tabs(inFolder: $0.id).first?.id }.first
-            ?? open.first?.id
-        let slot: DropSlot = anchor.map { .before($0) } ?? .endOf(.open)
-
-        Color.clear
-            .frame(height: 8)
-            .contentShape(.rect)
-            .overlay(alignment: .top) {
-                InsertionIndicator().opacity(drag.slot == slot ? 1 : 0)
-            }
-            .onDrop(
-                of: [.text],
-                delegate: FavoriteOutboundDropDelegate(slot: slot, drag: drag)
-            )
-    }
-
     /// A section's tabs in order, each wired for drag reordering with a pointer
     /// to its next sibling (nil when last) so a below-the-midpoint drop knows
     /// whether to insert before it or append to the section.
     @ViewBuilder
     func sectionRows(_ tabs: [TabItem], section: TabSection) -> some View {
         ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
+            if drag.slot == .before(tab.id) {
+                TabDropPlaceholder()
+            }
             tabRow(
                 tab,
                 section: section,
                 next: index + 1 < tabs.count ? tabs[index + 1].id : nil
             )
+        }
+        if drag.slot == .endOf(section) {
+            TabDropPlaceholder()
         }
     }
 
@@ -102,6 +105,7 @@ struct SpaceContents: View {
         )
         .contextMenu { TabMenu(tab: tab) }
         .tabRowDrag(tab: tab, section: section, next: next, drag: drag)
+        .reportSidebarDropFrame(.tab(tab.id))
         .transition(SidebarSelection.rowTransition)
     }
 }
@@ -115,37 +119,37 @@ private struct NewTabRow: View {
     @ObservedObject var drag: TabDragModel
 
     @State private var height: CGFloat = 36
+    @State private var hovering = false
 
     var body: some View {
-        Button {
-            (NSApp.delegate as? AppDelegate)?.toggleCommandBar()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "plus")
-                    .frame(width: 16, height: 16)
-                Text("New Tab")
-                Spacer(minLength: 0)
-                Text("⌘T")
-                    .foregroundStyle(.tertiary)
-            }
-            .font(.system(size: 13, weight: .medium))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
+        HStack(spacing: 8) {
+            Image(systemName: "plus")
+                .frame(width: 16, height: 16)
+            Text("New Tab")
+            Spacer(minLength: 0)
+            Text("⌘T")
+                .foregroundStyle(.tertiary)
         }
-        .buttonStyle(IconButtonStyle(cornerRadius: 8, emphasizesLabel: false))
+        .font(.system(size: 13, weight: .medium))
         .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(.quaternary)
+                .opacity(hovering ? 0.45 : 0)
+                .hoverFade(hovering)
+        }
+        .contentShape(.rect)
+        .onTapGesture { (NSApp.delegate as? AppDelegate)?.toggleCommandBar() }
+        .onHover { hovering = $0 }
         .background(
             GeometryReader { geo in
                 Color.clear.preference(key: RowHeightKey.self, value: geo.size.height)
             }
         )
         .onPreferenceChange(RowHeightKey.self) { height = $0 }
-        .overlay(alignment: .top) {
-            InsertionIndicator().opacity(looseEmpty && drag.slot == .endOf(.looseSaved) ? 1 : 0)
-        }
-        .overlay(alignment: .bottom) {
-            InsertionIndicator().opacity(firstOpen == nil && drag.slot == .endOf(.open) ? 1 : 0)
-        }
+        .reportSidebarDropFrame(.newTab(looseEmpty: looseEmpty, firstOpen: firstOpen))
         .onDrop(
             of: [.text],
             delegate: BoundaryDropDelegate(
@@ -279,7 +283,7 @@ struct FolderRow: View {
                     .fill(.tint)
                     .opacity(isDropTarget ? 0.22 : 0)
             )
-            .contentShape(.rect(cornerRadius: 8))
+            .contentShape(.rect)
             .onTapGesture {
                 withAnimation(.easeOut(duration: 0.15)) { collapsed.toggle() }
             }
@@ -289,10 +293,15 @@ struct FolderRow: View {
                 Divider()
                 Button("Delete Folder") { app?.deleteFolder(folder.id) }
             }
+            .reportSidebarDropFrame(.folder(folder.id))
             .onDrop(of: [.text], delegate: FolderDropDelegate(folderId: folder.id, drag: drag))
 
             if !collapsed {
                 ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
+                    if drag.slot == .before(tab.id) {
+                        TabDropPlaceholder()
+                            .padding(.leading, 16)
+                    }
                     TabRow(
                         tab: tab,
                         isActive: tab.id == state.activeTabId && !state.isSurfaceOpen,
@@ -309,7 +318,12 @@ struct FolderRow: View {
                         drag: drag
                     )
                     .padding(.leading, 16)
+                    .reportSidebarDropFrame(.tab(tab.id))
                     .transition(SidebarSelection.rowTransition)
+                }
+                if drag.slot == .endOf(.folder(folder.id)) {
+                    TabDropPlaceholder()
+                        .padding(.leading, 16)
                 }
             }
         }

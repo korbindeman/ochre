@@ -69,9 +69,10 @@ Single Cargo workspace. Modules:
 | `tabs` | Tab + space + session model, ordering, persistence | — |
 | `adblock` | Filter-list load/update, network + cosmetic filtering on the CEF request path | `adblock` (brave/adblock-rust) |
 | `tweaks` | Per-site page customization (Snip / Restyle / Script): rule store, URL scoping, import/export; injects via the engine's cosmetic path (§20) | — |
+| `commands` | User-defined browser automation (Commands, ADR-0034): registry, TS runtime, `CommandContext` API, permissions; surfaces in ⌘T bar + ⌘K palette | embedded JS runtime (TBD) |
 | `vault` | Bitwarden-compatible client + crypto, autofill lookup | rbw-derived logic / `rwarden` (see §10) |
 | `sync` | Tab/space/settings sync client (separate service, §12) | `reqwest`, crypto crates |
-| `automation` | Thin wrapper over CEF's CDP endpoint for user-facing automations | CDP over remote-debugging port |
+| `cdp` | Loopback consent-gated CDP port for dev/agent automation (spec §13) | CEF `--remote-debugging-port` |
 | `ffi` | The exported API surface for the native UIs | `uniffi` / `swift-bridge` |
 
 **Engine notes**
@@ -279,6 +280,7 @@ Lives in `crates/agent`, over the same core.
 - **Virtual folder:** a sandboxed working dir the agent reads/writes; downloads route here, artifacts for the user are produced here.
 - **Permission model:** one consent surface, escalating scopes — virtual folder → named paths → shell exec → full system. The in-sandbox vs. real-computer boundary is a hard, auditable line; that boundary is the entire safety story for full-computer access.
 - **Tweaks as an agent surface:** the per-site content-modification store (§20) is declarative and inspectable, so the agent can read, propose, and apply *Tweaks* — e.g. author a Snip to hide a cookie banner on request. Human-written userscripts and agent-authored Tweaks are the *same object* through the same store; agent-authored Script Tweaks pass the same consent gate as any other (§20).
+- **Commands as an agent surface (Phase 4):** the Commands registry (§21, ADR-0034) is the chrome-automation counterpart — the agent can read, propose, create, and edit Commands in-app (natural-language → TypeScript, iterate in the settings editor). Agent-authored Commands are the same object as hand-written ones and pass the same consent gate; execution stays human-initiated (command bar / palette / bound shortcut), not autonomous agent-mode.
 
 ---
 
@@ -315,3 +317,30 @@ Snip covers the ~90% case (kill a banner, a sticky header, a paywall veil) with 
 - **Isolation is not a sandbox against the user's own session.** The isolated world stops the *page* from clobbering / detecting the script; it is not a security boundary against the script itself. The consent gate, not isolation, is the real control. Per-site enable / disable, a global kill switch, and an on-page indicator when any Tweak is active are all required.
 
 **FFI surface.** Coarse-grained like the rest (§5): `tweaks_for_host(host)`, `snip_begin` / `snip_commit(selector)`, `tweak_upsert`, `tweak_toggle`, `tweak_import` / `tweak_export`, plus a `TweakActivated` event so the UI can show the active-Tweak indicator. Names follow the shared vocabulary (`tweak`, `snip`) per the UI style-guide terminology contract.
+
+---
+
+## 21. Browser automation — Commands
+
+**What it is.** User-defined browser-chrome automation — the Glide-class answer to "hack your browser like
+your editor." A **Command** is a saved TypeScript module that runs against a typed `CommandContext` API
+(tabs, spaces, navigate, process spawn, paths, clipboard, notify). Distinct from **Tweaks** (§20, page
+injection) and the external **CDP** port (§13, dev/agent tooling). ADR-0034.
+
+**Invocation.** Primary: the **⌘T command bar** — Commands rank alongside URLs, open tabs, history, and
+search in one unified list. Secondary (Phase 3): a **⌘K command palette** biased toward actions (built-ins +
+the same registry; no URL/search rows). Settings: a **Commands** manager section (list, editor, cookbook,
+inline test).
+
+**Core module (`commands`).** Registry, per-file store (`commands/`), embedded TS runtime, permission checks
+(`process.exec` tier aligned with §19). Agent-authored Commands are the same object as hand-written ones.
+
+**Agentic authoring (Phase 4).** Future AI feature: in-app create/edit of Commands via the agent layer (§19) —
+describe a workflow, review generated TypeScript in the manager, enable with the same gates. V1 ships manual
+editing + stubs/cookbook (P3-15/P3-16); agentic authoring is optional and later.
+
+**Safety.** User-owned config; code shown before enable, re-prompt on change, global kill switch. Not an
+extension sandbox — the user is responsible, with explicit gates on the dangerous primitives.
+
+**FFI surface (illustrative):** `commands_query`, `command_run`, `command_upsert`, `command_toggle`,
+`command_import` / `command_export`.

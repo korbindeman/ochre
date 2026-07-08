@@ -26,6 +26,8 @@ struct TabItem: Identifiable, Equatable {
     var isHydrated: Bool = true
     /// Bumped when the engine captures a fresh favicon, to retrigger the load.
     var faviconVersion: Int = 0
+    /// Sampled page theme/background color for viewport URL-bar tinting.
+    var themeColor: String = ""
 
     var host: String { URLComponents(string: url)?.host ?? "" }
 
@@ -77,6 +79,12 @@ final class BrowserState: ObservableObject {
         }
     }
 
+    /// Put the normal window state back in the registry after an unexpected host
+    /// window teardown (dock-click reopen).
+    static func reregisterNormal() {
+        registry[0] = normal
+    }
+
     let windowId: Int32
     let isPrivate: Bool
 
@@ -99,6 +107,16 @@ final class BrowserState: ObservableObject {
     @Published var isSidebarRevealed = false
 
     private static let sidebarPinnedKey = BrowserProfile.defaultsKey("sidebarPinned")
+    /// When enabled the address bar floats at the top of the page viewport
+    /// (Safari-style) instead of living in the sidebar.
+    @Published var isViewportURLBarEnabled =
+        UserDefaults.standard.object(forKey: BrowserState.viewportURLBarKey) as? Bool ?? false
+    /// When enabled, tint the sidebar to the active tab's sampled page color.
+    @Published var isSidebarPageTintEnabled =
+        UserDefaults.standard.object(forKey: BrowserState.sidebarPageTintKey) as? Bool ?? false
+
+    private static let viewportURLBarKey = BrowserProfile.defaultsKey("viewportURLBar")
+    private static let sidebarPageTintKey = BrowserProfile.defaultsKey("sidebarPageTint")
 
     init(windowId: Int32, isPrivate: Bool) {
         self.windowId = windowId
@@ -201,9 +219,13 @@ final class BrowserState: ObservableObject {
         case 0: patch(id) { $0.title = payload ?? "" }  // TabTitleChanged
         case 1: patch(id) { $0.url = payload ?? "" }  // TabUrlChanged
         case 2:  // TabLoadStarted
-            patch(id) { $0.isLoading = true }
+            patch(id) {
+                $0.isLoading = true
+                $0.themeColor = ""
+            }
             refreshAdblock()  // core reset the count at nav start → shows 0
             refreshVaultMatches()  // the host may have changed → re-match logins
+        case 9: patch(id) { $0.themeColor = payload ?? "" }  // TabThemeColorChanged
         case 3:  // TabLoadEnded
             patch(id) { $0.isLoading = false }
             refreshAdblock()  // final blocked count for the page
@@ -231,6 +253,7 @@ final class BrowserState: ObservableObject {
     private func patch(_ id: Int32, _ mutate: (inout TabItem) -> Void) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         mutate(&tabs[index])
+        tabs = tabs
     }
 
     /// Rebuild the tree from the core's JSON snapshot, preserving per-tab UI state
@@ -419,6 +442,23 @@ final class BrowserState: ObservableObject {
         isSidebarPinned.toggle()
         UserDefaults.standard.set(isSidebarPinned, forKey: Self.sidebarPinnedKey)
         isSidebarRevealed = false
+    }
+
+    func setViewportURLBarEnabled(_ enabled: Bool) {
+        guard enabled != isViewportURLBarEnabled else { return }
+        URLBarModel.shared.endEditing()
+        isViewportURLBarEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.viewportURLBarKey)
+    }
+
+    func toggleViewportURLBar() {
+        setViewportURLBarEnabled(!isViewportURLBarEnabled)
+    }
+
+    func setSidebarPageTintEnabled(_ enabled: Bool) {
+        guard enabled != isSidebarPageTintEnabled else { return }
+        isSidebarPageTintEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.sidebarPageTintKey)
     }
 
     // ─── App-UI surfaces (History / Passwords) ─────────────────────────────

@@ -16,21 +16,42 @@ import SwiftUI
 
 // ─── The button ────────────────────────────────────────────────────────────────
 
+enum VaultKeyButtonPlacement {
+    /// Nested inside the sidebar address chip (`IconButtonStyle`).
+    case sidebar
+    /// Flanking the in-page address pill as its own Liquid Glass control.
+    case viewport
+}
+
 struct VaultKeyButton: View {
     let host: String
     @Binding var isPresented: Bool
+    var placement: VaultKeyButtonPlacement = .sidebar
     @ObservedObject private var state = BrowserState.shared
 
     /// Filled + accent-tinted when this site has saved logins (the valuable
     /// case); a plain outline otherwise (locked, or no match — reachable on hover).
     private var hasMatches: Bool { !state.vaultLocked && !state.vaultMatches.isEmpty }
 
-    var body: some View {
-        Button { isPresented.toggle() } label: {
+    @ViewBuilder var body: some View {
+        switch placement {
+        case .sidebar:
+            sidebarBody
+        case .viewport:
+            viewportBody
+        }
+    }
+
+    private var sidebarBody: some View {
+        Button {
+            isPresented.toggle()
+        } label: {
             Image(systemName: hasMatches ? "key.horizontal.fill" : "key.horizontal")
                 .font(.system(size: 12, weight: .semibold))
                 .contentTransition(.symbolEffect(.replace))
-                .foregroundStyle(hasMatches ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+                .foregroundStyle(
+                    hasMatches ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary)
+                )
                 .frame(height: 18)
                 .padding(.horizontal, 2)
         }
@@ -39,6 +60,27 @@ struct VaultKeyButton: View {
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             VaultQuickPopover(host: host, isPresented: $isPresented)
         }
+    }
+
+    /// `onTapGesture` + `contentShape` — same hit-test path as the in-page address
+    /// pill. A `Button` does not register under `PassthroughHostingView`.
+    private var viewportBody: some View {
+        Image(systemName: hasMatches ? "key.horizontal.fill" : "key.horizontal")
+            .font(.system(size: 13, weight: .semibold))
+            .contentTransition(.symbolEffect(.replace))
+            .foregroundStyle(
+                hasMatches ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary)
+            )
+            .frame(
+                width: ViewportURLBarMetrics.pillHeight, height: ViewportURLBarMetrics.pillHeight
+            )
+            .background { ViewportGlassCapsule() }
+            .contentShape(Capsule())
+            .onTapGesture { isPresented.toggle() }
+            .help(vaultHelp)
+            .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+                VaultQuickPopover(host: host, isPresented: $isPresented)
+            }
     }
 
     private var vaultHelp: String {
@@ -89,18 +131,7 @@ private struct VaultQuickPopover: View {
     }
 
     private var locked: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Your vault is locked.", systemImage: "lock.fill")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Button {
-                BrowserState.shared.openVault()
-                isPresented = false
-            } label: {
-                Text("Unlock…").frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-        }
+        VaultQuickUnlock(isPresented: $isPresented)
     }
 
     private var empty: some View {
@@ -117,6 +148,76 @@ private struct VaultQuickPopover: View {
             }
             .buttonStyle(.bordered)
         }
+    }
+}
+
+// ─── Inline unlock (vault locked) ───────────────────────────────────────────
+
+/// Master-password unlock in the popover — same offline path as the Passwords
+/// page, without leaving the tab.
+private struct VaultQuickUnlock: View {
+    @Binding var isPresented: Bool
+    @ObservedObject private var model = VaultModel.shared
+    @ObservedObject private var state = BrowserState.shared
+    @State private var password = ""
+    @FocusState private var passwordFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Your vault is locked.", systemImage: "lock.fill")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            SecureField("Master password", text: $password)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .glassEffect(.regular, in: .capsule)
+                .focused($passwordFocused)
+                .onSubmit { unlock() }
+
+            if let error = model.actionError {
+                Text(error)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Button(action: unlock) {
+                if model.busy {
+                    ProgressView().controlSize(.small).frame(maxWidth: .infinity)
+                } else {
+                    Text("Unlock").frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(password.isEmpty || model.busy)
+
+            Button {
+                BrowserState.shared.openVault()
+                isPresented = false
+            } label: {
+                Text("Open Passwords")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+        }
+        .onAppear { focusPassword() }
+        .onChange(of: isPresented) { _, open in
+            if open { focusPassword() } else { password = "" }
+        }
+        .onChange(of: state.vaultLocked) { _, locked in
+            if !locked { password = "" }
+        }
+    }
+
+    private func unlock() {
+        model.unlock(password: password)
+    }
+
+    private func focusPassword() {
+        DispatchQueue.main.async { passwordFocused = true }
     }
 }
 
@@ -144,15 +245,19 @@ private struct VaultQuickRow: View {
             }
             Spacer(minLength: 8)
             if login.username?.isEmpty == false {
-                iconButton(copiedUser ? "checkmark" : "person", tint: copiedUser ? .green : .secondary,
-                           help: "Copy username") {
+                iconButton(
+                    copiedUser ? "checkmark" : "person", tint: copiedUser ? .green : .secondary,
+                    help: "Copy username"
+                ) {
                     copy(login.username ?? "")
                     copiedUser = true
                     resetFlags()
                 }
             }
-            iconButton(copiedPassword ? "checkmark" : "key", tint: copiedPassword ? .green : .secondary,
-                       help: "Copy password") {
+            iconButton(
+                copiedPassword ? "checkmark" : "key", tint: copiedPassword ? .green : .secondary,
+                help: "Copy password"
+            ) {
                 copyPassword()
             }
         }
@@ -172,8 +277,11 @@ private struct VaultQuickRow: View {
         .help("Fill this login")
     }
 
-    private func iconButton(_ symbol: String, tint: Color, help: String, _ action: @escaping () -> Void)
-        -> some View {
+    private func iconButton(
+        _ symbol: String, tint: Color, help: String, _ action: @escaping () -> Void
+    )
+        -> some View
+    {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 12))

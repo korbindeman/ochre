@@ -73,6 +73,9 @@ pub(crate) enum Event {
     /// A background tab's CEF browser was discarded; the host detaches its view
     /// (ADR-0033). Re-show hydrates via `restore_tab`.
     TabSuspended = 8,
+    /// Sampled page theme/background color for viewport chrome tinting.
+    /// Payload is a CSS color string (`#rrggbb`, `rgb(...)`, …) or empty.
+    TabThemeColorChanged = 9,
 }
 
 /// Host callback, invoked on the main (UI) thread. `window_id` is `0` for the
@@ -112,6 +115,9 @@ struct Tab {
     /// host can disable the back/forward controls (streamed, not polled).
     can_go_back: bool,
     can_go_forward: bool,
+    /// Unix millis when the tab was last shown. `0` = never shown (first to
+    /// suspend when over the warm-tab budget). Runtime-only — not persisted.
+    last_shown_at: i64,
 }
 
 /// A tab's state captured the moment it is closed, enough to faithfully reopen
@@ -223,6 +229,36 @@ impl TabStore {
             .iter()
             .find(|t| t.space == space && (!t.favorite || !t.dismissed))
             .map(|t| t.id)
+    }
+
+    /// Sidebar-selectable tab order for `space` — mirrors the host's sidebar
+    /// layout (favorites → each folder's tabs → loose saved → open). Skips
+    /// dismissed favorites. Drives keyboard shortcuts (style §9).
+    fn sidebar_tab_order(&self, space: SpaceId) -> Vec<TabId> {
+        let mut ids = Vec::new();
+        for t in &self.tabs {
+            if t.space == space && t.favorite && !t.dismissed {
+                ids.push(t.id);
+            }
+        }
+        for folder in self.folders.iter().filter(|f| f.space == space) {
+            for t in &self.tabs {
+                if t.folder == Some(folder.id) {
+                    ids.push(t.id);
+                }
+            }
+        }
+        for t in &self.tabs {
+            if t.space == space && t.pinned && !t.favorite && t.folder.is_none() {
+                ids.push(t.id);
+            }
+        }
+        for t in &self.tabs {
+            if t.space == space && !t.pinned && !t.favorite {
+                ids.push(t.id);
+            }
+        }
+        ids
     }
 
     /// Hide a favorite from the strip without tearing down its browser.
@@ -349,6 +385,7 @@ impl TabStore {
                 loading: false,
                 can_go_back: false,
                 can_go_forward: false,
+                last_shown_at: 0,
             },
         );
         self.active_space = space;
@@ -488,6 +525,7 @@ impl TabStore {
                     loading: false,
                     can_go_back: false,
                     can_go_forward: false,
+                    last_shown_at: 0,
                 }
             })
             .collect();
@@ -579,6 +617,24 @@ pub fn init(session_path: &str) {
                 .unwrap_or_else(TabStore::default_store),
         );
     }
+}
+
+/// Serialize tests that mutate the module-global tab store (import, persist, …).
+#[cfg(test)]
+pub(crate) fn with_global_store_test_lock<R>(f: impl FnOnce() -> R) -> R {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let result = f();
+    drop(guard);
+    result
+}
+
+/// Replace the global store with a fresh default (test-only).
+#[cfg(test)]
+pub(crate) fn test_reset_store(session_path: &str) {
+    SHUTTING_DOWN.store(false, Ordering::Relaxed);
+    let _ = SESSION_PATH.get_or_init(|| session_path.to_string());
+    *STORE.lock().expect("tab store lock poisoned") = Some(TabStore::default_store());
 }
 
 /// Mark that app quit has begun. From here on the store stops persisting:
@@ -729,6 +785,7 @@ pub fn register_tab(browser: Browser, url: &str) -> TabId {
             loading: false,
             can_go_back: false,
             can_go_forward: false,
+            last_shown_at: unix_ms_now(),
         });
         store.set_space_active(space, Some(id));
         id
@@ -755,17 +812,50 @@ pub fn is_favorite(id: TabId) -> bool {
 
 /// Hydrated, non-favorite tabs in `space` that are not `keep_visible`.
 pub fn hydrated_background_in_space(space: SpaceId, keep_visible: Option<TabId>) -> Vec<TabId> {
+    hydrated_background_candidates(Some(space), keep_visible)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// Hydrated, non-favorite background tabs with their last-shown timestamps.
+/// `space` filters to one space; `None` considers every space.
+pub fn hydrated_background_candidates(
+    space: Option<SpaceId>,
+    keep_visible: Option<TabId>,
+) -> Vec<(TabId, i64)> {
     with_store(|store| {
         store
             .tabs
             .iter()
             .filter(|t| {
-                t.space == space && t.browser.is_some() && !t.favorite && keep_visible != Some(t.id)
+                t.browser.is_some()
+                    && !t.favorite
+                    && keep_visible != Some(t.id)
+                    && space.is_none_or(|s| t.space == s)
             })
-            .map(|t| t.id)
+            .map(|t| (t.id, t.last_shown_at))
             .collect()
     })
     .unwrap_or_default()
+}
+
+/// Record that `id` was just shown (updates recency for suspension policy).
+pub fn note_tab_shown(id: TabId) {
+    let now = unix_ms_now();
+    with_store_mut(|store| {
+        if let Some(tab) = store.tabs.iter_mut().find(|t| t.id == id) {
+            tab.last_shown_at = now;
+        }
+    });
+}
+
+fn unix_ms_now() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Discard a background tab's CEF browser, keeping url/title in the model
@@ -825,6 +915,132 @@ pub fn select_tab(id: TabId) {
             store.set_space_active(space, Some(id));
         }
     });
+}
+
+/// Select a tab by its 1-based sidebar position (`1`…`8`, or `9` = last) in the
+/// active space. Returns whether a tab was selected.
+pub fn select_tab_by_index(index: u8) -> bool {
+    structural(|store| {
+        let space = store.active_space;
+        let order = store.sidebar_tab_order(space);
+        if order.is_empty() {
+            return false;
+        }
+        let idx = if index == 9 {
+            order.len() - 1
+        } else if (1..=8).contains(&index) {
+            index as usize - 1
+        } else {
+            return false;
+        };
+        if idx >= order.len() {
+            return false;
+        }
+        let id = order[idx];
+        store.active_space = space;
+        store.set_space_active(space, Some(id));
+        true
+    })
+    .unwrap_or(false)
+}
+
+/// Select the next (`delta = 1`) or previous (`delta = -1`) tab in the active
+/// space's sidebar order, wrapping at the ends. Returns whether a tab was selected.
+pub fn select_adjacent_tab(delta: i32) -> bool {
+    if !matches!(delta, -1 | 1) {
+        return false;
+    }
+    structural(|store| {
+        let space = store.active_space;
+        let order = store.sidebar_tab_order(space);
+        if order.is_empty() {
+            return false;
+        }
+        let next = match store
+            .visible_tab()
+            .and_then(|id| order.iter().position(|&t| t == id))
+        {
+            None => order[0],
+            Some(pos) => {
+                if order.len() < 2 {
+                    return false;
+                }
+                let len = order.len() as i32;
+                let next_pos = (pos as i32 + delta).rem_euclid(len) as usize;
+                order[next_pos]
+            }
+        };
+        store.active_space = space;
+        store.set_space_active(space, Some(next));
+        true
+    })
+    .unwrap_or(false)
+}
+
+/// Select the next (`delta = 1`) or previous (`delta = -1`) space, wrapping at the
+/// ends and restoring each space's remembered active tab.
+pub fn select_adjacent_space(delta: i32) -> bool {
+    if !matches!(delta, -1 | 1) {
+        return false;
+    }
+    structural(|store| {
+        if store.spaces.len() < 2 {
+            return false;
+        }
+        let Some(pos) = store.spaces.iter().position(|s| s.id == store.active_space) else {
+            return false;
+        };
+        let len = store.spaces.len() as i32;
+        let next_pos = (pos as i32 + delta).rem_euclid(len) as usize;
+        let id = store.spaces[next_pos].id;
+        store.active_space = id;
+        let remembered = store
+            .spaces
+            .iter()
+            .find(|s| s.id == id)
+            .and_then(|s| s.active)
+            .filter(|tid| store.tabs.iter().any(|t| t.id == *tid && t.space == id));
+        let active = remembered.or_else(|| store.first_tab_in(id));
+        store.set_space_active(id, active);
+        true
+    })
+    .unwrap_or(false)
+}
+
+/// Move the visible tab up (`delta = -1`) or down (`delta = 1`) in the active
+/// space's sidebar order. Returns whether the tab moved.
+pub fn move_visible_tab(delta: i32) -> bool {
+    if !matches!(delta, -1 | 1) {
+        return false;
+    }
+    structural(|store| {
+        let space = store.active_space;
+        let order = store.sidebar_tab_order(space);
+        let Some(id) = store.visible_tab() else {
+            return false;
+        };
+        let Some(from_idx) = order.iter().position(|&t| t == id) else {
+            return false;
+        };
+        let target_idx = from_idx as i32 + delta;
+        if !(0..order.len() as i32).contains(&target_idx) {
+            return false;
+        }
+        let Some(tab) = store.tab(id) else {
+            return false;
+        };
+        let favorite = tab.favorite;
+        let pinned = tab.pinned;
+        let folder = tab.folder;
+        let before = if delta < 0 {
+            Some(order[target_idx as usize])
+        } else {
+            order.get(target_idx as usize + 1).copied()
+        };
+        store.relocate_tab(id, favorite, pinned, folder, before);
+        true
+    })
+    .unwrap_or(false)
 }
 
 /// Close a tab. Favorites are dismissed from the strip (browser stays loaded);
@@ -1154,6 +1370,190 @@ pub fn delete_space(id: SpaceId) {
     }
 }
 
+// ─── Import ────────────────────────────────────────────────────────────────
+
+/// Merge a parsed Arc sidebar into the tab store. `replace` wipes the existing
+/// session first (closing every live browser). Imported tabs are suspended until
+/// the host hydrates them. Returns `None` when the store isn't initialized.
+pub fn apply_arc_import(
+    import: &crate::import::ArcImport,
+    replace: bool,
+) -> Option<crate::import::ApplyResult> {
+    let outcome = structural(|store| {
+        let mut skipped = 0usize;
+        let browsers_to_close: Vec<Browser> = if replace {
+            store
+                .tabs
+                .iter()
+                .filter_map(|t| t.browser.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        if replace {
+            store.tabs.clear();
+            store.folders.clear();
+            store.spaces.clear();
+            store.closed.clear();
+        }
+
+        let previous_active = store.active_space;
+        let mut spaces_added = 0usize;
+        let mut folders_added = 0usize;
+        let mut tabs_added = 0usize;
+        let mut favorites_added = 0usize;
+        let mut first_imported_space: Option<SpaceId> = None;
+
+        for space in &import.spaces {
+            let space_id = store.next_space;
+            store.next_space += 1;
+            store.spaces.push(Space {
+                id: space_id,
+                name: space.name.clone(),
+                icon: space.icon.clone(),
+                active: None,
+            });
+            spaces_added += 1;
+            if first_imported_space.is_none() {
+                first_imported_space = Some(space_id);
+            }
+            let (folders, tabs) = import_arc_space_content(store, space_id, space, &mut skipped);
+            folders_added += folders;
+            tabs_added += tabs;
+        }
+
+        if let Some(fav_space) = first_imported_space {
+            for fav in &import.favorites {
+                if space_has_url(store, fav_space, &fav.url) {
+                    skipped += 1;
+                    continue;
+                }
+                push_imported_tab(store, fav_space, fav, true, false, None);
+                favorites_added += 1;
+                tabs_added += 1;
+            }
+            if replace {
+                store.active_space = fav_space;
+                let active = store.first_tab_in(fav_space);
+                store.set_space_active(fav_space, active);
+            } else {
+                store.active_space = previous_active;
+            }
+        } else if replace {
+            // Import carried no spaces — fall back to a fresh Home space.
+            store.spaces.push(Space {
+                id: 1,
+                name: "Home".into(),
+                icon: "🏠".into(),
+                active: None,
+            });
+            store.active_space = 1;
+            store.next_space = 2;
+        }
+
+        (
+            crate::import::ApplyResult {
+                spaces: spaces_added,
+                folders: folders_added,
+                tabs: tabs_added,
+                favorites: favorites_added,
+                skipped_duplicates: skipped,
+            },
+            browsers_to_close,
+        )
+    })?;
+
+    for browser in outcome.1 {
+        close_browser(Some(browser));
+    }
+    Some(outcome.0)
+}
+
+fn import_arc_space_content(
+    store: &mut TabStore,
+    space_id: SpaceId,
+    space: &crate::import::ArcSpace,
+    skipped: &mut usize,
+) -> (usize, usize) {
+    let mut folders_added = 0usize;
+    let mut tabs_added = 0usize;
+
+    for folder in &space.folders {
+        let folder_id = store.next_folder;
+        store.next_folder += 1;
+        store.folders.push(Folder {
+            id: folder_id,
+            space: space_id,
+            name: folder.name.clone(),
+        });
+        folders_added += 1;
+        for tab in &folder.tabs {
+            if space_has_url(store, space_id, &tab.url) {
+                *skipped += 1;
+                continue;
+            }
+            push_imported_tab(store, space_id, tab, false, true, Some(folder_id));
+            tabs_added += 1;
+        }
+    }
+
+    for tab in &space.pinned_tabs {
+        if space_has_url(store, space_id, &tab.url) {
+            *skipped += 1;
+            continue;
+        }
+        push_imported_tab(store, space_id, tab, false, true, None);
+        tabs_added += 1;
+    }
+
+    (folders_added, tabs_added)
+}
+
+fn space_has_url(store: &TabStore, space: SpaceId, url: &str) -> bool {
+    store.tabs.iter().any(|t| t.space == space && t.url == url)
+}
+
+fn push_imported_tab(
+    store: &mut TabStore,
+    space: SpaceId,
+    tab: &crate::import::ArcTab,
+    favorite: bool,
+    pinned: bool,
+    folder: Option<FolderId>,
+) {
+    let id = store.next_tab;
+    store.next_tab += 1;
+    let (favorite, pinned, folder) = if favorite {
+        (true, false, None)
+    } else {
+        (false, pinned || folder.is_some(), folder)
+    };
+    let index = store
+        .tabs
+        .iter()
+        .rposition(|t| TabStore::same_section(t, space, favorite, pinned, folder))
+        .map_or(store.tabs.len(), |p| p + 1);
+    store.tabs.insert(
+        index,
+        Tab {
+            id,
+            space,
+            folder,
+            pinned,
+            favorite,
+            dismissed: false,
+            browser: None,
+            url: tab.url.clone(),
+            title: tab.title.clone(),
+            loading: false,
+            can_go_back: false,
+            can_go_forward: false,
+            last_shown_at: 0,
+        },
+    );
+}
+
 // ─── Folder ↔ space transforms (ADR-0006) ──────────────────────────────────
 
 /// Promote a folder to its own space: its (pinned) tabs become the new space's
@@ -1294,6 +1694,15 @@ pub fn note_url(cef_id: i32, url: &str) {
     if let Some(id) = changed {
         emit(Event::TabUrlChanged, id, Some(url));
         persist();
+    }
+}
+
+/// Ingest a sampled page theme/background color for viewport URL-bar tinting.
+/// Fire-and-forget — the host stores it per tab; not session-persisted.
+pub fn note_theme_color(cef_id: i32, color: &str) {
+    let id = note_content(cef_id, |_| true);
+    if let Some(id) = id {
+        emit(Event::TabThemeColorChanged, id, Some(color));
     }
 }
 
@@ -1586,24 +1995,26 @@ mod tests {
     /// `TabStore` values — so it can't race another test over them.
     #[test]
     fn persist_writes_through_until_shutdown() {
-        let dir = std::env::temp_dir().join("browser-tabs-test-persist");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("session.json");
-        let path_str = path.to_str().unwrap();
+        with_global_store_test_lock(|| {
+            let dir = std::env::temp_dir().join("browser-tabs-test-persist");
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("session.json");
+            let path_str = path.to_str().unwrap();
 
-        init(path_str);
-        let space = create_space("Work", "💼");
-        let state = session::load(path_str).expect("mutation persisted the session");
-        assert!(state.spaces.iter().any(|s| s.id == space));
+            test_reset_store(path_str);
+            let space = create_space("Work", "💼");
+            let state = session::load(path_str).expect("mutation persisted the session");
+            assert!(state.spaces.iter().any(|s| s.id == space));
 
-        begin_shutdown();
-        rename_space(space, "gone");
-        let state = session::load(path_str).expect("file still present");
-        assert!(
-            state.spaces.iter().all(|s| s.name != "gone"),
-            "post-shutdown mutation must not be persisted"
-        );
-        std::fs::remove_dir_all(&dir).ok();
+            begin_shutdown();
+            rename_space(space, "gone");
+            let state = session::load(path_str).expect("file still present");
+            assert!(
+                state.spaces.iter().all(|s| s.name != "gone"),
+                "post-shutdown mutation must not be persisted"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        });
     }
 
     #[test]
@@ -1922,6 +2333,7 @@ mod tests {
                 loading: false,
                 can_go_back: false,
                 can_go_forward: false,
+                last_shown_at: 0,
             });
         }
         for id in 1..=n {
@@ -1930,5 +2342,49 @@ mod tests {
         assert_eq!(store.closed.len(), CLOSED_STACK_CAP);
         // Newest survives at the top; the oldest 5 closes were evicted.
         assert_eq!(store.reopen_closed(), Some(n as TabId));
+    }
+
+    #[test]
+    fn sidebar_tab_order_follows_host_layout() {
+        let store = TabStore::from_saved(saved(
+            1,
+            vec![(1, Some(4))],
+            vec![(10, 1)],
+            vec![
+                (1, 1, None, true),     // favorite (pinned flag ignored)
+                (2, 1, Some(10), true), // folder tab
+                (3, 1, None, true),     // loose saved
+                (4, 1, None, false),    // open
+            ],
+        ));
+        // Favorites are modeled with `favorite: true` in from_saved — override.
+        let mut store = store;
+        store.tabs[0].favorite = true;
+        store.tabs[0].pinned = false;
+        assert_eq!(store.sidebar_tab_order(1), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn move_visible_tab_reorders_in_sidebar_order() {
+        let mut store = TabStore::from_saved(saved(
+            1,
+            vec![(1, Some(2))],
+            vec![],
+            vec![
+                (1, 1, None, false),
+                (2, 1, None, false),
+                (3, 1, None, false),
+            ],
+        ));
+        store.set_space_active(1, Some(2));
+        let order = store.sidebar_tab_order(1);
+        assert_eq!(order, vec![1, 2, 3]);
+        let id = store.visible_tab().unwrap();
+        let from_idx = order.iter().position(|&t| t == id).unwrap();
+        let target_idx = from_idx as i32 + 1;
+        let tab = store.tab(id).unwrap();
+        let before = order.get(target_idx as usize + 1).copied();
+        store.relocate_tab(id, tab.favorite, tab.pinned, tab.folder, before);
+        assert_eq!(store.sidebar_tab_order(1), vec![1, 3, 2]);
     }
 }

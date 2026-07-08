@@ -273,6 +273,37 @@ pub extern "C" fn browser_select_space(id: i32) {
     browser_core::embed::select_space(id);
 }
 
+/// Select a tab by 1-based sidebar index (`1`…`8`, `9` = last) in the active
+/// space. Returns whether a tab was selected. Main thread only.
+#[no_mangle]
+pub extern "C" fn browser_tab_select_by_index(index: i32) -> bool {
+    if !(1..=9).contains(&index) {
+        return false;
+    }
+    browser_core::embed::select_tab_by_index(index as u8)
+}
+
+/// Select the next (`delta = 1`) or previous (`delta = -1`) tab in sidebar
+/// order. Returns whether a tab was selected. Main thread only.
+#[no_mangle]
+pub extern "C" fn browser_tab_select_adjacent(delta: i32) -> bool {
+    browser_core::embed::select_adjacent_tab(delta)
+}
+
+/// Select the next (`delta = 1`) or previous (`delta = -1`) space. Returns
+/// whether a space was selected. Main thread only.
+#[no_mangle]
+pub extern "C" fn browser_space_select_adjacent(delta: i32) -> bool {
+    browser_core::embed::select_adjacent_space(delta)
+}
+
+/// Move the visible tab up (`delta = -1`) or down (`delta = 1`) in sidebar
+/// order. Returns whether the tab moved. Main thread only.
+#[no_mangle]
+pub extern "C" fn browser_tab_move_visible(delta: i32) -> bool {
+    browser_core::embed::move_visible_tab(delta)
+}
+
 /// Rename space `id`.
 ///
 /// # Safety
@@ -309,6 +340,70 @@ pub extern "C" fn browser_folder_to_space(id: i32) -> i32 {
 #[no_mangle]
 pub extern "C" fn browser_space_to_folder(id: i32) -> i32 {
     browser_core::embed::space_to_folder(id)
+}
+
+/// Default Arc `StorableSidebar.json` path on macOS. Free with
+/// [`browser_string_free`]; null when unavailable.
+#[no_mangle]
+pub extern "C" fn browser_import_arc_default_path() -> *mut c_char {
+    match browser_core::embed::arc_sidebar_default_path() {
+        Some(path) => string_to_c(path),
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Preview an Arc sidebar import. JSON envelope — free with [`browser_string_free`].
+/// Main thread only.
+///
+/// # Safety
+/// `path` must be null or a valid, NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_import_arc_preview(path: *const c_char) -> *mut c_char {
+    import_json_envelope(
+        browser_core::embed::import_arc_preview(&cstr(path)).map(|preview| {
+            serde_json::json!({
+                "spaces": preview.spaces,
+                "folders": preview.folders,
+                "tabs": preview.tabs,
+                "favorites": preview.favorites,
+            })
+        }),
+    )
+}
+
+/// Import an Arc sidebar (`StorableSidebar.json`). `replace` clears the existing
+/// session first; otherwise the import merges. JSON envelope — free with
+/// [`browser_string_free`]. Main thread only.
+///
+/// # Safety
+/// `path` must be null or a valid, NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_import_arc(path: *const c_char, replace: bool) -> *mut c_char {
+    import_json_envelope(
+        browser_core::embed::import_arc(&cstr(path), replace).map(|result| {
+            serde_json::json!({
+                "spaces": result.spaces,
+                "folders": result.folders,
+                "tabs": result.tabs,
+                "favorites": result.favorites,
+                "skipped_duplicates": result.skipped_duplicates,
+            })
+        }),
+    )
+}
+
+fn import_json_envelope(result: Result<serde_json::Value, String>) -> *mut c_char {
+    let value = match result {
+        Ok(payload) => serde_json::json!({ "ok": true, "payload": payload }),
+        Err(error) => serde_json::json!({ "ok": false, "error": error }),
+    };
+    string_to_c(value.to_string())
+}
+
+fn string_to_c(s: String) -> *mut c_char {
+    CString::new(s)
+        .map(CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
 }
 
 /// Run the CEF message loop. Blocks until [`browser_quit`] / all browsers close.
@@ -538,6 +633,22 @@ pub unsafe extern "C" fn browser_private_tab_create(
 #[no_mangle]
 pub extern "C" fn browser_private_tab_select(window_id: i32, id: i32) {
     browser_core::embed::select_private_tab(window_id, id);
+}
+
+/// Select a tab by 1-based index (`1`…`8`, `9` = last) in a private window.
+#[no_mangle]
+pub extern "C" fn browser_private_tab_select_by_index(window_id: i32, index: i32) -> bool {
+    if !(1..=9).contains(&index) {
+        return false;
+    }
+    browser_core::embed::select_private_tab_by_index(window_id, index as u8)
+}
+
+/// Select the next (`delta = 1`) or previous (`delta = -1`) tab in a private
+/// window.
+#[no_mangle]
+pub extern "C" fn browser_private_tab_select_adjacent(window_id: i32, delta: i32) -> bool {
+    browser_core::embed::select_private_adjacent_tab(window_id, delta)
 }
 
 #[no_mangle]

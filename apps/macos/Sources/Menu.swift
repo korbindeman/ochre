@@ -25,7 +25,7 @@ enum MainMenu {
         mainMenu.addItem(editMenu(actions: actions))
         mainMenu.addItem(viewMenu(actions: actions))
         mainMenu.addItem(historyMenu(actions: actions))
-        mainMenu.addItem(windowMenu())
+        mainMenu.addItem(windowMenu(actions: actions))
         return mainMenu
     }
 
@@ -41,12 +41,18 @@ enum MainMenu {
         menu.addItem(.separator())
 
         // Passwords (the vault surface) — a native app-UI page (ADR-0010/0016).
-        target(menu.addItem(withTitle: "Passwords…",
-                            action: #selector(AppDelegate.showVault), keyEquivalent: ""), actions)
-        target(menu.addItem(withTitle: "Settings…",
-                            action: #selector(AppDelegate.showSettings), keyEquivalent: ","), actions)
-        target(menu.addItem(withTitle: "Make Default Browser",
-                            action: #selector(AppDelegate.setAsDefaultBrowser), keyEquivalent: ""), actions)
+        target(
+            menu.addItem(
+                withTitle: "Passwords…",
+                action: #selector(AppDelegate.showVault), keyEquivalent: ""), actions)
+        target(
+            menu.addItem(
+                withTitle: "Settings…",
+                action: #selector(AppDelegate.showSettings), keyEquivalent: ","), actions)
+        target(
+            menu.addItem(
+                withTitle: "Make Default Browser",
+                action: #selector(AppDelegate.setAsDefaultBrowser), keyEquivalent: ""), actions)
         menu.addItem(.separator())
 
         let services = NSMenu()
@@ -86,38 +92,56 @@ enum MainMenu {
         // opens a new tab. "Open Location…" (⌘L) opens it to edit the active
         // tab's address in place. ⌘W closes the active tab (falling back to the
         // window when none are open); ⌘⇧W closes the window.
-        target(menu.addItem(withTitle: "New Tab",
-                            action: #selector(AppDelegate.toggleCommandBar), keyEquivalent: "t"), actions)
-        let newPrivate = menu.addItem(withTitle: "New Private Window",
-                                      action: #selector(AppDelegate.newPrivateWindow),
-                                      keyEquivalent: "n")
+        target(
+            menu.addItem(
+                withTitle: "New Tab",
+                action: #selector(AppDelegate.toggleCommandBar), keyEquivalent: "t"), actions)
+        let newPrivate = menu.addItem(
+            withTitle: "New Private Window",
+            action: #selector(AppDelegate.newPrivateWindow),
+            keyEquivalent: "n")
         newPrivate.keyEquivalentModifierMask = [.command, .shift]
         target(newPrivate, actions)
-        let newSpace = menu.addItem(withTitle: "New Space",
-                            action: #selector(AppDelegate.newSpace), keyEquivalent: "n")
+        let newSpace = menu.addItem(
+            withTitle: "New Space",
+            action: #selector(AppDelegate.newSpace), keyEquivalent: "n")
         newSpace.keyEquivalentModifierMask = [.command, .option]
         target(newSpace, actions)
-        target(menu.addItem(withTitle: "New Folder",
-                            action: #selector(AppDelegate.newFolder), keyEquivalent: ""), actions)
+        target(
+            menu.addItem(
+                withTitle: "New Folder",
+                action: #selector(AppDelegate.newFolder), keyEquivalent: ""), actions)
         let folderFromSelection = menu.addItem(
             withTitle: "New Folder from Selection",
             action: #selector(AppDelegate.newFolderFromSelectionMenu), keyEquivalent: "")
         target(folderFromSelection, actions)
-        target(menu.addItem(withTitle: "Clear Open Tabs",
-                            action: #selector(AppDelegate.clearOpenTabsMenu), keyEquivalent: ""), actions)
-        target(menu.addItem(withTitle: "Open Location…",
-                            action: #selector(AppDelegate.editCurrentURL), keyEquivalent: "l"), actions)
+        target(
+            menu.addItem(
+                withTitle: "Clear Open Tabs",
+                action: #selector(AppDelegate.clearOpenTabsMenu), keyEquivalent: ""), actions)
+        target(
+            menu.addItem(
+                withTitle: "Open Location…",
+                action: #selector(AppDelegate.editCurrentURL), keyEquivalent: "l"), actions)
+        target(
+            menu.addItem(
+                withTitle: "Import from Arc…",
+                action: #selector(AppDelegate.importFromArc), keyEquivalent: ""), actions)
         menu.addItem(.separator())
-        target(menu.addItem(withTitle: "Close Tab",
-                            action: #selector(AppDelegate.closeActiveTab(_:)), keyEquivalent: "w"), actions)
-        let closeWindow = menu.addItem(withTitle: "Close Window",
-                            action: #selector(AppDelegate.closeWindow(_:)), keyEquivalent: "w")
+        target(
+            menu.addItem(
+                withTitle: "Close Tab",
+                action: #selector(AppDelegate.closeActiveTab(_:)), keyEquivalent: "w"), actions)
+        let closeWindow = menu.addItem(
+            withTitle: "Close Window",
+            action: #selector(AppDelegate.closeWindow(_:)), keyEquivalent: "w")
         closeWindow.keyEquivalentModifierMask = [.command, .shift]
         target(closeWindow, actions)
         // ⌘⇧T reopens the last closed tab; disabled (and the shortcut inert)
         // when there's nothing to reopen — see `AppDelegate.validateMenuItem`.
-        let reopen = menu.addItem(withTitle: "Reopen Closed Tab",
-                            action: #selector(AppDelegate.reopenClosedTab), keyEquivalent: "t")
+        let reopen = menu.addItem(
+            withTitle: "Reopen Closed Tab",
+            action: #selector(AppDelegate.reopenClosedTab), keyEquivalent: "t")
         reopen.keyEquivalentModifierMask = [.command, .shift]
         target(reopen, actions)
         return submenu(menu)
@@ -135,9 +159,11 @@ enum MainMenu {
         menu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         menu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         menu.addItem(withTitle: "Delete", action: #selector(NSText.delete(_:)), keyEquivalent: "")
-        menu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        menu.addItem(
+            withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Find", action: nil, keyEquivalent: "").submenu = findMenu(actions: actions)
+        menu.addItem(withTitle: "Find", action: nil, keyEquivalent: "").submenu = findMenu(
+            actions: actions)
         return submenu(menu)
     }
 
@@ -145,12 +171,17 @@ enum MainMenu {
     /// while a search is active — see `AppDelegate.validateMenuItem`.
     private static func findMenu(actions: AppDelegate) -> NSMenu {
         let menu = NSMenu(title: "Find")
-        target(menu.addItem(withTitle: "Find…",
-                            action: #selector(AppDelegate.performFind), keyEquivalent: "f"), actions)
-        target(menu.addItem(withTitle: "Find Next",
-                            action: #selector(AppDelegate.findNext), keyEquivalent: "g"), actions)
-        let prev = menu.addItem(withTitle: "Find Previous",
-                            action: #selector(AppDelegate.findPrevious), keyEquivalent: "g")
+        target(
+            menu.addItem(
+                withTitle: "Find…",
+                action: #selector(AppDelegate.performFind), keyEquivalent: "f"), actions)
+        target(
+            menu.addItem(
+                withTitle: "Find Next",
+                action: #selector(AppDelegate.findNext), keyEquivalent: "g"), actions)
+        let prev = menu.addItem(
+            withTitle: "Find Previous",
+            action: #selector(AppDelegate.findPrevious), keyEquivalent: "g")
         prev.keyEquivalentModifierMask = [.command, .shift]
         target(prev, actions)
         return menu
@@ -160,22 +191,37 @@ enum MainMenu {
 
     private static func viewMenu(actions: AppDelegate) -> NSMenuItem {
         let menu = NSMenu(title: "View")
-        target(menu.addItem(withTitle: "Reload Page",
-                            action: #selector(AppDelegate.reloadPage), keyEquivalent: "r"), actions)
-        let force = menu.addItem(withTitle: "Force Reload",
-                                action: #selector(AppDelegate.forceReload), keyEquivalent: "r")
+        target(
+            menu.addItem(
+                withTitle: "Reload Page",
+                action: #selector(AppDelegate.reloadPage), keyEquivalent: "r"), actions)
+        let force = menu.addItem(
+            withTitle: "Force Reload",
+            action: #selector(AppDelegate.forceReload), keyEquivalent: "r")
         force.keyEquivalentModifierMask = [.command, .shift]
         target(force, actions)
         menu.addItem(.separator())
-        target(menu.addItem(withTitle: "Actual Size",
-                            action: #selector(AppDelegate.actualSize), keyEquivalent: "0"), actions)
-        target(menu.addItem(withTitle: "Zoom In",
-                            action: #selector(AppDelegate.zoomIn), keyEquivalent: "+"), actions)
-        target(menu.addItem(withTitle: "Zoom Out",
-                            action: #selector(AppDelegate.zoomOut), keyEquivalent: "-"), actions)
+        target(
+            menu.addItem(
+                withTitle: "Actual Size",
+                action: #selector(AppDelegate.actualSize), keyEquivalent: "0"), actions)
+        target(
+            menu.addItem(
+                withTitle: "Zoom In",
+                action: #selector(AppDelegate.zoomIn), keyEquivalent: "+"), actions)
+        target(
+            menu.addItem(
+                withTitle: "Zoom Out",
+                action: #selector(AppDelegate.zoomOut), keyEquivalent: "-"), actions)
         menu.addItem(.separator())
-        target(menu.addItem(withTitle: "Toggle Sidebar",
-                            action: #selector(AppDelegate.toggleSidebar), keyEquivalent: "s"), actions)
+        target(
+            menu.addItem(
+                withTitle: "Toggle Sidebar",
+                action: #selector(AppDelegate.toggleSidebar), keyEquivalent: "s"), actions)
+        target(
+            menu.addItem(
+                withTitle: "Show Address Bar in Page",
+                action: #selector(AppDelegate.toggleViewportURLBar), keyEquivalent: ""), actions)
         menu.addItem(.separator())
         // Appearance (ADR-0030): one Light/Dark/System choice for the whole browser
         // — native chrome and web content's prefers-color-scheme. Radio checkmarks
@@ -187,20 +233,27 @@ enum MainMenu {
         // state; the per-site toggle is checked when blocking is on for the active
         // site and disabled off a web page / when blocking is globally off — see
         // `AppDelegate.validateMenuItem`.
-        target(menu.addItem(withTitle: "Block Ads and Trackers",
-                            action: #selector(AppDelegate.toggleAdblock), keyEquivalent: ""), actions)
-        target(menu.addItem(withTitle: "Block Ads on This Site",
-                            action: #selector(AppDelegate.toggleAdblockForSite), keyEquivalent: ""), actions)
+        target(
+            menu.addItem(
+                withTitle: "Block Ads and Trackers",
+                action: #selector(AppDelegate.toggleAdblock), keyEquivalent: ""), actions)
+        target(
+            menu.addItem(
+                withTitle: "Block Ads on This Site",
+                action: #selector(AppDelegate.toggleAdblockForSite), keyEquivalent: ""), actions)
         // Cookie-consent: its own toggle governing reject + hide (ADR-0026),
         // checkmark for the on state via `validateMenuItem`.
-        target(menu.addItem(withTitle: "Block Cookie Notices",
-                            action: #selector(AppDelegate.toggleCookieConsent), keyEquivalent: ""), actions)
+        target(
+            menu.addItem(
+                withTitle: "Block Cookie Notices",
+                action: #selector(AppDelegate.toggleCookieConsent), keyEquivalent: ""), actions)
         menu.addItem(.separator())
         // Toggles the DevTools window (separate window; inline docking isn't
         // feasible under CEF 149 — ADR-0021). F12 does the same via the core's
         // keyboard handler; this owns the ⌘⌥I equivalent.
-        let devtools = menu.addItem(withTitle: "Developer Tools",
-                                   action: #selector(AppDelegate.toggleDevTools), keyEquivalent: "i")
+        let devtools = menu.addItem(
+            withTitle: "Developer Tools",
+            action: #selector(AppDelegate.toggleDevTools), keyEquivalent: "i")
         devtools.keyEquivalentModifierMask = [.command, .option]
         target(devtools, actions)
         return submenu(menu)
@@ -210,12 +263,18 @@ enum MainMenu {
     /// checkmarks reflecting the current preference (`AppDelegate.validateMenuItem`).
     private static func appearanceMenu(actions: AppDelegate) -> NSMenu {
         let menu = NSMenu(title: "Appearance")
-        target(menu.addItem(withTitle: "System",
-                            action: #selector(AppDelegate.setThemeSystem), keyEquivalent: ""), actions)
-        target(menu.addItem(withTitle: "Light",
-                            action: #selector(AppDelegate.setThemeLight), keyEquivalent: ""), actions)
-        target(menu.addItem(withTitle: "Dark",
-                            action: #selector(AppDelegate.setThemeDark), keyEquivalent: ""), actions)
+        target(
+            menu.addItem(
+                withTitle: "System",
+                action: #selector(AppDelegate.setThemeSystem), keyEquivalent: ""), actions)
+        target(
+            menu.addItem(
+                withTitle: "Light",
+                action: #selector(AppDelegate.setThemeLight), keyEquivalent: ""), actions)
+        target(
+            menu.addItem(
+                withTitle: "Dark",
+                action: #selector(AppDelegate.setThemeDark), keyEquivalent: ""), actions)
         return menu
     }
 
@@ -224,26 +283,86 @@ enum MainMenu {
     private static func historyMenu(actions: AppDelegate) -> NSMenuItem {
         let menu = NSMenu(title: "History")
         // Back/Forward are enabled/disabled by AppDelegate.validateMenuItem.
-        target(menu.addItem(withTitle: "Back",
-                            action: #selector(AppDelegate.goBack), keyEquivalent: "["), actions)
-        target(menu.addItem(withTitle: "Forward",
-                            action: #selector(AppDelegate.goForward), keyEquivalent: "]"), actions)
+        target(
+            menu.addItem(
+                withTitle: "Back",
+                action: #selector(AppDelegate.goBack), keyEquivalent: "["), actions)
+        target(
+            menu.addItem(
+                withTitle: "Forward",
+                action: #selector(AppDelegate.goForward), keyEquivalent: "]"), actions)
         menu.addItem(.separator())
-        target(menu.addItem(withTitle: "Show All History",
-                            action: #selector(AppDelegate.showHistory), keyEquivalent: "y"), actions)
+        target(
+            menu.addItem(
+                withTitle: "Show All History",
+                action: #selector(AppDelegate.showHistory), keyEquivalent: "y"), actions)
         return submenu(menu)
     }
 
     // MARK: - Window
 
-    private static func windowMenu() -> NSMenuItem {
+    private static func windowMenu(actions: AppDelegate) -> NSMenuItem {
         let menu = NSMenu(title: "Window")
-        menu.addItem(withTitle: "Minimize",
-                     action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        menu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        let prevTab = menu.addItem(
+            withTitle: "Select Previous Tab",
+            action: #selector(AppDelegate.selectPreviousTab), keyEquivalent: "[")
+        prevTab.keyEquivalentModifierMask = [.command, .shift]
+        target(prevTab, actions)
+        let nextTab = menu.addItem(
+            withTitle: "Select Next Tab",
+            action: #selector(AppDelegate.selectNextTab), keyEquivalent: "]")
+        nextTab.keyEquivalentModifierMask = [.command, .shift]
+        target(nextTab, actions)
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Bring All to Front",
-                     action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+        for index in 1...8 {
+            let item = menu.addItem(
+                withTitle: "Select Tab \(index)",
+                action: #selector(AppDelegate.selectTabByNumber(_:)),
+                keyEquivalent: "\(index)")
+            item.tag = index
+            target(item, actions)
+        }
+        let lastTab = menu.addItem(
+            withTitle: "Select Last Tab",
+            action: #selector(AppDelegate.selectTabByNumber(_:)), keyEquivalent: "9")
+        lastTab.tag = 9
+        target(lastTab, actions)
+        menu.addItem(.separator())
+        let moveUp = menu.addItem(
+            withTitle: "Move Tab Up",
+            action: #selector(AppDelegate.moveTabUp),
+            keyEquivalent: String(UnicodeScalar(0xF704)!))
+        moveUp.keyEquivalentModifierMask = [.command, .option, .shift]
+        target(moveUp, actions)
+        let moveDown = menu.addItem(
+            withTitle: "Move Tab Down",
+            action: #selector(AppDelegate.moveTabDown),
+            keyEquivalent: String(UnicodeScalar(0xF705)!))
+        moveDown.keyEquivalentModifierMask = [.command, .option, .shift]
+        target(moveDown, actions)
+        menu.addItem(.separator())
+        let prevSpace = menu.addItem(
+            withTitle: "Select Previous Space",
+            action: #selector(AppDelegate.selectPreviousSpace),
+            keyEquivalent: String(UnicodeScalar(0xF702)!))
+        prevSpace.keyEquivalentModifierMask = [.command, .option]
+        target(prevSpace, actions)
+        let nextSpace = menu.addItem(
+            withTitle: "Select Next Space",
+            action: #selector(AppDelegate.selectNextSpace),
+            keyEquivalent: String(UnicodeScalar(0xF703)!))
+        nextSpace.keyEquivalentModifierMask = [.command, .option]
+        target(nextSpace, actions)
+        menu.addItem(.separator())
+        menu.addItem(
+            withTitle: "Minimize",
+            action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        menu.addItem(
+            withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(
+            withTitle: "Bring All to Front",
+            action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         // Let AppKit auto-manage the window list under this menu.
         NSApp.windowsMenu = menu
         return submenu(menu)

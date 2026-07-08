@@ -61,7 +61,9 @@ struct TabRow: View {
                     .matchedGeometryEffect(id: SidebarSelection.pill, in: selection)
             }
         }
-        .contentShape(.rect(cornerRadius: 8))
+        // Axis-aligned hit target — rounded `contentShape` paths recurse deeply in
+        // SwiftUI hit-testing and have blown the stack on dense tab lists.
+        .contentShape(.rect)
         .onTapGesture(perform: onSelect)
         .onHover { hovering = $0 }
     }

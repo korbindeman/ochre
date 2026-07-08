@@ -101,10 +101,9 @@ wrap_app! {
                 return;
             };
 
-            // Debug builds use Chromium's in-memory mock keychain — see
-            // `BrowserApp::on_before_command_line_processing` for the rationale.
-            #[cfg(debug_assertions)]
-            command_line.append_switch(Some(&CefString::from("use-mock-keychain")));
+            // Unsigned dev/dogfood builds use the mock keychain — see
+            // `app::append_mock_keychain_switch` for the rationale.
+            crate::app::append_mock_keychain_switch(command_line);
 
             // CDP automation surface (P0-4): browser process only (helpers ignore
             // `--remote-debugging-port`), only when the user opted in, loopback-bound.
@@ -198,6 +197,9 @@ pub fn initialize() -> bool {
     crate::consent::init_lists();
     crate::consent::register();
 
+    // Sample page theme-color for the viewport URL bar (Safari-style tinting).
+    crate::theme_color::register();
+
     // Load the appearance preference (Light/Dark/System, ADR-0030) before the
     // first browser. It is *applied* once the host forwards the OS appearance
     // (`browser_theme_set_system_dark`) early in window setup, so the global
@@ -283,11 +285,11 @@ pub unsafe fn create_browser(parent_view: *mut c_void, width: i32, height: i32, 
     let mut client = Some(client);
 
     let settings = BrowserSettings::default();
-    let url = CefString::from(url);
+    let cef_url = CefString::from(url);
     browser_host_create_browser(
         Some(&window_info),
         client.as_mut(),
-        Some(&url),
+        Some(&cef_url),
         Some(&settings),
         None,
         None,
@@ -543,6 +545,26 @@ pub fn select_space(id: i32) {
     tabs::select_space(id);
 }
 
+/// Select a tab by 1-based sidebar index (`1`…`8`, `9` = last) in the active space.
+pub fn select_tab_by_index(index: u8) -> bool {
+    tabs::select_tab_by_index(index)
+}
+
+/// Select the next (`1`) or previous (`-1`) tab in sidebar order.
+pub fn select_adjacent_tab(delta: i32) -> bool {
+    tabs::select_adjacent_tab(delta)
+}
+
+/// Select the next (`1`) or previous (`-1`) space.
+pub fn select_adjacent_space(delta: i32) -> bool {
+    tabs::select_adjacent_space(delta)
+}
+
+/// Move the visible tab up (`-1`) or down (`1`) in sidebar order.
+pub fn move_visible_tab(delta: i32) -> bool {
+    tabs::move_visible_tab(delta)
+}
+
 /// Rename space `id`.
 pub fn rename_space(id: i32, name: &str) {
     tabs::rename_space(id, name);
@@ -611,6 +633,14 @@ pub unsafe fn create_private_tab(
 
 pub fn select_private_tab(window_id: WindowId, id: TabId) {
     private_window::select_tab(window_id, id);
+}
+
+pub fn select_private_tab_by_index(window_id: WindowId, index: u8) -> bool {
+    private_window::select_tab_by_index(window_id, index)
+}
+
+pub fn select_private_adjacent_tab(window_id: WindowId, delta: i32) -> bool {
+    private_window::select_adjacent_tab(window_id, delta)
 }
 
 pub fn close_private_tab(window_id: WindowId, id: TabId) {
@@ -939,6 +969,21 @@ fn maybe_quit_after_last_window() {
     if count == 0 && private_window::window_count() == 0 {
         quit();
     }
+}
+
+/// Default Arc `StorableSidebar.json` path on macOS, if it exists.
+pub fn arc_sidebar_default_path() -> Option<String> {
+    crate::import::default_arc_sidebar_path()
+}
+
+/// Preview an Arc sidebar import (counts only; does not mutate the tab store).
+pub fn import_arc_preview(path: &str) -> Result<crate::import::ArcImportPreview, String> {
+    crate::import::preview_arc_import(path)
+}
+
+/// Import an Arc sidebar. `replace` clears the existing session first. Main thread.
+pub fn import_arc(path: &str, replace: bool) -> Result<crate::import::ApplyResult, String> {
+    crate::import::import_arc_sidebar(path, replace)
 }
 
 /// Tear down CEF. Call after [`run_message_loop`] returns.
