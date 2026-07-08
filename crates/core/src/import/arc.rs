@@ -31,7 +31,14 @@ pub struct ArcSpace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArcFolder {
     pub name: String,
-    pub tabs: Vec<ArcTab>,
+    /// Children in Arc sidebar order — tabs and nested folders interleaved.
+    pub items: Vec<ArcPinnedItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArcPinnedItem {
+    Tab(ArcTab),
+    Folder(ArcFolder),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,17 +76,29 @@ impl std::error::Error for ArcImportError {}
 
 impl ArcImport {
     pub fn preview(&self) -> ArcImportPreview {
-        let folders = self.spaces.iter().map(|s| s.folders.len()).sum();
-        let tabs = self
-            .spaces
-            .iter()
-            .map(|s| s.pinned_tabs.len() + s.folders.iter().map(|f| f.tabs.len()).sum::<usize>())
-            .sum();
+        let mut folders = 0usize;
+        let mut tabs = 0usize;
+        for space in &self.spaces {
+            tabs += space.pinned_tabs.len();
+            for folder in &space.folders {
+                count_folder(folder, &mut folders, &mut tabs);
+            }
+        }
         ArcImportPreview {
             spaces: self.spaces.len(),
             folders,
             tabs,
             favorites: self.favorites.len(),
+        }
+    }
+}
+
+fn count_folder(folder: &ArcFolder, folders: &mut usize, tabs: &mut usize) {
+    *folders += 1;
+    for item in &folder.items {
+        match item {
+            ArcPinnedItem::Tab(_) => *tabs += 1,
+            ArcPinnedItem::Folder(nested) => count_folder(nested, folders, tabs),
         }
     }
 }
@@ -211,7 +230,7 @@ fn parse_spaces(value: &Value, items: &HashMap<String, ArcItem>) -> Vec<ArcSpace
         };
         let mut folders = Vec::new();
         let mut pinned_tabs = Vec::new();
-        walk_pinned_children(&pinned_root, items, "", &mut folders, &mut pinned_tabs);
+        walk_pinned_children(&pinned_root, items, &mut folders, &mut pinned_tabs);
         spaces.push(ArcSpace {
             name,
             icon,
@@ -274,7 +293,6 @@ fn reorder_spaces(_spaces: &mut [ArcSpace], ordered_ids: Option<&Value>) {
 fn walk_pinned_children(
     item_id: &str,
     items: &HashMap<String, ArcItem>,
-    folder_prefix: &str,
     folders: &mut Vec<ArcFolder>,
     pinned_tabs: &mut Vec<ArcTab>,
 ) {
@@ -294,29 +312,45 @@ fn walk_pinned_children(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .unwrap_or("Folder");
-            let full_name = if folder_prefix.is_empty() {
-                title.to_string()
-            } else {
-                format!("{folder_prefix} › {title}")
-            };
-            let mut nested_folders = Vec::new();
-            let mut nested_tabs = Vec::new();
-            walk_pinned_children(
-                child_id,
-                items,
-                &full_name,
-                &mut nested_folders,
-                &mut nested_tabs,
-            );
-            if !nested_tabs.is_empty() {
-                folders.push(ArcFolder {
-                    name: full_name.clone(),
-                    tabs: nested_tabs,
-                });
-            }
-            folders.extend(nested_folders);
+            let mut folder_items = Vec::new();
+            walk_folder_children(child_id, items, &mut folder_items);
+            folders.push(ArcFolder {
+                name: title.to_string(),
+                items: folder_items,
+            });
         }
         // easels, split views, and item containers are skipped.
+    }
+}
+
+fn walk_folder_children(
+    item_id: &str,
+    items: &HashMap<String, ArcItem>,
+    out: &mut Vec<ArcPinnedItem>,
+) {
+    let Some(item) = items.get(item_id) else {
+        return;
+    };
+    for child_id in &item.children_ids {
+        let Some(child) = items.get(child_id) else {
+            continue;
+        };
+        if let Some(tab) = child.tab() {
+            out.push(ArcPinnedItem::Tab(tab));
+        } else if child.is_folder() {
+            let title = child
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("Folder");
+            let mut nested = Vec::new();
+            walk_folder_children(child_id, items, &mut nested);
+            out.push(ArcPinnedItem::Folder(ArcFolder {
+                name: title.to_string(),
+                items: nested,
+            }));
+        }
     }
 }
 
@@ -366,13 +400,30 @@ mod tests {
         assert_eq!(parsed.spaces[0].pinned_tabs[0].url, "https://example.com/a");
         assert_eq!(parsed.spaces[0].folders.len(), 1);
         assert_eq!(parsed.spaces[0].folders[0].name, "Docs");
-        assert_eq!(
-            parsed.spaces[0].folders[0].tabs[0].url,
-            "https://example.com/b"
-        );
+        assert!(matches!(
+            &parsed.spaces[0].folders[0].items[0],
+            ArcPinnedItem::Tab(t) if t.url == "https://example.com/b"
+        ));
         assert_eq!(parsed.spaces[1].name, "Personal");
         assert_eq!(parsed.favorites.len(), 1);
         assert_eq!(parsed.favorites[0].url, "https://example.com/fav");
+    }
+
+    #[test]
+    fn parses_nested_folders() {
+        let json = include_bytes!("../../tests/fixtures/arc_sidebar_nested.json");
+        let parsed = parse_arc_sidebar(json).expect("nested fixture parses");
+        assert_eq!(parsed.spaces[0].folders.len(), 1);
+        let parent = &parsed.spaces[0].folders[0];
+        assert_eq!(parent.name, "Parent");
+        assert_eq!(parent.items.len(), 2);
+        assert!(matches!(&parent.items[0], ArcPinnedItem::Tab(_)));
+        assert!(matches!(&parent.items[1], ArcPinnedItem::Folder(_)));
+        let ArcPinnedItem::Folder(child) = &parent.items[1] else {
+            panic!("expected nested folder");
+        };
+        assert_eq!(child.name, "Child");
+        assert_eq!(child.items.len(), 1);
     }
 
     #[test]

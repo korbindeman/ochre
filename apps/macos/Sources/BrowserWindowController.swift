@@ -13,6 +13,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
 
     private(set) var window: NSWindow?
     private var viewportClickMonitor: Any?
+    private var spaceSwipeMonitor: SpaceSwipeMonitor?
 
     init(windowId: Int32, isPrivate: Bool, state: BrowserState) {
         self.windowId = windowId
@@ -56,6 +57,14 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
             self.rootView.dismissTransientFocusIfViewportClick(event)
             return event
         }
+
+        let swipeMonitor = SpaceSwipeMonitor(
+            isPrivate: isPrivate,
+            commandBar: commandBar,
+            findBar: findBar
+        )
+        swipeMonitor.install(on: window)
+        spaceSwipeMonitor = swipeMonitor
 
         if isPrivate {
             state.reloadStructure()
@@ -118,6 +127,8 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
             NSEvent.removeMonitor(viewportClickMonitor)
             self.viewportClickMonitor = nil
         }
+        spaceSwipeMonitor?.uninstall()
+        spaceSwipeMonitor = nil
         if isPrivate {
             browser_private_destroy_window(windowId)
             (NSApp.delegate as? AppDelegate)?.didClosePrivateWindow(windowId)

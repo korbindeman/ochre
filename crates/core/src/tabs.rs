@@ -143,6 +143,8 @@ struct Folder {
     id: FolderId,
     space: SpaceId,
     name: String,
+    /// `None` at the space root; `Some` when nested inside another folder.
+    parent: Option<FolderId>,
 }
 
 struct Space {
@@ -231,6 +233,23 @@ impl TabStore {
             .map(|t| t.id)
     }
 
+    /// Depth-first folder contents for sidebar ordering: child folders (in store
+    /// order), then this folder's direct tabs (in store order).
+    fn append_folder_sidebar(&self, folder_id: &FolderId, space: SpaceId, ids: &mut Vec<TabId>) {
+        for child in self
+            .folders
+            .iter()
+            .filter(|f| f.space == space && f.parent == Some(*folder_id))
+        {
+            self.append_folder_sidebar(&child.id, space, ids);
+        }
+        for t in &self.tabs {
+            if t.folder == Some(*folder_id) {
+                ids.push(t.id);
+            }
+        }
+    }
+
     /// Sidebar-selectable tab order for `space` — mirrors the host's sidebar
     /// layout (favorites → each folder's tabs → loose saved → open). Skips
     /// dismissed favorites. Drives keyboard shortcuts (style §9).
@@ -241,12 +260,12 @@ impl TabStore {
                 ids.push(t.id);
             }
         }
-        for folder in self.folders.iter().filter(|f| f.space == space) {
-            for t in &self.tabs {
-                if t.folder == Some(folder.id) {
-                    ids.push(t.id);
-                }
-            }
+        for folder in self
+            .folders
+            .iter()
+            .filter(|f| f.space == space && f.parent.is_none())
+        {
+            self.append_folder_sidebar(&folder.id, space, &mut ids);
         }
         for t in &self.tabs {
             if t.space == space && t.pinned && !t.favorite && t.folder.is_none() {
@@ -501,6 +520,20 @@ impl TabStore {
                 id: f.id,
                 space: f.space,
                 name: f.name,
+                parent: f.parent,
+            })
+            .collect();
+        let folder_ids: std::collections::HashSet<FolderId> =
+            folders.iter().map(|f| f.id).collect();
+        let folders: Vec<Folder> = folders
+            .into_iter()
+            .map(|mut f| {
+                if f.parent
+                    .is_some_and(|pid| pid == f.id || !folder_ids.contains(&pid))
+                {
+                    f.parent = None;
+                }
+                f
             })
             .collect();
         let tabs: Vec<Tab> = saved
@@ -584,6 +617,7 @@ impl TabStore {
                     id: f.id,
                     space: f.space,
                     name: f.name.clone(),
+                    parent: f.parent,
                 })
                 .collect(),
             tabs: self
@@ -1187,6 +1221,7 @@ pub fn create_folder(name: &str) -> FolderId {
             id,
             space,
             name: name.to_string(),
+            parent: None,
         });
         id
     })
@@ -1217,6 +1252,7 @@ pub fn create_folder_with_tabs(name: &str, tab_ids: &[TabId]) -> FolderId {
             id: folder_id,
             space,
             name: name.to_string(),
+            parent: None,
         });
         let ordered: Vec<TabId> = store
             .tabs
@@ -1264,10 +1300,19 @@ pub fn clear_ephemeral_tabs(keep: &[TabId]) {
 }
 
 /// Delete a folder, keeping its tabs (they drop to loose pinned — no tab loss).
+/// Child folders are hoisted to the deleted folder's parent (or the space root).
 pub fn delete_folder(id: FolderId) {
     structural(|store| {
+        let parent = store
+            .folders
+            .iter()
+            .find(|f| f.id == id)
+            .and_then(|f| f.parent);
         for tab in store.tabs.iter_mut().filter(|t| t.folder == Some(id)) {
             tab.folder = None; // stays pinned
+        }
+        for child in store.folders.iter_mut().filter(|f| f.parent == Some(id)) {
+            child.parent = parent;
         }
         store.folders.retain(|f| f.id != id);
     });
@@ -1480,22 +1525,9 @@ fn import_arc_space_content(
     let mut tabs_added = 0usize;
 
     for folder in &space.folders {
-        let folder_id = store.next_folder;
-        store.next_folder += 1;
-        store.folders.push(Folder {
-            id: folder_id,
-            space: space_id,
-            name: folder.name.clone(),
-        });
-        folders_added += 1;
-        for tab in &folder.tabs {
-            if space_has_url(store, space_id, &tab.url) {
-                *skipped += 1;
-                continue;
-            }
-            push_imported_tab(store, space_id, tab, false, true, Some(folder_id));
-            tabs_added += 1;
-        }
+        let (f, t) = import_arc_folder(store, space_id, folder, None, skipped);
+        folders_added += f;
+        tabs_added += t;
     }
 
     for tab in &space.pinned_tabs {
@@ -1507,6 +1539,43 @@ fn import_arc_space_content(
         tabs_added += 1;
     }
 
+    (folders_added, tabs_added)
+}
+
+fn import_arc_folder(
+    store: &mut TabStore,
+    space_id: SpaceId,
+    folder: &crate::import::ArcFolder,
+    parent: Option<FolderId>,
+    skipped: &mut usize,
+) -> (usize, usize) {
+    let folder_id = store.next_folder;
+    store.next_folder += 1;
+    store.folders.push(Folder {
+        id: folder_id,
+        space: space_id,
+        name: folder.name.clone(),
+        parent,
+    });
+    let mut folders_added = 1usize;
+    let mut tabs_added = 0usize;
+    for item in &folder.items {
+        match item {
+            crate::import::ArcPinnedItem::Tab(tab) => {
+                if space_has_url(store, space_id, &tab.url) {
+                    *skipped += 1;
+                    continue;
+                }
+                push_imported_tab(store, space_id, tab, false, true, Some(folder_id));
+                tabs_added += 1;
+            }
+            crate::import::ArcPinnedItem::Folder(nested) => {
+                let (f, t) = import_arc_folder(store, space_id, nested, Some(folder_id), skipped);
+                folders_added += f;
+                tabs_added += t;
+            }
+        }
+    }
     (folders_added, tabs_added)
 }
 
@@ -1556,8 +1625,9 @@ fn push_imported_tab(
 
 // ─── Folder ↔ space transforms (ADR-0006) ──────────────────────────────────
 
-/// Promote a folder to its own space: its (pinned) tabs become the new space's
-/// pinned tabs, the folder is removed, and we switch to the new space.
+/// Promote a folder (and its nested subfolders) to its own space: pinned tabs in
+/// the subtree become the new space's saved tabs, nested folders become
+/// space-root folders there, and we switch to the new space.
 pub fn folder_to_space(folder_id: FolderId) -> SpaceId {
     structural(|store| {
         let Some(name) = store
@@ -1568,6 +1638,7 @@ pub fn folder_to_space(folder_id: FolderId) -> SpaceId {
         else {
             return NONE_ID;
         };
+        let subtree = folder_subtree_ids(store, folder_id);
         let sid = store.next_space;
         store.next_space += 1;
         store.spaces.push(Space {
@@ -1580,21 +1651,45 @@ pub fn folder_to_space(folder_id: FolderId) -> SpaceId {
         for tab in store
             .tabs
             .iter_mut()
-            .filter(|t| t.folder == Some(folder_id))
+            .filter(|t| t.folder.is_some_and(|fid| subtree.contains(&fid)))
         {
             tab.space = sid;
-            tab.folder = None;
+            if tab.folder == Some(folder_id) {
+                tab.folder = None;
+            }
             tab.pinned = true;
             tab.favorite = false;
             tab.dismissed = false;
             first.get_or_insert(tab.id);
         }
-        store.folders.retain(|f| f.id != folder_id);
+        for folder in store.folders.iter_mut().filter(|f| subtree.contains(&f.id)) {
+            folder.space = sid;
+            if folder.id == folder_id {
+                folder.parent = None;
+            }
+        }
         store.set_space_active(sid, first);
         store.active_space = sid;
         sid
     })
     .unwrap_or(NONE_ID)
+}
+
+/// All folder ids in `root` and its nested descendants (inclusive).
+fn folder_subtree_ids(store: &TabStore, root: FolderId) -> std::collections::HashSet<FolderId> {
+    let mut ids = std::collections::HashSet::from([root]);
+    loop {
+        let before = ids.len();
+        for folder in &store.folders {
+            if folder.parent.is_some_and(|pid| ids.contains(&pid)) {
+                ids.insert(folder.id);
+            }
+        }
+        if ids.len() == before {
+            break;
+        }
+    }
+    ids
 }
 
 /// Demote a space to a folder inside the active space: its **pinned** tabs
@@ -1619,6 +1714,7 @@ pub fn space_to_folder(space_id: SpaceId) -> FolderId {
             id: folder_id,
             space: target,
             name,
+            parent: None,
         });
         // Close the source space's ephemeral tabs — only persistent survives.
         // (Suspended ones have no browser; removal below is all they need.)
@@ -1804,6 +1900,7 @@ pub struct FolderView {
     pub id: FolderId,
     pub space: SpaceId,
     pub name: String,
+    pub parent: Option<FolderId>,
 }
 
 #[derive(Serialize)]
@@ -1846,6 +1943,7 @@ pub fn snapshot() -> Snapshot {
                 id: f.id,
                 space: f.space,
                 name: f.name.clone(),
+                parent: f.parent,
             })
             .collect(),
         tabs: store
@@ -1907,6 +2005,7 @@ mod tests {
                     id,
                     space,
                     name: format!("folder{id}"),
+                    parent: None,
                 })
                 .collect(),
             tabs: tabs
@@ -2125,6 +2224,7 @@ mod tests {
                 id,
                 space: 1,
                 name: "Batch".to_string(),
+                parent: None,
             });
             let ordered: Vec<TabId> = store
                 .tabs

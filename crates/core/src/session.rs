@@ -42,6 +42,9 @@ pub struct SavedFolder {
     pub id: FolderId,
     pub space: SpaceId,
     pub name: String,
+    /// `None` for a space-root folder; `Some` when nested inside another folder.
+    #[serde(default)]
+    pub parent: Option<FolderId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +112,7 @@ mod tests {
                 id: 2,
                 space: 1,
                 name: "Work".into(),
+                parent: None,
             }],
             tabs: vec![SavedTab {
                 id: 7,

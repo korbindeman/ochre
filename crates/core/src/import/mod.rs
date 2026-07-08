@@ -9,7 +9,8 @@ mod arc;
 
 pub use apply::{apply_arc_import, ApplyError, ApplyResult};
 pub use arc::{
-    parse_arc_sidebar, ArcFolder, ArcImport, ArcImportError, ArcImportPreview, ArcSpace, ArcTab,
+    parse_arc_sidebar, ArcFolder, ArcImport, ArcImportError, ArcImportPreview, ArcPinnedItem,
+    ArcSpace, ArcTab,
 };
 
 use std::path::Path;

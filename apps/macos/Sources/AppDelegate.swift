@@ -443,7 +443,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func clearOpenTabsMenu() { clearOpenTabs() }
 
     @objc func importFromArc(_ sender: Any?) {
-        ArcImportFlow.run(from: sender)
+        _ = sender
+        ArcImportFlow.runFromMenu()
     }
 
     /// Close open tabs except the multi-selection (or the active tab when nothing

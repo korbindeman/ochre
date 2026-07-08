@@ -14,7 +14,7 @@ struct SpaceContents: View {
     @State private var sidebarDropFrames: [SidebarDropFrame] = []
 
     var body: some View {
-        let folders = state.activeFolders
+        let folders = state.rootFolders
         let loose = state.looseSavedTabs
         let open = state.openTabs
         let hasSaved = !folders.isEmpty || !loose.isEmpty
@@ -239,24 +239,28 @@ private struct TabSectionHeader: View {
     }
 }
 
-/// A collapsible folder in the saved section, with its saved tabs indented
-/// beneath. Collapse state is view-local (UI only, not in the core).
+/// A collapsible folder in the saved section, with nested subfolders and saved
+/// tabs indented beneath. Collapse state is view-local (UI only, not in the core).
 struct FolderRow: View {
     let folder: FolderItem
+    var depth: Int = 0
     @ObservedObject private var state = BrowserState.shared
     @ObservedObject var drag: TabDragModel
     /// Shared with the rest of the sidebar so the active-tab highlight can slide
     /// between a folder tab and a loose/open tab.
     let selection: Namespace.ID
-    @State private var collapsed = false
+    @State private var collapsed = true
 
     private var app: AppDelegate? { NSApp.delegate as? AppDelegate }
+    private var indent: CGFloat { CGFloat(16 * (depth + 1)) }
 
     /// The header is lit while a dragged tab is aimed at this folder.
     private var isDropTarget: Bool { drag.slot == .ontoFolder(folder.id) }
 
     var body: some View {
         let tabs = state.tabs(inFolder: folder.id)
+        let children = state.childFolders(of: folder.id)
+        let itemCount = tabs.count + children.count
 
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
@@ -270,7 +274,7 @@ struct FolderRow: View {
                 Text(folder.name)
                     .lineLimit(1)
                 Spacer(minLength: 0)
-                Text("\(tabs.count)")
+                Text("\(itemCount)")
                     .font(.system(size: 11))
                     .monospacedDigit()
                     .foregroundStyle(.tertiary)
@@ -278,6 +282,7 @@ struct FolderRow: View {
             .font(.system(size: 13, weight: .medium))
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
+            .padding(.leading, CGFloat(depth) * 16)
             .background(
                 RoundedRectangle(cornerRadius: 8)
                     .fill(.tint)
@@ -297,10 +302,18 @@ struct FolderRow: View {
             .onDrop(of: [.text], delegate: FolderDropDelegate(folderId: folder.id, drag: drag))
 
             if !collapsed {
+                ForEach(children) { child in
+                    FolderRow(
+                        folder: child,
+                        depth: depth + 1,
+                        drag: drag,
+                        selection: selection
+                    )
+                }
                 ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
                     if drag.slot == .before(tab.id) {
                         TabDropPlaceholder()
-                            .padding(.leading, 16)
+                            .padding(.leading, indent)
                     }
                     TabRow(
                         tab: tab,
@@ -317,13 +330,13 @@ struct FolderRow: View {
                         next: index + 1 < tabs.count ? tabs[index + 1].id : nil,
                         drag: drag
                     )
-                    .padding(.leading, 16)
+                    .padding(.leading, indent)
                     .reportSidebarDropFrame(.tab(tab.id))
                     .transition(SidebarSelection.rowTransition)
                 }
                 if drag.slot == .endOf(.folder(folder.id)) {
                     TabDropPlaceholder()
-                        .padding(.leading, 16)
+                        .padding(.leading, indent)
                 }
             }
         }

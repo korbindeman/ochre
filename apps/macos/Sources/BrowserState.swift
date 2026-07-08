@@ -46,11 +46,13 @@ struct SpaceItem: Identifiable, Equatable {
     var icon: String
 }
 
-/// A folder inside a space's saved section; holds saved tabs.
+/// A folder inside a space's saved section; holds saved tabs and nested folders.
 struct FolderItem: Identifiable, Equatable {
     let id: Int32
     var space: Int32
     var name: String
+    /// `nil` at the space root; set when nested inside another folder.
+    var parent: Int32?
 }
 
 /// Observable UI state, a projection of the core-owned tree. Structure (spaces /
@@ -177,6 +179,12 @@ final class BrowserState: ObservableObject {
 
     // Folders / tabs of the active space, split into the sidebar's sections.
     var activeFolders: [FolderItem] { folders.filter { $0.space == activeSpaceId } }
+    var rootFolders: [FolderItem] {
+        activeFolders.filter { $0.parent == nil }
+    }
+    func childFolders(of parent: Int32) -> [FolderItem] {
+        activeFolders.filter { $0.parent == parent }
+    }
     var favoriteTabs: [TabItem] {
         tabs.filter { $0.space == activeSpaceId && $0.favorite && !$0.dismissed }
     }
@@ -193,13 +201,20 @@ final class BrowserState: ObservableObject {
     }
     func tabs(inFolder folder: Int32) -> [TabItem] { tabs.filter { $0.folder == folder } }
 
+    private func appendFolderTabOrder(_ folderId: Int32, into ids: inout [Int32]) {
+        for child in childFolders(of: folderId) {
+            appendFolderTabOrder(child.id, into: &ids)
+        }
+        ids.append(contentsOf: tabs(inFolder: folderId).map(\.id))
+    }
+
     /// Sidebar row order (folders → loose saved → open) for shift-click range
     /// selection across sections.
     var sidebarTabOrder: [Int32] {
         var ids: [Int32] = []
         ids.append(contentsOf: favoriteTabs.map(\.id))
-        for folder in activeFolders {
-            ids.append(contentsOf: tabs(inFolder: folder.id).map(\.id))
+        for folder in rootFolders {
+            appendFolderTabOrder(folder.id, into: &ids)
         }
         ids.append(contentsOf: looseSavedTabs.map(\.id))
         ids.append(contentsOf: openTabs.map(\.id))
@@ -287,7 +302,9 @@ final class BrowserState: ObservableObject {
             )
         }
         let newSpaces = snap.spaces.map { SpaceItem(id: $0.id, name: $0.name, icon: $0.icon) }
-        let newFolders = snap.folders.map { FolderItem(id: $0.id, space: $0.space, name: $0.name) }
+        let newFolders = snap.folders.map {
+            FolderItem(id: $0.id, space: $0.space, name: $0.name, parent: $0.parent)
+        }
 
         // Spring the sidebar through structural changes (reorder / pin / create /
         // close / select), but not the first population at launch — rows shouldn't
@@ -645,6 +662,7 @@ private struct Snapshot: Decodable {
         let id: Int32
         let space: Int32
         let name: String
+        let parent: Int32?
     }
     struct TabDTO: Decodable {
         let id: Int32

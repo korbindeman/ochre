@@ -204,7 +204,7 @@ pub fn bootstrap_on_load_end(browser: &mut Browser, frame: &mut Frame) {
         return;
     }
     let url = CefString::from(&frame.url()).to_string();
-    if url == BLANK_URL || url.is_empty() {
+    if url == BLANK_URL || url.is_empty() || url.starts_with("data:") {
         return;
     }
     let Some(host) = browser.host() else {

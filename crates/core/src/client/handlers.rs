@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::tabs;
 
+use super::error_page;
 use super::BrowserHandler;
 
 // Forwards find-in-page results to the host's registered callback (embedded
@@ -332,14 +333,27 @@ wrap_load_handler! {
 
         fn on_load_error(
             &self,
-            browser: Option<&mut Browser>,
+            _browser: Option<&mut Browser>,
             frame: Option<&mut Frame>,
             error_code: Errorcode,
             error_text: Option<&CefString>,
             failed_url: Option<&CefString>,
         ) {
-            let mut inner = self.inner.lock().expect("Failed to lock handler");
-            inner.on_load_error(browser, frame, error_code, error_text, failed_url);
+            // Read runtime style under the lock, then release before `load_url`.
+            // Loading the error page re-enters display/load callbacks that take
+            // the same mutex — holding it here deadlocks the UI thread.
+            let runtime_style = self
+                .inner
+                .lock()
+                .expect("Failed to lock handler")
+                .runtime_style();
+            error_page::show(
+                runtime_style,
+                frame,
+                error_code,
+                error_text,
+                failed_url,
+            );
         }
     }
 }
@@ -442,46 +456,6 @@ wrap_resource_request_handler! {
             ReturnValue::CONTINUE
         }
     }
-}
-
-// ─── Alloy error pages ───────────────────────────────────────────────────
-
-/// Render a simple HTML error page for failed navigations in Alloy style.
-pub(super) fn show_load_error_page(
-    runtime_style: RuntimeStyle,
-    frame: Option<&mut Frame>,
-    error_code: Errorcode,
-    error_text: Option<&CefString>,
-    failed_url: Option<&CefString>,
-) {
-    // Only show custom error pages in Alloy style.
-    if runtime_style != RuntimeStyle::ALLOY {
-        return;
-    }
-
-    let error_code = sys::cef_errorcode_t::from(error_code);
-    if error_code == sys::cef_errorcode_t::ERR_ABORTED {
-        return;
-    }
-    let error_code = error_code as i32;
-
-    let frame = frame.expect("Frame is None");
-    let error_text = error_text.map(CefString::to_string).unwrap_or_default();
-    let failed_url = failed_url.map(CefString::to_string).unwrap_or_default();
-    let data = format!(
-        r#"<html><body bgcolor="white">
-        <h2>Failed to load URL {failed_url} with error {error_text} ({error_code}).</h2>
-        </body></html>"#
-    );
-    let uri = get_data_uri(data.as_bytes(), "text/html");
-    let uri = CefString::from(uri.as_str());
-    frame.load_url(Some(&uri));
-}
-
-fn get_data_uri(data: &[u8], mime_type: &str) -> String {
-    let data = CefString::from(&base64_encode(Some(data)));
-    let uri = CefString::from(&uriencode(Some(&data), 0)).to_string();
-    format!("data:{mime_type};base64,{uri}")
 }
 
 // ─── Window & view delegates (Views framework) ───────────────────────────

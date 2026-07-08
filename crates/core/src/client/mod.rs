@@ -6,6 +6,7 @@
 //! - Window and browser-view delegates for the Views framework.
 
 mod devtools;
+mod error_page;
 mod favicon;
 mod handlers;
 
@@ -281,21 +282,8 @@ impl BrowserHandler {
         self.is_closing
     }
 
-    fn on_load_error(
-        &mut self,
-        _browser: Option<&mut Browser>,
-        frame: Option<&mut Frame>,
-        error_code: Errorcode,
-        error_text: Option<&CefString>,
-        failed_url: Option<&CefString>,
-    ) {
-        handlers::show_load_error_page(
-            self.runtime_style,
-            frame,
-            error_code,
-            error_text,
-            failed_url,
-        );
+    pub(crate) fn runtime_style(&self) -> RuntimeStyle {
+        self.runtime_style
     }
 }
 

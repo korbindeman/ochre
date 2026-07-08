@@ -1,21 +1,31 @@
 import AppKit
 import UniformTypeIdentifiers
 
-/// Arc `StorableSidebar.json` import — preview, confirm, merge/replace (File menu).
+/// Arc `StorableSidebar.json` import — auto-detects Arc on this Mac, previews counts,
+/// then merge/replaces the sidebar. Settings is the primary surface; File → Import
+/// is a shortcut to the same flow.
 enum ArcImportFlow {
-    private struct ImportError: Error, LocalizedError {
-        let message: String
-        var errorDescription: String? { message }
-    }
-
-    struct Preview {
+    struct Preview: Equatable {
         let spaces: Int
         let folders: Int
         let tabs: Int
         let favorites: Int
+
+        var isEmpty: Bool { spaces == 0 && tabs == 0 && favorites == 0 }
+
+        var summary: String {
+            var parts: [String] = []
+            parts.append("\(spaces) space\(spaces == 1 ? "" : "s")")
+            parts.append("\(folders) folder\(folders == 1 ? "" : "s")")
+            parts.append("\(tabs) pinned tab\(tabs == 1 ? "" : "s")")
+            if favorites > 0 {
+                parts.append("\(favorites) favorite\(favorites == 1 ? "" : "s")")
+            }
+            return parts.joined(separator: ", ")
+        }
     }
 
-    struct ImportCounts {
+    struct ImportCounts: Equatable {
         let spaces: Int
         let folders: Int
         let tabs: Int
@@ -23,96 +33,193 @@ enum ArcImportFlow {
         let skippedDuplicates: Int
     }
 
-    /// Open a file picker (defaulting to Arc's sidebar file) and run the import flow.
+    private struct ImportError: Error, LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    /// Arc's sidebar file when Arc is (or was) installed on this Mac.
+    static func defaultSidebarURL() -> URL? {
+        guard let c = browser_import_arc_default_path() else { return nil }
+        defer { browser_string_free(c) }
+        return URL(fileURLWithPath: String(cString: c))
+    }
+
+    /// The sidebar file if it exists on disk — no file picker required.
+    static func detectedSidebarURL() -> URL? {
+        guard let url = defaultSidebarURL(),
+            FileManager.default.isReadableFile(atPath: url.path)
+        else { return nil }
+        return url
+    }
+
+    /// A home-shortened path for display in Settings.
+    static func displayPath(for url: URL) -> String {
+        let path = url.path
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path.hasPrefix(home) {
+            return "~" + path.dropFirst(home.count)
+        }
+        return path
+    }
+
+    static func loadPreview(for url: URL) -> Preview? {
+        if case .success(let preview) = preview(url) { return preview }
+        return nil
+    }
+
+    static func loadPreviewError(for url: URL) -> String? {
+        if case .failure(let error) = preview(url) { return error.localizedDescription }
+        return nil
+    }
+
+    @discardableResult
+    static func importSidebar(at url: URL, replace: Bool) -> ImportCounts? {
+        if case .success(let counts) = importFile(url, replace: replace) { return counts }
+        return nil
+    }
+
+    static func importSidebarError(at url: URL, replace: Bool) -> String? {
+        if case .failure(let error) = importFile(url, replace: replace) {
+            return error.localizedDescription
+        }
+        return nil
+    }
+
+    /// File → Import from Arc: auto-detect, then preview + confirm. No file picker
+    /// when Arc's sidebar is on disk.
     @MainActor
-    static func run(from sender: Any?) {
+    static func runFromMenu() {
+        if let url = detectedSidebarURL() {
+            runImport(from: url)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Arc sidebar not found"
+        alert.informativeText = """
+            Browser looks for Arc's sidebar data at
+            ~/Library/Application Support/Arc/StorableSidebar.json.
+
+            If Arc is installed, open it once so the file exists. You can also import \
+            from a copy of that file, or set up import in Settings.
+            """
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "Choose File…")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            BrowserState.shared.openSettings()
+            SettingsModel.shared.section = .general
+            SettingsModel.shared.reloadArcImport()
+        case .alertSecondButtonReturn:
+            if let url = chooseSidebarFile() {
+                runImport(from: url)
+            }
+        default:
+            break
+        }
+    }
+
+    /// Manual fallback — e.g. importing a backup copy of `StorableSidebar.json`.
+    @MainActor
+    static func chooseSidebarFile() -> URL? {
         let panel = NSOpenPanel()
-        panel.title = "Import from Arc"
-        panel.prompt = "Preview"
+        panel.title = "Choose Arc Sidebar File"
+        panel.prompt = "Choose"
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.json]
-        if let defaultPath = defaultPath() {
-            panel.directoryURL = defaultPath.deletingLastPathComponent()
-            panel.nameFieldStringValue = defaultPath.lastPathComponent
+        panel.message = "Select Arc's StorableSidebar.json (or a backup copy)."
+        if let defaultURL = defaultSidebarURL() {
+            panel.directoryURL = defaultURL.deletingLastPathComponent()
+            panel.nameFieldStringValue = defaultURL.lastPathComponent
         }
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        runImport(from: url, sender: sender)
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return url
     }
 
     @MainActor
-    private static func runImport(from url: URL, sender: Any?) {
+    static func runImport(from url: URL) {
         switch preview(url) {
         case .failure(let error):
-            showError(error.localizedDescription, sender: sender)
+            showError(error.localizedDescription)
         case .success(let preview):
-            guard preview.spaces > 0 || preview.tabs > 0 || preview.favorites > 0 else {
-                showError("Nothing to import in this file.", sender: sender)
+            guard !preview.isEmpty else {
+                showError("Nothing to import in this file.")
                 return
             }
-            confirmAndImport(url: url, preview: preview, sender: sender)
+            confirmAndImport(url: url, preview: preview)
         }
     }
 
     @MainActor
-    private static func confirmAndImport(url: URL, preview: Preview, sender: Any?) {
-        let alert = NSAlert()
-        alert.messageText = "Import from Arc?"
-        alert.informativeText = """
-            \(preview.spaces) space\(preview.spaces == 1 ? "" : "s"), \
-            \(preview.folders) folder\(preview.folders == 1 ? "" : "s"), \
-            \(preview.tabs) pinned tab\(preview.tabs == 1 ? "" : "s")\
-            \(preview.favorites > 0 ? ", \(preview.favorites) favorite\(preview.favorites == 1 ? "" : "s")" : "").
+    static func confirmAndImport(url: URL, preview: Preview, replace: Bool? = nil) {
+        let doReplace: Bool
+        if let replace {
+            if replace && !confirmReplace() { return }
+            doReplace = replace
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "Import from Arc?"
+            alert.informativeText = """
+                \(preview.summary)
 
-            Merge adds to your current sidebar. Replace clears it first.
-            Open (“Today”) tabs from Arc are not stored in this file and won’t import.
-            """
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Merge")
-        alert.addButton(withTitle: "Replace")
-        alert.addButton(withTitle: "Cancel")
-        let choice = alert.runModal()
-        if choice == .alertThirdButtonReturn { return }
-        let replace = choice == .alertSecondButtonReturn
-        if replace {
-            let warn = NSAlert()
-            warn.messageText = "Replace your sidebar?"
-            warn.informativeText =
-                "This closes every tab and removes all spaces, folders, and saved tabs before importing from Arc."
-            warn.alertStyle = .warning
-            warn.addButton(withTitle: "Replace")
-            warn.addButton(withTitle: "Cancel")
-            guard warn.runModal() == .alertFirstButtonReturn else { return }
+                Add to Sidebar keeps your current spaces and adds Arc's. Replace Sidebar \
+                clears everything first.
+
+                Open (“Today”) tabs from Arc are not in this file and won't import.
+                """
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "Add to Sidebar")
+            alert.addButton(withTitle: "Replace Sidebar")
+            alert.addButton(withTitle: "Cancel")
+            let choice = alert.runModal()
+            if choice == .alertThirdButtonReturn { return }
+            let wantsReplace = choice == .alertSecondButtonReturn
+            if wantsReplace && !confirmReplace() { return }
+            doReplace = wantsReplace
         }
-        switch importFile(url, replace: replace) {
+
+        switch importFile(url, replace: doReplace) {
         case .failure(let error):
-            showError(error.localizedDescription, sender: sender)
+            showError(error.localizedDescription)
         case .success(let result):
-            let done = NSAlert()
-            done.messageText = "Import complete"
-            var lines = [
-                "Imported \(result.spaces) space\(result.spaces == 1 ? "" : "s"), \(result.folders) folder\(result.folders == 1 ? "" : "s"), \(result.tabs) tab\(result.tabs == 1 ? "" : "s")."
-            ]
-            if result.favorites > 0 {
-                lines.append(
-                    "Arc favorites were added to the first imported space’s pinned strip.")
-            }
-            if result.skippedDuplicates > 0 {
-                lines.append(
-                    "Skipped \(result.skippedDuplicates) duplicate URL\(result.skippedDuplicates == 1 ? "" : "s") already in a space."
-                )
-            }
-            done.informativeText = lines.joined(separator: " ")
-            done.alertStyle = .informational
-            done.runModal()
+            showSuccess(result)
         }
     }
 
-    private static func defaultPath() -> URL? {
-        guard let c = browser_import_arc_default_path() else { return nil }
-        defer { browser_string_free(c) }
-        return URL(fileURLWithPath: String(cString: c))
+    @MainActor
+    static func confirmReplace() -> Bool {
+        let warn = NSAlert()
+        warn.messageText = "Replace your sidebar?"
+        warn.informativeText =
+            "This closes every tab and removes all spaces, folders, and saved tabs before importing from Arc."
+        warn.alertStyle = .warning
+        warn.addButton(withTitle: "Replace")
+        warn.addButton(withTitle: "Cancel")
+        return warn.runModal() == .alertFirstButtonReturn
+    }
+
+    @MainActor
+    private static func showSuccess(_ result: ImportCounts) {
+        let alert = NSAlert()
+        alert.messageText = "Import complete"
+        var lines = [
+            "Imported \(result.spaces) space\(result.spaces == 1 ? "" : "s"), \(result.folders) folder\(result.folders == 1 ? "" : "s"), \(result.tabs) tab\(result.tabs == 1 ? "" : "s")."
+        ]
+        if result.favorites > 0 {
+            lines.append("Arc favorites were added to the first imported space's pinned strip.")
+        }
+        if result.skippedDuplicates > 0 {
+            lines.append(
+                "Skipped \(result.skippedDuplicates) duplicate URL\(result.skippedDuplicates == 1 ? "" : "s") already in a space."
+            )
+        }
+        alert.informativeText = lines.joined(separator: " ")
+        alert.alertStyle = .informational
+        alert.runModal()
     }
 
     private static func preview(_ url: URL) -> Result<Preview, ImportError> {
@@ -163,8 +270,7 @@ enum ArcImportFlow {
     }
 
     @MainActor
-    private static func showError(_ message: String, sender: Any?) {
-        _ = sender
+    private static func showError(_ message: String) {
         let alert = NSAlert()
         alert.messageText = "Arc import failed"
         alert.informativeText = message

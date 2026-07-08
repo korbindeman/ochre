@@ -182,6 +182,7 @@ private struct GeneralPane: View {
             }
             SettingsFootnote("Used for searches from the address bar and command bar.")
         }
+        ArcImportSettingsGroup(model: model)
         SettingsGroup("About") {
             SettingsRow(
                 title: "Version",
@@ -192,6 +193,62 @@ private struct GeneralPane: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
+        }
+    }
+}
+
+// MARK: Arc import
+
+private struct ArcImportSettingsGroup: View {
+    @ObservedObject var model: SettingsModel
+
+    var body: some View {
+        SettingsGroup("Switching from Arc") {
+            if let url = model.arcSidebarURL, let preview = model.arcPreview {
+                SettingsRow(
+                    title: "Arc sidebar found",
+                    subtitle: ArcImportFlow.displayPath(for: url)
+                ) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                Text(preview.summary)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    Button("Add to Sidebar") {
+                        model.importArcMerge()
+                    }
+                    .buttonStyle(.glass)
+                    Button("Replace Sidebar") {
+                        model.importArcReplace()
+                    }
+                    .buttonStyle(.glass)
+                }
+                Button("Choose another file…") {
+                    model.chooseArcSidebarFile()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            } else {
+                SettingsRow(
+                    title: "Arc sidebar not found",
+                    subtitle: model.arcNotFoundExplanation
+                ) {
+                    EmptyView()
+                }
+                Button("Choose sidebar file…") {
+                    model.chooseArcSidebarFile()
+                }
+                .buttonStyle(.glass)
+            }
+            if let status = model.arcImportStatus {
+                Text(status)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            SettingsFootnote(model.arcImportFootnote)
         }
     }
 }
@@ -546,6 +603,25 @@ final class SettingsModel: ObservableObject {
     @Published var isDefaultBrowser = false
     @Published var addressBarPlacement: AddressBarPlacement = .sidebar
     @Published var sidebarPageTintEnabled = false
+    @Published var arcSidebarURL: URL?
+    @Published var arcPreview: ArcImportFlow.Preview?
+    @Published var arcImportStatus: String?
+
+    var arcNotFoundExplanation: String {
+        if let path = ArcImportFlow.defaultSidebarURL() {
+            return
+                "No file at \(ArcImportFlow.displayPath(for: path)). Open Arc once, or choose a copy of StorableSidebar.json."
+        }
+        return "Arc sidebar import is only available on macOS."
+    }
+
+    var arcImportFootnote: String {
+        """
+        Imports spaces, folders, and pinned tabs from Arc's StorableSidebar.json. \
+        Open (“Today”) tabs, easels, and split views are not stored in that file. \
+        Add to Sidebar keeps your current layout; Replace clears it first.
+        """
+    }
 
     var appVersion: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1"
@@ -566,6 +642,62 @@ final class SettingsModel: ObservableObject {
         addressBarPlacement =
             BrowserState.shared.isViewportURLBarEnabled ? .page : .sidebar
         sidebarPageTintEnabled = BrowserState.shared.isSidebarPageTintEnabled
+        reloadArcImport()
+    }
+
+    func reloadArcImport() {
+        arcImportStatus = nil
+        if let url = ArcImportFlow.detectedSidebarURL() {
+            arcSidebarURL = url
+            arcPreview = ArcImportFlow.loadPreview(for: url)
+        } else {
+            arcSidebarURL = nil
+            arcPreview = nil
+        }
+    }
+
+    func chooseArcSidebarFile() {
+        guard let url = ArcImportFlow.chooseSidebarFile() else { return }
+        arcSidebarURL = url
+        if let preview = ArcImportFlow.loadPreview(for: url), !preview.isEmpty {
+            arcPreview = preview
+            arcImportStatus = "Ready to import from chosen file."
+        } else {
+            arcPreview = nil
+            arcImportStatus =
+                ArcImportFlow.loadPreviewError(for: url) ?? "Nothing to import in that file."
+        }
+    }
+
+    func importArcMerge() {
+        importArc(replace: false)
+    }
+
+    func importArcReplace() {
+        guard ArcImportFlow.confirmReplace() else { return }
+        importArc(replace: true)
+    }
+
+    private func importArc(replace: Bool) {
+        guard let url = arcSidebarURL, let preview = arcPreview, !preview.isEmpty else {
+            arcImportStatus = "Choose an Arc sidebar file first."
+            return
+        }
+        if let result = ArcImportFlow.importSidebar(at: url, replace: replace) {
+            var parts = [
+                "Imported \(result.spaces) space\(result.spaces == 1 ? "" : "s"), \(result.tabs) tab\(result.tabs == 1 ? "" : "s")."
+            ]
+            if result.skippedDuplicates > 0 {
+                parts.append(
+                    "Skipped \(result.skippedDuplicates) duplicate URL\(result.skippedDuplicates == 1 ? "" : "s")."
+                )
+            }
+            arcImportStatus = parts.joined(separator: " ")
+            reloadArcImport()
+        } else {
+            arcImportStatus =
+                ArcImportFlow.importSidebarError(at: url, replace: replace) ?? "Import failed."
+        }
     }
 
     func setSidebarPageTintEnabled(_ enabled: Bool) {
