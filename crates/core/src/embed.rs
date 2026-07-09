@@ -382,14 +382,20 @@ unsafe fn create_tab_browser(
 
     let settings = BrowserSettings::default();
     let cef_url = CefString::from(url);
-    browser_host_create_browser_sync(
+    let browser = browser_host_create_browser_sync(
         Some(&window_info),
         client.as_mut(),
         Some(&cef_url),
         Some(&settings),
         None,
         None,
-    )
+    );
+    // Tab browsers live inside the host's window — suppress CEF's default
+    // close-the-parent-window for them (ADR-0037).
+    if let Some(browser) = &browser {
+        crate::client::note_embedded_tab(browser);
+    }
+    browser
 }
 
 /// Make tab `id` the active tab (of its space). The host reacts to the resulting
@@ -451,6 +457,17 @@ pub fn vault_fill_active_tab(id: &str) {
     crate::inject::evaluate_main_world(&host, &expr);
 }
 
+/// Hide an active saved tab without removing it from the saved section. Main
+/// thread only.
+pub fn hide_saved_tab(id: TabId) {
+    tabs::hide_saved_tab(id);
+}
+
+/// Permanently delete tab `id` (context-menu path). Main thread only.
+pub fn delete_tab(id: TabId) {
+    tabs::delete_tab(id);
+}
+
 /// Close tab `id`: the tab model records it for reopen, removes it (repairing
 /// active), and routes its browser through CEF's close flow. Main thread only.
 pub fn close_tab(id: TabId) {
@@ -480,11 +497,6 @@ pub fn set_tab_pinned(id: TabId, pinned: bool) {
 /// Pin or unpin tab `id` in the Arc-style icon strip (ADR-0032).
 pub fn set_tab_favorite(id: TabId, favorite: bool) {
     tabs::set_favorite(id, favorite);
-}
-
-/// Restore a dismissed favorite to the icon strip.
-pub fn restore_tab_favorite(id: TabId) {
-    tabs::restore_favorite(id);
 }
 
 /// Move tab `id` into folder `folder` (negative ⇒ out of any folder). Moving
@@ -910,11 +922,7 @@ fn request_close_normal_window(app_quit: bool) -> bool {
         }
     }
     close_browsers(|cef_id| !private_window::is_private_cef(cef_id));
-    if app_quit {
-        true
-    } else {
-        false
-    }
+    app_quit
 }
 
 fn close_browsers(pred: impl Fn(i32) -> bool) {

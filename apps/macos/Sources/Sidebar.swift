@@ -64,6 +64,7 @@ struct Sidebar: View {
 
             if !isPrivate {
                 PinnedTabStrip(drag: tabDrag)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             // The active space's tree: saved section (folders + loose saved)
@@ -87,6 +88,8 @@ struct Sidebar: View {
                 .scrollIndicators(.never)
             }
             .frame(maxHeight: .infinity)
+            // The scroll viewport — the drag model autoscrolls at its edges.
+            .reportSidebarDropFrame(.viewport)
 
             if isPrivate {
                 HStack(spacing: 6) {
@@ -106,6 +109,16 @@ struct Sidebar: View {
         .padding(.bottom, 10)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background { SidebarPageTintBackground(isPrivate: isPrivate) }
+        .sidebarPageTintColorScheme(isPrivate: isPrivate)
+        // One coordinate space for the whole tree (ADR-0035): strip icons, rows,
+        // the drag gesture, and the overlay's indicator/ghost all speak in it.
+        // Released outside the root frame cancels the drag.
+        .reportSidebarDropFrame(.root)
+        .coordinateSpace(.named(SidebarDropSpace.name))
+        .overlay { SidebarDragOverlay(drag: tabDrag, geometry: tabDrag.geometry) }
+        .onPreferenceChange(SidebarDropFramesKey.self) { frames in
+            MainActor.assumeIsolated { tabDrag.framesChanged(frames) }
+        }
     }
 }
 

@@ -34,8 +34,9 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.title = title
-        // Tab reorder uses SwiftUI `onDrag` in the sidebar body; background drag
-        // competes with it at `mouseDown`. Top chrome drags via `WindowDragHandle`.
+        // Tab reorder uses a drag gesture in the sidebar body (ADR-0035);
+        // background drag competes with it at `mouseDown`. Top chrome drags via
+        // `WindowDragHandle`.
         window.isMovableByWindowBackground = false
         window.delegate = self
         window.center()
@@ -90,6 +91,14 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    func deleteTab(_ id: Int32) {
+        if isPrivate {
+            browser_private_tab_close(windowId, id)
+        } else {
+            rootView.deleteTab(id)
+        }
+    }
+
     private func setNativeButtonsHidden(_ hidden: Bool) {
         for type: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
             window?.standardWindowButton(type)?.isHidden = hidden
@@ -112,6 +121,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        NSLog("[window] windowShouldClose windowId=\(windowId)")
         if isPrivate {
             return !browser_request_close_window(windowId)
         }

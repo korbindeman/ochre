@@ -80,12 +80,13 @@ bind) so they can't silently drift from the code — see ADR-0007 · *Future*.
 |---|:---:|:---:|:---:|:---:|---|
 | Vertical tab list (favicon/title/close/select) | Inv | 🚧 | ⬜ | ⬜ | style §4 · spec §6 |
 | Create / close / **reorder** / select motion | Inv | 🚧 | ⬜ | ⬜ | style §4,§7 |
-| Drag: reorder inline · pin/unpin by drag · file into/out of a folder | Inv | 🚧 | ⬜ | ⬜ | style §4,§7 · ADR-0015 |
+| Drag: reorder inline · pin/unpin by drag · file into/out of a folder | Inv | ✅ | ⬜ | ⬜ | style §4,§7 · ADR-0015 · ADR-0035 · `just drag-selftest` |
 | Live state (title/favicon/spinner) | Inv | ✅ | ⬜ | ⬜ | style §4 · spec §5 |
 | Audio-playing indicator + click-to-mute | Inv | ⬜ | ⬜ | ⬜ | style §4 |
 | New tab adjacent + focused; close selects neighbor | Inv | 🚧 | ⬜ | ⬜ | style §4 |
 | Reopen closed tab (⌘⇧T) — faithful restore of space/folder/pinned/slot | Inv | 🚧 | ⬜ | ⬜ | style §4 · ADR-0013 |
 | Saved vs. open tab split | Inv | 🚧 | ⬜ | ⬜ | style §4 · ADR-0006 |
+| Pinned favorites — permanent Arc-style icon strip; click focuses, ⌘W deselects (icon never leaves) | Inv | ✅ | ⬜ | ⬜ | style §4 · ADR-0032 · ADR-0038 |
 | Session persistence — tabs/spaces/folders survive restart (lazy hydration) | Inv | 🚧 | ⬜ | ⬜ | rm §4 · ADR-0013 |
 
 ## Spaces

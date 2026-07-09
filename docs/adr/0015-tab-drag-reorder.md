@@ -1,6 +1,7 @@
 # ADR-0015: Tab drag-and-drop — implicit order, one relocation primitive, commit-on-drop
 
-- **Status:** Accepted
+- **Status:** Accepted — gesture layer superseded by ADR-0035 (the model — implicit order, one
+  relocation primitive, commit-on-drop — stands)
 - **Date:** 2026-07-06
 
 ## Context

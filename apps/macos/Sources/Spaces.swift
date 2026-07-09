@@ -11,7 +11,6 @@ struct SpaceContents: View {
     /// Namespace for the sliding active-tab highlight, shared across saved and
     /// open rows so the selection can animate between any of them.
     @Namespace private var selection
-    @State private var sidebarDropFrames: [SidebarDropFrame] = []
 
     var body: some View {
         let folders = state.rootFolders
@@ -20,21 +19,18 @@ struct SpaceContents: View {
         let hasSaved = !folders.isEmpty || !loose.isEmpty
 
         VStack(alignment: .leading, spacing: 4) {
+            if let space = state.activeSpace {
+                TabSectionHeader(title: space.name)
+            }
             ForEach(folders) { folder in
                 FolderRow(folder: folder, drag: drag, selection: selection)
             }
-            sectionRows(loose, section: .looseSaved)
+            sectionRows(loose)
             if hasSaved {
                 Divider()
                     .padding(.vertical, 4)
             }
-            if loose.isEmpty, drag.slot == .endOf(.looseSaved) {
-                TabDropPlaceholder()
-            }
-            NewTabRow(looseEmpty: loose.isEmpty, firstOpen: open.first?.id, drag: drag)
-            if open.isEmpty, drag.slot == .endOf(.open) {
-                TabDropPlaceholder()
-            }
+            NewTabRow(looseEmpty: loose.isEmpty, firstOpen: open.first?.id)
             if !open.isEmpty {
                 TabSectionHeader(
                     title: "Open",
@@ -43,9 +39,9 @@ struct SpaceContents: View {
                     onAction: { (NSApp.delegate as? AppDelegate)?.clearOpenTabs() }
                 )
             }
-            sectionRows(open, section: .open)
+            sectionRows(open)
             // Arc-style: the unfilled scroll viewport below the last row drags the
-            // window; tab rows above keep their own `onDrag` reorder affordance.
+            // window; tab rows above keep their own drag-reorder affordance.
             Spacer(minLength: 0)
                 .frame(maxWidth: .infinity)
                 .overlay {
@@ -57,68 +53,48 @@ struct SpaceContents: View {
                     }
                 }
         }
-        .coordinateSpace(.named(SidebarDropSpace.name))
-        .onPreferenceChange(SidebarDropFramesKey.self) { sidebarDropFrames = $0 }
-        .overlay {
-            if isDraggingFavorite {
-                FavoriteSidebarDropLayer(drag: drag, frames: sidebarDropFrames)
-            }
-        }
+        .background(ScrollViewProbe(drag: drag))
     }
 
-    private var isDraggingFavorite: Bool {
-        guard let id = drag.draggingId else { return false }
-        return state.tabs.first { $0.id == id }?.favorite ?? false
-    }
-
-    /// A section's tabs in order, each wired for drag reordering with a pointer
-    /// to its next sibling (nil when last) so a below-the-midpoint drop knows
-    /// whether to insert before it or append to the section.
+    /// A section's tabs in order, each a drag source; the shared resolver derives
+    /// insertion points from their reported frames.
     @ViewBuilder
-    func sectionRows(_ tabs: [TabItem], section: TabSection) -> some View {
-        ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
-            if drag.slot == .before(tab.id) {
-                TabDropPlaceholder()
-            }
-            tabRow(
-                tab,
-                section: section,
-                next: index + 1 < tabs.count ? tabs[index + 1].id : nil
-            )
-        }
-        if drag.slot == .endOf(section) {
-            TabDropPlaceholder()
+    func sectionRows(_ tabs: [TabItem]) -> some View {
+        ForEach(tabs) { tab in
+            tabRow(tab)
         }
     }
 
     @ViewBuilder
-    func tabRow(_ tab: TabItem, section: TabSection, next: Int32?) -> some View {
+    func tabRow(_ tab: TabItem) -> some View {
+        let app = NSApp.delegate as? AppDelegate
+        let isActive = tab.id == state.activeTabId && !state.isSurfaceOpen
         TabRow(
             tab: tab,
             // A tab and a native surface are mutually exclusive — no tab reads as
             // active while History/Passwords/Settings covers the canvas.
-            isActive: tab.id == state.activeTabId && !state.isSurfaceOpen,
+            isActive: isActive,
             isMultiSelected: state.selectedTabIds.contains(tab.id),
             selection: selection,
             onSelect: { state.handleTabClick(tab.id) },
-            onClose: { (NSApp.delegate as? AppDelegate)?.closeTab(tab.id) }
+            onClose: { app?.closeTab(tab.id) },
+            onHideSaved: tab.pinned && !tab.favorite && isActive
+                ? { app?.hideSavedTab(tab.id) } : nil
         )
         .contextMenu { TabMenu(tab: tab) }
-        .tabRowDrag(tab: tab, section: section, next: next, drag: drag)
+        .sidebarTabDrag(tab: tab, drag: drag)
         .reportSidebarDropFrame(.tab(tab.id))
         .transition(SidebarSelection.rowTransition)
     }
 }
 
 /// The New Tab row between saved and open — opens the command bar. Styled like a
-/// tab row so the list reads as one column. It also doubles as the drag boundary
-/// between saved and open (see `BoundaryDropDelegate`).
+/// tab row so the list reads as one column. Its reported frame doubles as the
+/// drag boundary between saved and open (see `SidebarDropResolver`).
 private struct NewTabRow: View {
     let looseEmpty: Bool
     let firstOpen: Int32?
-    @ObservedObject var drag: TabDragModel
 
-    @State private var height: CGFloat = 36
     @State private var hovering = false
 
     var body: some View {
@@ -143,22 +119,7 @@ private struct NewTabRow: View {
         .contentShape(.rect)
         .onTapGesture { (NSApp.delegate as? AppDelegate)?.toggleCommandBar() }
         .onHover { hovering = $0 }
-        .background(
-            GeometryReader { geo in
-                Color.clear.preference(key: RowHeightKey.self, value: geo.size.height)
-            }
-        )
-        .onPreferenceChange(RowHeightKey.self) { height = $0 }
         .reportSidebarDropFrame(.newTab(looseEmpty: looseEmpty, firstOpen: firstOpen))
-        .onDrop(
-            of: [.text],
-            delegate: BoundaryDropDelegate(
-                looseEmpty: looseEmpty,
-                firstOpen: firstOpen,
-                rowHeight: { height },
-                drag: drag
-            )
-        )
     }
 }
 
@@ -190,6 +151,7 @@ private struct TabMenu: View {
             Button("Unpin Tab") { app?.setTabFavorite(tab.id, false) }
         } else {
             Button("Pin Tab") { app?.setTabFavorite(tab.id, true) }
+                .disabled(!state.canPinMoreFavorites)
         }
         if tab.pinned {
             Button("Move to Open") { app?.setTabSaved(tab.id, false) }
@@ -205,7 +167,20 @@ private struct TabMenu: View {
             Button("Save Tab") { app?.setTabSaved(tab.id, true) }
         }
         Divider()
-        Button(tab.favorite ? "Close Pinned Tab" : "Close Tab") { app?.closeTab(tab.id) }
+        if tab.favorite {
+            if tab.id == state.activeTabId && !state.isSurfaceOpen {
+                Button("Close Pinned Tab") { app?.closeTab(tab.id) }
+            }
+            Button("Delete Pinned Tab") { app?.deleteTab(tab.id) }
+        } else if tab.pinned {
+            if tab.id == state.activeTabId && !state.isSurfaceOpen {
+                Button("Close Tab") { app?.hideSavedTab(tab.id) }
+            } else {
+                Button("Delete Saved Tab") { app?.closeTab(tab.id) }
+            }
+        } else {
+            Button("Close Tab") { app?.closeTab(tab.id) }
+        }
     }
 }
 
@@ -250,6 +225,7 @@ struct FolderRow: View {
     /// between a folder tab and a loose/open tab.
     let selection: Namespace.ID
     @State private var collapsed = true
+    @State private var hovering = false
 
     private var app: AppDelegate? { NSApp.delegate as? AppDelegate }
     private var indent: CGFloat { CGFloat(16 * (depth + 1)) }
@@ -264,12 +240,8 @@ struct FolderRow: View {
 
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
+                Image(systemName: collapsed ? "folder" : "folder.fill")
                     .contentTransition(.symbolEffect(.replace))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 12)
-                Image(systemName: "folder")
                     .foregroundStyle(.secondary)
                 Text(folder.name)
                     .lineLimit(1)
@@ -283,12 +255,17 @@ struct FolderRow: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
             .padding(.leading, CGFloat(depth) * 16)
-            .background(
+            .background {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(.quaternary)
+                    .opacity(!isDropTarget && hovering ? 0.45 : 0)
+                    .hoverFade(hovering)
                 RoundedRectangle(cornerRadius: 8)
                     .fill(.tint)
                     .opacity(isDropTarget ? 0.22 : 0)
-            )
+            }
             .contentShape(.rect)
+            .onHover { hovering = $0 }
             .onTapGesture {
                 withAnimation(.easeOut(duration: 0.15)) { collapsed.toggle() }
             }
@@ -299,7 +276,6 @@ struct FolderRow: View {
                 Button("Delete Folder") { app?.deleteFolder(folder.id) }
             }
             .reportSidebarDropFrame(.folder(folder.id))
-            .onDrop(of: [.text], delegate: FolderDropDelegate(folderId: folder.id, drag: drag))
 
             if !collapsed {
                 ForEach(children) { child in
@@ -310,33 +286,25 @@ struct FolderRow: View {
                         selection: selection
                     )
                 }
-                ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
-                    if drag.slot == .before(tab.id) {
-                        TabDropPlaceholder()
-                            .padding(.leading, indent)
-                    }
+                ForEach(tabs) { tab in
+                    let isActive = tab.id == state.activeTabId && !state.isSurfaceOpen
                     TabRow(
                         tab: tab,
-                        isActive: tab.id == state.activeTabId && !state.isSurfaceOpen,
+                        isActive: isActive,
                         isMultiSelected: state.selectedTabIds.contains(tab.id),
                         selection: selection,
                         onSelect: { state.handleTabClick(tab.id) },
-                        onClose: { app?.closeTab(tab.id) }
+                        onClose: { app?.closeTab(tab.id) },
+                        onHideSaved: tab.pinned && !tab.favorite && isActive
+                            ? { app?.hideSavedTab(tab.id) } : nil
                     )
                     .contextMenu { TabMenu(tab: tab) }
-                    .tabRowDrag(
-                        tab: tab,
-                        section: .folder(folder.id),
-                        next: index + 1 < tabs.count ? tabs[index + 1].id : nil,
-                        drag: drag
-                    )
-                    .padding(.leading, indent)
+                    .sidebarTabDrag(tab: tab, drag: drag)
+                    // Report before the indent padding so the frame (and the
+                    // insertion indicator derived from it) is the visible row.
                     .reportSidebarDropFrame(.tab(tab.id))
+                    .padding(.leading, indent)
                     .transition(SidebarSelection.rowTransition)
-                }
-                if drag.slot == .endOf(.folder(folder.id)) {
-                    TabDropPlaceholder()
-                        .padding(.leading, indent)
                 }
             }
         }

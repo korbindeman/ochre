@@ -10,10 +10,9 @@ struct TabItem: Identifiable, Equatable {
     /// Saved (persistent in the sidebar tree) vs. open (working set). Core
     /// field is `pinned` — distinct from `favorite` (the icon strip).
     var pinned: Bool
-    /// Arc-style pinned icon strip below the URL bar (ADR-0032).
+    /// Arc-style pinned icon strip below the URL bar (ADR-0032). Permanent —
+    /// a close only deselects; the icon always stays (ADR-0038).
     var favorite: Bool
-    /// Hidden from the strip after a user close; browser stays loaded.
-    var dismissed: Bool
     var title: String = ""
     var url: String = ""
     var isLoading: Bool = false
@@ -177,6 +176,8 @@ final class BrowserState: ObservableObject {
         return tabs.first { $0.id == activeTabId }
     }
 
+    var activeSpace: SpaceItem? { spaces.first { $0.id == activeSpaceId } }
+
     // Folders / tabs of the active space, split into the sidebar's sections.
     var activeFolders: [FolderItem] { folders.filter { $0.space == activeSpaceId } }
     var rootFolders: [FolderItem] {
@@ -185,12 +186,14 @@ final class BrowserState: ObservableObject {
     func childFolders(of parent: Int32) -> [FolderItem] {
         activeFolders.filter { $0.parent == parent }
     }
+    /// Maximum visible favorites — 3×2 grid; matches core `MAX_VISIBLE_FAVORITES`.
+    static let maxFavoriteTabs = 6
+
+    /// Arc-style pinned icons — global across spaces (ADR-0032 / P2-5).
     var favoriteTabs: [TabItem] {
-        tabs.filter { $0.space == activeSpaceId && $0.favorite && !$0.dismissed }
+        tabs.filter { $0.favorite }
     }
-    var dismissedFavorites: [TabItem] {
-        tabs.filter { $0.space == activeSpaceId && $0.favorite && $0.dismissed }
-    }
+    var canPinMoreFavorites: Bool { favoriteTabs.count < Self.maxFavoriteTabs }
     var looseSavedTabs: [TabItem] {
         tabs.filter {
             $0.space == activeSpaceId && $0.pinned && !$0.favorite && $0.folder == nil
@@ -199,6 +202,10 @@ final class BrowserState: ObservableObject {
     var openTabs: [TabItem] {
         tabs.filter { $0.space == activeSpaceId && !$0.pinned && !$0.favorite }
     }
+    /// Whether any ephemeral tab exists in any space — saved tabs alone don't
+    /// count as "open."
+    var hasOpenTabs: Bool { tabs.contains { !$0.pinned && !$0.favorite } }
+
     func tabs(inFolder folder: Int32) -> [TabItem] { tabs.filter { $0.folder == folder } }
 
     private func appendFolderTabOrder(_ folderId: Int32, into ids: inout [Int32]) {
@@ -291,7 +298,6 @@ final class BrowserState: ObservableObject {
                 folder: dto.folder,
                 pinned: dto.pinned,
                 favorite: dto.favorite,
-                dismissed: dto.dismissed,
                 title: dto.title,
                 url: dto.url,
                 isLoading: dto.loading,
@@ -367,7 +373,6 @@ final class BrowserState: ObservableObject {
                 folder: nil,
                 pinned: false,
                 favorite: false,
-                dismissed: false,
                 title: dto.title,
                 url: dto.url,
                 isLoading: dto.loading,
@@ -670,7 +675,6 @@ private struct Snapshot: Decodable {
         let folder: Int32?
         let pinned: Bool
         let favorite: Bool
-        let dismissed: Bool
         let url: String
         let title: String
         let loading: Bool

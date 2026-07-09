@@ -91,7 +91,8 @@ enum MainMenu {
         // "New Tab" opens the command bar (Arc's ⌘T); entering a URL/search there
         // opens a new tab. "Open Location…" (⌘L) opens it to edit the active
         // tab's address in place. ⌘W closes the active tab (falling back to the
-        // window when none are open); ⌘⇧W closes the window.
+        // window only on the empty New Tab screen with no tabs left); ⌘⇧W
+        // closes the window.
         target(
             menu.addItem(
                 withTitle: "New Tab",

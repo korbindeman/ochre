@@ -37,7 +37,7 @@ rejected and why. Read here before reopening a settled choice.
 | [0012](0012-traffic-lights-placeholder-hover.md) | Traffic lights — custom-drawn in the sidebar, native buttons hidden | Accepted |
 | [0013](0013-session-persistence-lazy-restore.md) | Session persistence — write-through JSON + lazy tab hydration, core tab ids decoupled from CEF | Accepted |
 | [0014](0014-inline-sidebar-url-editing.md) | Inline sidebar URL editing — the chip edits in place, not via the command bar | Accepted |
-| [0015](0015-tab-drag-reorder.md) | Tab drag-and-drop — implicit order, one relocation primitive, commit-on-drop | Accepted |
+| [0015](0015-tab-drag-reorder.md) | Tab drag-and-drop — implicit order, one relocation primitive, commit-on-drop | Accepted (gesture layer superseded by ADR-0035) |
 | [0016](0016-password-vault-bitwarden-crypto-first.md) | Password vault — Bitwarden-compatible (rbw-derived) client, built core-crypto-first | Accepted |
 | [0017](0017-vault-autofill-injected-content-script.md) | Vault autofill — injected isolated-world content script + in-page picker, native save banner | Accepted |
 | [0018](0018-synthetic-focus-routing-selftest.md) | Focus-routing regression — in-process synthetic-input self-test (`--focus-selftest`) | Accepted |
@@ -54,6 +54,10 @@ rejected and why. Read here before reopening a settled choice.
 | [0029](0029-core-initiated-main-world-fill.md) | Button-driven vault autofill fills via a core-initiated main-world evaluate (main frame, no context tracking); the isolated-world bridge stays reply-only | Accepted |
 | [0030](0030-appearance-color-scheme-forwarding.md) | Appearance — forward the color scheme to web content via the global request context; one Light/Dark/System setting drives web content + native chrome | Accepted |
 | [0031](0031-private-windows-incognito.md) | Private windows — incognito `RequestContext` per window, ephemeral tabs, privacy gates, opt-in vault fill | Accepted |
-| [0032](0032-pinned-tabs-favorites.md) | Pinned tabs (favorites) — Arc-style resident icon strip, dismiss-not-destroy, distinct from saved | Accepted |
+| [0032](0032-pinned-tabs-favorites.md) | Pinned tabs (favorites) — Arc-style resident icon strip, distinct from saved | Accepted (dismiss semantics superseded by ADR-0038) |
 | [0033](0033-runtime-tab-suspension.md) | Runtime tab suspension — reuse lazy hydration, grace-delayed background discard | Accepted |
 | [0034](0034-commands-browser-automation.md) | Commands — user-defined browser automation, unified in the command bar; ⌘K palette additive | Accepted |
+| [0035](0035-custom-gesture-sidebar-drag.md) | Sidebar drag-and-drop — custom gesture-driven layer, one resolver, no system drag session | Accepted |
+| [0036](0036-selftest-ambient-userdefaults.md) | Self-tests normalize chrome state in-process — temp `$HOME` does not isolate NSUserDefaults (cfprefsd reads the real user domain) | Accepted |
+| [0037](0037-doclose-owns-embedded-tab-teardown.md) | `DoClose` returns true for host-embedded tabs — CEF's default close would `performClose:` the app window; ⌘W on the empty canvas closes the window (Arc) | Accepted |
+| [0038](0038-pinned-favorites-are-permanent.md) | Pinned favorites are permanent — close deselects (never dismisses), the `dismissed` flag/ellipsis/−-button are gone; only Unpin/Delete remove one | Accepted |

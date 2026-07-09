@@ -161,10 +161,43 @@ Goal (rm §5.1 / mvp): the Arc interaction model in native chrome, good enough f
 | P1-24 | Runtime tab suspension — auto-discard background CEF browsers (30 s grace on tab switch, immediate on space switch), favorites stay resident, `TabSuspended` event + sidebar dimming | done | ~45k | P1-15 | ADR-0033 · mvp risk #3; user request 2026-07-08 |
 | P1-25 | Tab suspension settings + manual controls — grace duration, disable auto-suspend, "Suspend Other Tabs" menu | next | ~25k | P1-24 | ADR-0033 consequences |
 | P1-26 | Session persist coalescing — debounce title/url write-through to `session.json` if profiling shows main-thread pressure | next | ~15k | P1-15 | ADR-0013 consequences |
-| P1-27 | **Tab drag-and-drop reliability** — fix super-buggy sidebar reorder / pin-unpin / folder filing gestures (drop targets, insertion indicator, commit-on-drop vs. structure churn); interactive pass + standing regression where tractable | next | ~40k | P1-7 · P1-23 | ADR-0015 · `TabDrag.swift`; **priority: fix soon** · user bug report 2026-07-08 |
+| P1-27 | **Tab drag-and-drop reliability** — rebuilt the gesture layer: custom `DragGesture` drag (no `NSItemProvider`/`onDrop`), one frame-based resolver over the whole sidebar (no dead zones), overlay indicator + ghost (no mid-drag layout churn), synchronous commit on release, Esc cancel, edge autoscroll; standing regression `just drag-selftest` | done | ~40k | P1-7 · P1-23 | ADR-0035 (supersedes ADR-0015 gesture layer) · `TabDrag.swift` · `DragSelfTest.swift`; user bug report 2026-07-08, landed 2026-07-09 |
 | P1-28 | **In-page address bar polish** — Safari-style viewport URL bar (`URLBar(placement: .viewport)`): fix interaction/focus bugs (⌘L routing, click-to-dismiss vs. pill hit-test, autocomplete popover, vault/shield flanking controls), layout/chrome-inset sync with CEF scroll-under; **page theme-color chrome always on** when viewport mode is enabled (not a separate toggle) — at `scrollY ≈ 0` fill the transparent strip behind the pill with the sampled color (`theme_color.rs` → `TabThemeColorChanged`); on scroll drop the matched fill so page pixels scroll up behind the bar (`CEFContainerView` scroll-under). Wire `BrowserState.themeColor` into the viewport chrome; interactive pass + extend `focus-selftest` for viewport mode | next | ~30k | P1-M2 · P0-1 | `URLBar.swift` · `RootView.swift` · `theme_color.rs`; **priority: polish soon** · user bug report 2026-07-08 |
+| P1-29 | **`focus-selftest` red at HEAD** — cases `sidebar-empty-click-dismisses-urlbar` / `sidebar-empty-click-refocuses-page` fail on commit 326783a *before* any working-tree changes (first responder stuck on `_SystemTextFieldFieldEditor`; an empty-sidebar click no longer resigns the inline URL editor). Bisect against the P0-1 gate, fix, re-green | done | ~15k | P0-1 | ADR-0036 · `FocusSelfTest.swift`; found 2026-07-09 during P1-27, landed 2026-07-09 |
+| P1-30 | **⌘W closed the window from an active saved/pinned tab** — CEF `DoClose` returning `false` `performClose:`s the browser's parent `NSWindow` (the app window) whenever a tab's view is still attached when the close pipeline lands; the hide/suspend paths raced their async view detach against it. `do_close` now returns `true` for host-embedded tabs; fixing it exposed and fixed a per-client `BrowserHandler` split (shared state — `browser_list`, `is_closing`, `close_all_browsers` — was per-tab) and CRASH-0002 (`isARepeat` on non-key events). Plus Arc ⌘W-on-empty-canvas: closes the window even with saved tabs in the sidebar. Standing regression: `just close-selftest` | done | ~60k | P1-M1 | ADR-0037 · CRASH-0002 · `client/mod.rs` · `AppDelegate.swift` · `CloseSelfTest.swift`; user bug report 2026-07-09, landed 2026-07-09 |
+| P1-31 | **Pinned favorites are permanent (Arc), not dismissable** — ADR-0032 modeled a favorite "close" as *dismiss* (hide the icon into a three-dot "closed pinned tabs" menu + a −-on-hover button); this made pins vanish on ⌘W. Reversed: the `dismissed` concept is deleted end-to-end (core field/`SavedTab`/`TabView`/FFI `browser_tab_restore_favorite`/Swift `TabItem`+ellipsis+minus), `close_tab` on a favorite now just *deselects* (drops to the canvas, icon + loaded tab stay). Only Unpin/Delete remove one. Core test `favorite_close_deselects_but_keeps_icon` | done | ~25k | P2-36 | ADR-0038 (supersedes ADR-0032 dismiss semantics) · `tabs.rs` · `PinnedTabStrip.swift`; user bug report 2026-07-09, landed 2026-07-09 |
 
 Notes (reconciled 2026-07-08):
+- **Landed 2026-07-09 (P1-29) — focus-selftest re-greened; root cause was harness hermeticity, not a
+  code regression (ADR-0036).** The throwaway `$HOME` in the selftest recipes does not isolate
+  NSUserDefaults (cfprefsd resolves the logged-in user's domain regardless of the process
+  environment), so the run inherited the developer's real `sidebarPinned.dev = 0` — the pinned
+  sidebar host sat off-screen at `x = -chromeWidth` and the case-F synthetic click landed outside
+  the window, hitting nothing. No commit broke it (a bisect would have found every commit red once
+  the developer unpinned the sidebar while dogfooding); the product dismiss path was never broken.
+  Fix: `FocusSelfTest` now opens with a `normalize-chrome-state` step asserting the layout its cases
+  assume (`isSidebarPinned = true`, `isViewportURLBarEnabled = false`) via plain in-memory state
+  assignments — never persisted, so real prefs stay untouched. **Verified:** `just focus-selftest`
+  all 11 cases PASS; `defaults read com.nativechrome.Browser.dev` unchanged after the run.
+- **Landed 2026-07-09 (P1-27) — sidebar drag-and-drop rebuilt on a custom gesture layer (ADR-0035).**
+  The ADR-0015 *model* (implicit order, one `move_tab`, commit-on-drop) stands; the `onDrag`/`onDrop`
+  gesture layer is gone. Root causes fixed, not patched: the layout-inserted placeholder created a
+  resolve→shift→resolve feedback loop (flickering indicator, off-by-one drops); the per-row drop-
+  delegate mosaic had dead zones — including the indicator itself — where a release silently vanished;
+  and drag-end-by-polling raced `performDrop` (intermittent no-op commits). Now: rows feed a
+  `DragGesture` (5 pt threshold) into `TabDragModel`; one resolver maps pointer → slot over frames
+  reported in a single sidebar-wide coordinate space (strip resolved horizontally, list vertically,
+  nearest-row fallback — every point yields a slot); all visuals are a non-hit-testable overlay
+  (indicator line + pointer-following ghost); `onEnded` commits synchronously; Esc cancels (local key
+  monitor); edge autoscroll via the enclosing `NSScrollView`. Library research (2025/26) confirmed no
+  macOS package covers cross-section/folder/strip semantics — custom gesture drag is the production
+  consensus (it's what Arc does); Apple's `reorderContainer(for:in:)` fixes this natively but only on
+  macOS 27. **Verified:** new standing regression `just drag-selftest` — 9 cases green (reorder, self-
+  drop no-op, save via New Tab boundary, file into folder, pin to empty strip, strip append, strip
+  reorder, Esc cancel, unpin to open) driving the real resolver + core commit against live reported
+  frames; `just focus-selftest` unchanged from its HEAD baseline (its two `sidebar-empty-click` cases
+  were already red at 326783a — filed as **P1-29**, not from this slice). The one undriven layer is
+  AppKit's `DragGesture` event delivery itself — worth one manual drag pass while dogfooding.
 - **Landed 2026-07-08 (P1-M5 → done) — mvp M5 polish: shortcuts + animation tuning.**
   **Shortcuts (style §9):** core sidebar-order primitives in `tabs.rs`
   (`sidebar_tab_order`, `select_tab_by_index`, `select_adjacent_tab`,

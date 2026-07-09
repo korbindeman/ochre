@@ -8,9 +8,10 @@ use std::sync::Mutex;
 
 /// A curated set of common search engines, including privacy-oriented options.
 /// Kept sparse — no custom engines or instance URLs in this slice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchEngine {
+    #[default]
     Google,
     DuckDuckGo,
     Bing,
@@ -71,12 +72,6 @@ impl SearchEngine {
             SearchEngine::Ecosia => format!("https://www.ecosia.org/search?q={q}"),
             SearchEngine::Kagi => format!("https://kagi.com/search?q={q}"),
         }
-    }
-}
-
-impl Default for SearchEngine {
-    fn default() -> Self {
-        SearchEngine::Google
     }
 }
 

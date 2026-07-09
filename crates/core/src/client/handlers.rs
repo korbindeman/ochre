@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 
 use crate::tabs;
 
-use super::error_page;
 use super::BrowserHandler;
 
 // Forwards find-in-page results to the host's registered callback (embedded
@@ -225,7 +224,7 @@ wrap_life_span_handler! {
                 return 0;
             }
             let url = target_url.map(CefString::to_string).unwrap_or_default();
-            if should_defer_popup_to_cef(&url, target_disposition, popup_features.as_deref()) {
+            if should_defer_popup_to_cef(&url, target_disposition, popup_features) {
                 configure_popup_window_info(window_info, popup_features);
                 return 0;
             }
@@ -339,20 +338,21 @@ wrap_load_handler! {
             error_text: Option<&CefString>,
             failed_url: Option<&CefString>,
         ) {
-            // Read runtime style under the lock, then release before `load_url`.
-            // Loading the error page re-enters display/load callbacks that take
-            // the same mutex — holding it here deadlocks the UI thread.
-            let runtime_style = self
-                .inner
-                .lock()
-                .expect("Failed to lock handler")
-                .runtime_style();
-            error_page::show(
-                runtime_style,
-                frame,
-                error_code,
-                error_text,
-                failed_url,
+            // Chromium renders its own net-error page in ALLOY. Do not call
+            // `frame.load_url` here — a custom data-URI page flashes over the
+            // native one, and loading while holding `BrowserHandler`'s mutex
+            // deadlocks the UI thread.
+            if frame.as_ref().map(|f| f.is_main() != 0) != Some(true) {
+                return;
+            }
+            let code = sys::cef_errorcode_t::from(error_code);
+            if code == sys::cef_errorcode_t::ERR_ABORTED {
+                return;
+            }
+            let error_text = error_text.map(CefString::to_string).unwrap_or_default();
+            let failed_url = failed_url.map(CefString::to_string).unwrap_or_default();
+            eprintln!(
+                "[client] on_load_error code={code:?} url={failed_url} {error_text}"
             );
         }
     }

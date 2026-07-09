@@ -204,7 +204,7 @@ pub fn bootstrap_on_load_end(browser: &mut Browser, frame: &mut Frame) {
         return;
     }
     let url = CefString::from(&frame.url()).to_string();
-    if url == BLANK_URL || url.is_empty() || url.starts_with("data:") {
+    if url == BLANK_URL || url.is_empty() {
         return;
     }
     let Some(host) = browser.host() else {
@@ -237,7 +237,7 @@ wrap_task! {
             let Some(handler) = crate::client::BrowserHandler::instance() else {
                 return;
             };
-            let mut guard = match handler.lock() {
+            let guard = match handler.lock() {
                 Ok(g) => g,
                 Err(_) => return,
             };
@@ -245,7 +245,7 @@ wrap_task! {
             let Some(browser) = browsers.first_mut() else {
                 return;
             };
-            let Some(mut frame) = browser.main_frame() else {
+            let Some(frame) = browser.main_frame() else {
                 return;
             };
             eprintln!(

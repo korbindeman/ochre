@@ -7,12 +7,13 @@ use std::sync::Mutex;
 
 /// When the vault should auto-lock. Timed idle lock is intentionally absent —
 /// policies are event-based (quit, Mac reboot, password use).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum VaultAutoLock {
     /// No automatic lock during a session — manual Lock Now only.
     Never,
     /// Lock when Browser quits gracefully.
+    #[default]
     OnBrowserClose,
     /// Lock when the Mac reboots — not when Browser relaunches. The host forwards
     /// the system boot time; unlock records it and a boot-session change locks.
@@ -55,12 +56,6 @@ impl VaultAutoLock {
     /// Whether to lock immediately after a password crosses the FFI boundary.
     pub fn locks_after_password_use(self) -> bool {
         self == VaultAutoLock::OnPasswordUse
-    }
-}
-
-impl Default for VaultAutoLock {
-    fn default() -> Self {
-        VaultAutoLock::OnBrowserClose
     }
 }
 

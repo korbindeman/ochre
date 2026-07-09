@@ -73,9 +73,11 @@ final class SuggestionController: ObservableObject {
     /// get "github.com"). Nil when there is nothing to complete. Only ever set
     /// on a forward edit, so it never fights the user deleting.
     @Published private(set) var inline: String?
-    /// The most recent typed query fed to `update` (never an inline tail) — what
-    /// a host opens when the user presses Return without an explicit selection.
+    /// The most recent typed query fed to `update` (never an inline tail).
     private(set) var currentQuery = ""
+    /// What Return should navigate to when nothing is arrow-highlighted: the
+    /// inline completion if one is showing, otherwise the typed query.
+    var commitQuery: String { inline ?? currentQuery }
 
     private let localProviders: [any SuggestionProvider]
     private let remoteProviders: [any SuggestionProvider]
@@ -180,12 +182,10 @@ final class SuggestionController: ObservableObject {
     // ─── Publishing ────────────────────────────────────────────────────────
 
     private func publishLocal(_ locals: [Suggestion]) {
-        // Score-first merge across providers, then float the best URL-prefix
-        // match to the top of the dropdown. Inline completion and Return-without-
-        // selection are separate: only a true URL prefix drives the inline tail;
-        // Return always commits `currentQuery` (search/navigate the typed text).
+        // Score-first merge across providers, then float the best host-prefix
+        // match to the top (bare domains beat deep paths at equal tier).
         var ordered = locals.sorted { $0.score > $1.score }
-        if let idx = ordered.firstIndex(where: { prefixFill($0, currentQuery) != nil }), idx != 0 {
+        if let idx = bestHostPrefixIndex(in: ordered, typed: currentQuery), idx != 0 {
             ordered.insert(ordered.remove(at: idx), at: 0)
         }
         localResults = ordered
@@ -213,21 +213,52 @@ final class SuggestionController: ObservableObject {
         }
     }
 
-    /// The best inline completion across `list`, or nil when nothing is a clean
-    /// URL prefix of what the user typed (fuzzy-ranked rows never qualify).
+    /// The best inline completion across `list`, preferring a host-level prefix
+    /// (type "you" → "youtube.com") over a deep-path prefix.
     private func bestPrefixFill(in list: [Suggestion], typed: String) -> String? {
-        list.lazy.compactMap { self.prefixFill($0, typed) }.first
+        let hostMatches = list.compactMap { hostPrefixFill($0, typed) }
+        if let shortest = hostMatches.min(by: { $0.count < $1.count }) {
+            return shortest
+        }
+        return list.lazy.compactMap { self.displayPrefixFill($0, typed) }.first
     }
 
-    /// The inline completion for `suggestion` given the user typed `typed`, or
-    /// nil if `typed` is not a clean prefix of the row's URL. Preserves the
-    /// user's exact typed characters and appends the canonical remainder, so the
-    /// appended tail is what gets shown selected.
-    private func prefixFill(_ suggestion: Suggestion, _ typed: String) -> String? {
+    /// Index of the best host-prefix row: shallowest URL first (bare domain over
+    /// deep path), then highest score — so TopSites `youtube.com` beats a
+    /// frecency-heavy `youtube.com/watch?v=…` from history.
+    private func bestHostPrefixIndex(in list: [Suggestion], typed: String) -> Int? {
+        list.enumerated()
+            .filter { hostPrefixFill($0.element, typed) != nil }
+            .min(by: {
+                let d0 = displayPathDepth($0.element.displayURL ?? "")
+                let d1 = displayPathDepth($1.element.displayURL ?? "")
+                if d0 != d1 { return d0 < d1 }
+                return $0.element.score > $1.element.score
+            })?
+            .offset
+    }
+
+    /// Path segments after the host — `youtube.com` is 0, `youtube.com/watch` is 1.
+    private func displayPathDepth(_ displayURL: String) -> Int {
+        max(0, displayURL.split(separator: "/").count - 1)
+    }
+
+    /// Complete to the bare host when the query is a host prefix — "you" becomes
+    /// "youtube.com", not "youtube.com/watch?v=…".
+    private func hostPrefixFill(_ suggestion: Suggestion, _ typed: String) -> String? {
         guard let display = suggestion.displayURL else { return nil }
         let q = typed.lowercased()
-        // Only when the field holds exactly the typed prefix (no stray spaces),
-        // so the completion's selected tail lines up with what was typed.
+        guard !q.isEmpty, q == q.trimmingCharacters(in: .whitespaces) else { return nil }
+        let host = display.split(separator: "/", maxSplits: 1).first.map(String.init) ?? display
+        let lowerHost = host.lowercased()
+        guard lowerHost.hasPrefix(q), host.count > typed.count else { return nil }
+        return typed + host.dropFirst(typed.count)
+    }
+
+    /// Full display-URL prefix completion — used when no host-level match exists.
+    private func displayPrefixFill(_ suggestion: Suggestion, _ typed: String) -> String? {
+        guard let display = suggestion.displayURL else { return nil }
+        let q = typed.lowercased()
         guard !q.isEmpty, q == q.trimmingCharacters(in: .whitespaces) else { return nil }
         let lowerDisplay = display.lowercased()
         guard lowerDisplay.hasPrefix(q), display.count > typed.count else { return nil }

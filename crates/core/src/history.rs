@@ -191,7 +191,8 @@ impl History {
                 continue; // no field matched — drop it
             };
 
-            let score = base + detail + frecency_bonus(c.visit_count, c.last_visit, now);
+            let score = base + detail + frecency_bonus(c.visit_count, c.last_visit, now)
+                - specificity_penalty(&display, c.visit_count);
             scored.push((
                 score,
                 c.visit_count,
@@ -387,6 +388,18 @@ fn strip_scheme_www(query: &str) -> String {
         }
     }
     strip_www(s).to_string()
+}
+
+/// Penalty for URLs deeper than the bare host — keeps `youtube.com` above
+/// `youtube.com/watch?v=…` within the same match class. Waived once a deep URL
+/// is visited often enough that it is clearly the user's habitual destination.
+fn specificity_penalty(display: &str, visit_count: i64) -> i32 {
+    const FREQUENT_THRESHOLD: i64 = 15;
+    if visit_count >= FREQUENT_THRESHOLD {
+        return 0;
+    }
+    let segments = display.split('/').count().saturating_sub(1);
+    (segments as i32) * 250
 }
 
 /// A frecency bonus: visit frequency weighted by how recently the page was seen,
@@ -611,6 +624,30 @@ mod tests {
         }
         let out = h.query("git", 10).unwrap();
         assert_eq!(out[0].host, "github.com"); // match class beats frecency
+    }
+
+    #[test]
+    fn origin_url_outranks_deep_path_within_a_class() {
+        let h = store();
+        for _ in 0..3 {
+            h.record_visit("https://www.youtube.com/watch?v=abc123")
+                .unwrap();
+        }
+        h.record_visit("https://www.youtube.com/").unwrap();
+        let out = h.query("you", 10).unwrap();
+        assert_eq!(out[0].display_url, "youtube.com");
+    }
+
+    #[test]
+    fn heavily_visited_deep_url_can_beat_origin() {
+        let h = store();
+        h.record_visit("https://www.youtube.com/").unwrap();
+        for _ in 0..30 {
+            h.record_visit("https://www.youtube.com/watch?v=daily")
+                .unwrap();
+        }
+        let out = h.query("you", 10).unwrap();
+        assert_eq!(out[0].display_url, "youtube.com/watch?v=daily");
     }
 
     #[test]

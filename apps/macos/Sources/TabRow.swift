@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// A single vertical tab: favicon (or spinner while loading), title, and a
-/// hover-revealed close button. The whole row selects; only the ✕ closes.
+/// hover-revealed close affordance. The whole row selects; the trailing button
+/// closes open tabs (✕) or hides/deletes saved tabs (− when active, ✕ when not).
 /// (Non-private so the spaces/folders tree in `Spaces.swift` reuses it.)
 struct TabRow: View {
     let tab: TabItem
@@ -14,8 +15,13 @@ struct TabRow: View {
     let selection: Namespace.ID
     let onSelect: () -> Void
     let onClose: () -> Void
+    /// Active saved tab (−): hide from the canvas but keep in the saved section.
+    var onHideSaved: (() -> Void)?
 
     @State private var hovering = false
+
+    private var isSaved: Bool { tab.pinned && !tab.favorite }
+    private var hideActiveSaved: Bool { isSaved && isActive }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -25,8 +31,8 @@ struct TabRow: View {
                 .lineLimit(1)
             Spacer(minLength: 0)
             if hovering {
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
+                Button(action: hideActiveSaved ? (onHideSaved ?? onClose) : onClose) {
+                    Image(systemName: hideActiveSaved ? "minus" : "xmark")
                         .font(.system(size: 10, weight: .bold))
                         // Match the 16pt favicon height so the button never becomes
                         // the tallest child and grows the row on hover; the 18pt
@@ -34,7 +40,7 @@ struct TabRow: View {
                         .frame(width: 18, height: 16)
                 }
                 .buttonStyle(IconButtonStyle(cornerRadius: 5))
-                .help("Close Tab")
+                .help(hideActiveSaved ? "Close Tab" : (isSaved ? "Delete Saved Tab" : "Close Tab"))
             }
         }
         .font(.system(size: 13, weight: .medium))

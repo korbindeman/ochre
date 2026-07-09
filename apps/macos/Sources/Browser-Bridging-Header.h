@@ -61,6 +61,13 @@ bool browser_tab_restore(int32_t id, void *parent_view, int32_t width,
 // Make tab `id` the active tab of its space. Main thread only.
 void browser_tab_select(int32_t id);
 
+// Hide an active saved tab without removing it from the saved section. Main
+// thread only.
+void browser_tab_hide_saved(int32_t id);
+
+// Permanently delete tab `id` (context-menu path). Main thread only.
+void browser_tab_delete(int32_t id);
+
 // Close tab `id`. Main thread only.
 void browser_tab_close(int32_t id);
 
@@ -80,9 +87,6 @@ void browser_tab_set_pinned(int32_t id, bool pinned);
 
 // Pin or unpin tab `id` in the Arc-style icon strip (ADR-0032). Main thread only.
 void browser_tab_set_favorite(int32_t id, bool favorite);
-
-// Restore a dismissed favorite to the icon strip. Main thread only.
-void browser_tab_restore_favorite(int32_t id);
 
 // Move tab `id` into folder `folder` (negative ⇒ out of any folder). Moving
 // into a folder auto-saves the tab. Main thread only.

@@ -259,14 +259,20 @@ unsafe fn create_tab_browser(
     let settings = BrowserSettings::default();
     let cef_url = CefString::from(url);
     let mut context = Some(context);
-    browser_host_create_browser_sync(
+    let browser = browser_host_create_browser_sync(
         Some(&window_info),
         client.as_mut(),
         Some(&cef_url),
         Some(&settings),
         None,
         context.as_mut(),
-    )
+    );
+    // Private tabs live inside the host's window too — suppress CEF's default
+    // close-the-parent-window for them (ADR-0037).
+    if let Some(browser) = &browser {
+        crate::client::note_embedded_tab(browser);
+    }
+    browser
 }
 
 fn register_tab(window_id: WindowId, browser: Browser, url: &str) -> TabId {

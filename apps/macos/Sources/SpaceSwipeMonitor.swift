@@ -90,11 +90,12 @@ final class SpaceSwipeMonitor {
             defer { resetGesture() }
             guard isHorizontal, abs(accumulatedX) >= switchThreshold else { return event }
 
-            // Positive deltaX = fingers swiped left = next space (matches the
-            // switcher row and ⌘⌥→).
-            let delta: Int32 = accumulatedX > 0 ? 1 : -1
+            // Positive deltaX = fingers swiped left = previous space (Arc-style:
+            // swipe toward the space you're leaving). At the first/last space the
+            // core no-ops and we let the scroll through.
+            let delta: Int32 = accumulatedX > 0 ? -1 : 1
             BrowserState.shared.closeSurfaces()
-            _ = browser_space_select_adjacent(delta)
+            guard browser_space_select_adjacent(delta) else { return event }
             suppressMomentum = true
             return nil
         }

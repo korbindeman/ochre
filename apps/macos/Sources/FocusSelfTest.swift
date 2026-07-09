@@ -114,6 +114,20 @@ final class FocusSelfTest {
     // ─── Cases ───────────────────────────────────────────────────────────────
 
     private func buildSteps() {
+        // Ambient-prefs guard: the throwaway $HOME does NOT isolate NSUserDefaults
+        // — cfprefsd serves the logged-in user's preference domain regardless of
+        // the process environment, so the harness inherits whatever chrome layout
+        // the developer last dogfooded with (unpinned sidebar, viewport URL bar).
+        // Every case below assumes the canonical layout: a pinned sidebar hosting
+        // the URL bar. Establish it in-state — plain assignments are never
+        // persisted (only the user toggles write defaults), so the developer's
+        // real preferences stay untouched.
+        steps.append(("normalize-chrome-state", {
+            let state = BrowserState.shared
+            if state.isViewportURLBarEnabled { state.isViewportURLBarEnabled = false }
+            if !state.isSidebarPinned { state.isSidebarPinned = true }
+        }))
+
         // Fixture: two tabs. Opening a tab makes it active and (via set_visible)
         // focuses its page.
         steps.append(("open-tab-1", { self.app.openTab(url: self.fixtureURL, windowId: 0) }))

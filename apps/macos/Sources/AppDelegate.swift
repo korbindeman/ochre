@@ -364,10 +364,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // sidebar, and empty state; `closeActiveTab` backs the ⌘W menu item.
     func closeTab(_ id: Int32) { focusedController.closeTab(id) }
 
+    /// Permanently delete a tab (context-menu path) — including pinned favorites.
+    func deleteTab(_ id: Int32) { focusedController.deleteTab(id) }
+
+    /// Hide an active saved tab (− affordance): deselect and suspend, but keep
+    /// it in the saved section.
+    func hideSavedTab(_ id: Int32) { browser_tab_hide_saved(id) }
+
     // Save/organize (from the sidebar's tab & folder context menus).
     func setTabSaved(_ id: Int32, _ saved: Bool) { browser_tab_set_pinned(id, saved) }
     func setTabFavorite(_ id: Int32, _ favorite: Bool) { browser_tab_set_favorite(id, favorite) }
-    func restoreTabFavorite(_ id: Int32) { browser_tab_restore_favorite(id) }
     func moveTab(_ id: Int32, toFolder folder: Int32?) {
         browser_tab_move_to_folder(id, folder ?? -1)
     }
@@ -568,21 +574,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         if let active = BrowserState.current.activeTabId {
-            focusedController.closeTab(active)
+            if let tab = BrowserState.current.tabs.first(where: { $0.id == active }) {
+                if tab.favorite {
+                    focusedController.closeTab(active)  // deselect, keep icon + loaded
+                } else if tab.pinned {
+                    hideSavedTab(active)
+                } else {
+                    focusedController.closeTab(active)
+                }
+            } else {
+                focusedController.closeTab(active)
+            }
             return
         }
-        // No active tab. ⌘W only falls back to closing the window on the genuine
-        // no-tab screen: the browser holds no tabs in *any* space and nothing is
-        // being composed. `activeTabId == nil` alone isn't enough — an empty space
-        // with tabs in other spaces, or the New-Tab command bar open over the empty
-        // canvas, both read as nil but aren't "nothing to close", and closing the
-        // window there is the premature close we're avoiding. In those cases ⌘W is
-        // inert (Escape dismisses the command bar; the space switcher reaches the
-        // other tabs). `tabs` is the full cross-space list — the UI's own "is
-        // anything left" signal.
-        if BrowserState.current.tabs.isEmpty && !commandBar.isVisible {
-            focusedController.window?.performClose(nil)
+        // No active tab. Dismiss transient chrome first. On the empty canvas
+        // ⌘W closes the window (Arc semantics) — saved tabs and favorites
+        // persist in the session and return on relaunch. Key-repeat is ignored
+        // so hold-to-close-tab stops at the empty canvas instead of blowing
+        // through it into the window close.
+        if commandBar.isVisible {
+            commandBar.hide()
+            return
         }
+        if findBar.isVisible {
+            findBar.hide()
+            return
+        }
+        // `isARepeat` may only be asked of key events — on anything else (a
+        // mouse click on the File ▸ Close Tab menu item, a synthetic dispatch)
+        // it raises `NSInternalInconsistencyException`.
+        if let event = NSApp.currentEvent, event.type == .keyDown, event.isARepeat { return }
+        focusedController.window?.performClose(nil)
     }
 
     // Find-in-page (⌘F / ⌘G / ⇧⌘G). The bar owns the search state; these just
@@ -660,6 +682,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Whether the active space can move to the previous (`-1`) or next (`+1`) space.
+    private func canSelectAdjacentSpace(delta: Int32) -> Bool {
+        guard !BrowserState.current.isPrivate else { return false }
+        let spaces = BrowserState.shared.spaces
+        guard spaces.count >= 2,
+            let pos = spaces.firstIndex(where: { $0.id == BrowserState.shared.activeSpaceId })
+        else { return false }
+        let target = pos + Int(delta)
+        return target >= 0 && target < spaces.count
+    }
+
     /// Whether the visible tab can move up (`-1`) or down (`+1`) in sidebar order.
     private func canMoveVisibleTab(delta: Int32) -> Bool {
         guard !BrowserState.current.isPrivate,
@@ -735,8 +768,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ? BrowserState.current.tabs.count
                 : BrowserState.shared.sidebarTabOrder.count
             return count >= 2
-        case #selector(selectPreviousSpace), #selector(selectNextSpace):
-            return !BrowserState.current.isPrivate && BrowserState.shared.spaces.count >= 2
+        case #selector(selectPreviousSpace):
+            return canSelectAdjacentSpace(delta: -1)
+        case #selector(selectNextSpace):
+            return canSelectAdjacentSpace(delta: 1)
         case #selector(moveTabUp):
             return canMoveVisibleTab(delta: -1)
         case #selector(moveTabDown):

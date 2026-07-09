@@ -9,8 +9,9 @@
 //! * A **folder** lives in a space's saved section and holds saved tabs.
 //! * A **tab** belongs to a space. The `pinned` flag means *saved* (persistent
 //!   in the sidebar's tree below New Tab). The `favorite` flag (ADR-0032) is the
-//!   Arc-style pinned icon strip below the URL bar — always resident, dismiss-
-//!   not-destroy on close. The two are mutually exclusive. Only saved tabs may
+//!   Arc-style pinned icon strip below the URL bar — global across spaces,
+//!   always resident, dismiss-not-destroy on close. The two are mutually
+//!   exclusive. Only saved tabs may
 //!   belong to a folder. New tabs start open.
 //!
 //! **Identity (ADR-0013).** [`TabId`] is core-assigned (a persisted counter),
@@ -38,7 +39,7 @@
 use std::ffi::CString;
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use cef::{Browser, ImplBrowser, ImplBrowserHost};
 use serde::Serialize;
@@ -52,6 +53,10 @@ pub type FolderId = i32;
 /// Sentinel meaning "no id" on the wire (e.g. move-to-no-folder). Real CEF /
 /// core ids are always ≥ 1.
 pub const NONE_ID: i32 = -1;
+
+/// Maximum visible favorites in the icon strip (3×2 grid). Dismissed favorites
+/// do not count toward the cap.
+pub const MAX_VISIBLE_FAVORITES: usize = 6;
 
 /// Events pushed to the host over the FFI callback. The discriminant is the
 /// `event_type` int the host switches on. Content events carry the tab id and a
@@ -86,9 +91,11 @@ pub type EventCallback =
 
 static CALLBACK: Mutex<Option<EventCallback>> = Mutex::new(None);
 static STORE: Mutex<Option<TabStore>> = Mutex::new(None);
-/// Where the session is persisted; set once in [`init`]. Absent (tests, or an
+/// Where the session is persisted; set in [`init`] (and repointed per-test by
+/// [`test_reset_store`] — a first-wins global would make parallel tests write
+/// to one test's dir while asserting on another's). Absent (tests, or an
 /// uninitialized store) means persistence is off.
-static SESSION_PATH: OnceLock<String> = OnceLock::new();
+static SESSION_PATH: Mutex<Option<String>> = Mutex::new(None);
 /// Set by [`begin_shutdown`] when app quit starts: the teardown then closes
 /// every browser through the same handlers as a user tab-close, and persisting
 /// those removals would wipe the session the user expects back next launch.
@@ -100,10 +107,9 @@ struct Tab {
     /// `Some` only when `pinned` — folders hold persistent tabs.
     folder: Option<FolderId>,
     pinned: bool,
-    /// Arc-style pinned icon strip (ADR-0032). `favorite ⇒ !pinned`.
+    /// Arc-style pinned icon strip (ADR-0032). `favorite ⇒ !pinned`. Permanent:
+    /// a user close only deselects the icon; it is never hidden (ADR-0038).
     favorite: bool,
-    /// Hidden from the strip after a user close; browser stays loaded.
-    dismissed: bool,
     /// The live CEF browser, or `None` for a *suspended* tab — restored from
     /// the persisted session and hydrated (via [`attach_browser`]) the first
     /// time it is shown.
@@ -215,6 +221,7 @@ impl TabStore {
     }
 
     /// Whether `t` belongs to the same sidebar section as the destination triple.
+    /// Favorites are global — their section ignores `space`.
     fn same_section(
         t: &Tab,
         space: SpaceId,
@@ -222,15 +229,48 @@ impl TabStore {
         pinned: bool,
         folder: Option<FolderId>,
     ) -> bool {
+        if favorite {
+            return t.favorite == favorite && t.pinned == pinned && t.folder == folder;
+        }
         t.space == space && t.favorite == favorite && t.pinned == pinned && t.folder == folder
     }
 
-    /// The next tab in `space` the user can activate — skips dismissed favorites.
-    fn next_selectable_in(&self, space: SpaceId) -> Option<TabId> {
-        self.tabs
+    /// Whether `id` is an open (ephemeral) tab — the only kind brought onto the
+    /// canvas automatically after a close/hide. Saved tabs and favorites stay in
+    /// the sidebar until the user selects them.
+    fn is_open_tab(&self, id: TabId) -> bool {
+        self.tab(id).is_some_and(|t| !t.pinned && !t.favorite)
+    }
+
+    /// Open-tab ids in sidebar order for `space`.
+    fn open_sidebar_order(&self, space: SpaceId) -> Vec<TabId> {
+        self.sidebar_tab_order(space)
+            .into_iter()
+            .filter(|&id| self.is_open_tab(id))
+            .collect()
+    }
+
+    /// Next tab to show on the canvas after closing/hiding `closing` in `space`.
+    /// Only open tabs are auto-selected; otherwise the canvas goes empty.
+    fn next_canvas_tab_after_close(&self, space: SpaceId, closing: TabId) -> Option<TabId> {
+        let open_order = self.open_sidebar_order(space);
+        if self.is_open_tab(closing) {
+            return Self::neighbor_after_close(&open_order, closing);
+        }
+        let full_order = self.sidebar_tab_order(space);
+        let Some(pos) = full_order.iter().position(|&t| t == closing) else {
+            return open_order.first().copied();
+        };
+        for &id in &full_order[pos + 1..] {
+            if self.is_open_tab(id) {
+                return Some(id);
+            }
+        }
+        full_order[..pos]
             .iter()
-            .find(|t| t.space == space && (!t.favorite || !t.dismissed))
-            .map(|t| t.id)
+            .rev()
+            .find(|&&id| self.is_open_tab(id))
+            .copied()
     }
 
     /// Depth-first folder contents for sidebar ordering: child folders (in store
@@ -251,12 +291,12 @@ impl TabStore {
     }
 
     /// Sidebar-selectable tab order for `space` — mirrors the host's sidebar
-    /// layout (favorites → each folder's tabs → loose saved → open). Skips
-    /// dismissed favorites. Drives keyboard shortcuts (style §9).
+    /// layout (global favorites → each folder's tabs → loose saved → open).
+    /// Drives keyboard shortcuts (style §9).
     fn sidebar_tab_order(&self, space: SpaceId) -> Vec<TabId> {
         let mut ids = Vec::new();
         for t in &self.tabs {
-            if t.space == space && t.favorite && !t.dismissed {
+            if t.favorite {
                 ids.push(t.id);
             }
         }
@@ -280,22 +320,76 @@ impl TabStore {
         ids
     }
 
-    /// Hide a favorite from the strip without tearing down its browser.
-    fn dismiss_favorite(&mut self, id: TabId) {
+    /// Sidebar neighbor to show after closing/hiding `closing` in `order` — next
+    /// row, else previous, else none (empty canvas).
+    fn neighbor_after_close(order: &[TabId], closing: TabId) -> Option<TabId> {
+        let Some(pos) = order.iter().position(|&t| t == closing) else {
+            return order.first().copied();
+        };
+        if let Some(&next) = order.get(pos + 1..).and_then(|s| s.first()) {
+            return Some(next);
+        }
+        if pos > 0 {
+            return Some(order[pos - 1]);
+        }
+        None
+    }
+
+    /// Hide an active saved tab from the canvas without removing it from the
+    /// tree. Clears the active pointer (neighbor or none) and hands back its
+    /// browser for teardown. No-op unless `id` is saved, not a favorite, and
+    /// currently visible.
+    fn hide_saved(&mut self, id: TabId) -> Option<Browser> {
+        let pos = self.tabs.iter().position(|t| t.id == id)?;
+        if !self.tabs[pos].pinned || self.tabs[pos].favorite {
+            return None;
+        }
+        let space = self.tabs[pos].space;
+        if self.visible_tab() != Some(id) {
+            return None;
+        }
+        let next_active = self.next_canvas_tab_after_close(space, id);
+        self.set_space_active(space, next_active);
+        let browser = self.tabs[pos].browser.take();
+        if browser.is_some() {
+            self.tabs[pos].loading = false;
+            self.tabs[pos].can_go_back = false;
+            self.tabs[pos].can_go_forward = false;
+        }
+        browser
+    }
+
+    fn favorite_count(&self) -> usize {
+        self.tabs.iter().filter(|t| t.favorite).count()
+    }
+
+    /// Whether `id` may appear in the strip — at most [`MAX_VISIBLE_FAVORITES`],
+    /// unless it is already a favorite (reorder/unpin).
+    fn can_show_favorite(&self, id: TabId) -> bool {
+        if self.favorite_count() < MAX_VISIBLE_FAVORITES {
+            return true;
+        }
+        self.tab(id).is_some_and(|t| t.favorite)
+    }
+
+    /// Close a favorite from the viewpoint: drop back to the space's canvas
+    /// without touching the tab, its browser, or its icon (ADR-0038). Favorites
+    /// are permanent — a close only deselects; it never dismisses or tears down.
+    /// No-op unless `id` is a favorite currently active in its space.
+    fn deselect_favorite(&mut self, id: TabId) {
         let Some(pos) = self.tabs.iter().position(|t| t.id == id) else {
             return;
         };
         if !self.tabs[pos].favorite {
             return;
         }
-        self.tabs[pos].dismissed = true;
         let space = self.tabs[pos].space;
         let was_active = self
             .spaces
             .iter()
             .any(|s| s.id == space && s.active == Some(id));
         if was_active {
-            self.set_space_active(space, self.next_selectable_in(space));
+            self.set_space_active(space, self.next_canvas_tab_after_close(space, id));
         }
     }
 
@@ -311,7 +405,7 @@ impl TabStore {
             .iter()
             .any(|s| s.id == space && s.active == Some(id));
         if was_active {
-            self.set_space_active(space, self.next_selectable_in(space));
+            self.set_space_active(space, self.next_canvas_tab_after_close(space, id));
         }
         browser
     }
@@ -397,7 +491,6 @@ impl TabStore {
                 folder,
                 pinned,
                 favorite,
-                dismissed: false,
                 browser: None,
                 url: closed.url,
                 title: closed.title,
@@ -435,6 +528,9 @@ impl TabStore {
         let Some(from) = self.tabs.iter().position(|t| t.id == id) else {
             return;
         };
+        if favorite && !self.can_show_favorite(id) {
+            return;
+        }
         let space = self.tabs[from].space;
         let (favorite, pinned, folder) = if favorite {
             (true, false, None)
@@ -452,7 +548,6 @@ impl TabStore {
             tab.favorite = favorite;
             tab.pinned = pinned;
             tab.folder = folder;
-            tab.dismissed = false;
         }
         // Pull the tab out, then re-insert it. Indices below are computed against
         // the post-removal Vec so they land where intended.
@@ -551,7 +646,6 @@ impl TabStore {
                     pinned: (t.pinned || folder.is_some()) && !favorite,
                     folder: if favorite { None } else { folder },
                     favorite,
-                    dismissed: t.dismissed,
                     browser: None,
                     url: t.url,
                     title: t.title,
@@ -629,7 +723,6 @@ impl TabStore {
                     folder: t.folder,
                     pinned: t.pinned,
                     favorite: t.favorite,
-                    dismissed: t.dismissed,
                     url: t.url.clone(),
                     title: t.title.clone(),
                 })
@@ -644,7 +737,7 @@ impl TabStore {
 pub fn init(session_path: &str) {
     let mut guard = STORE.lock().expect("tab store lock poisoned");
     if guard.is_none() {
-        let _ = SESSION_PATH.set(session_path.to_string());
+        *SESSION_PATH.lock().expect("session path lock poisoned") = Some(session_path.to_string());
         *guard = Some(
             session::load(session_path)
                 .map(TabStore::from_saved)
@@ -663,11 +756,12 @@ pub(crate) fn with_global_store_test_lock<R>(f: impl FnOnce() -> R) -> R {
     result
 }
 
-/// Replace the global store with a fresh default (test-only).
+/// Replace the global store with a fresh default and point persistence at
+/// `session_path` (test-only). Call under [`with_global_store_test_lock`].
 #[cfg(test)]
 pub(crate) fn test_reset_store(session_path: &str) {
     SHUTTING_DOWN.store(false, Ordering::Relaxed);
-    let _ = SESSION_PATH.get_or_init(|| session_path.to_string());
+    *SESSION_PATH.lock().expect("session path lock poisoned") = Some(session_path.to_string());
     *STORE.lock().expect("tab store lock poisoned") = Some(TabStore::default_store());
 }
 
@@ -684,11 +778,15 @@ fn persist() {
     if SHUTTING_DOWN.load(Ordering::Relaxed) {
         return;
     }
-    let Some(path) = SESSION_PATH.get() else {
+    let Some(path) = SESSION_PATH
+        .lock()
+        .expect("session path lock poisoned")
+        .clone()
+    else {
         return;
     };
     if let Some(state) = with_store(TabStore::saved_state) {
-        session::save(path, &state);
+        session::save(&path, &state);
     }
 }
 
@@ -812,7 +910,6 @@ pub fn register_tab(browser: Browser, url: &str) -> TabId {
             folder: None,
             pinned: false,
             favorite: false,
-            dismissed: false,
             browser: Some(browser),
             url: url.to_string(),
             title: String::new(),
@@ -1011,7 +1108,7 @@ pub fn select_adjacent_tab(delta: i32) -> bool {
     .unwrap_or(false)
 }
 
-/// Select the next (`delta = 1`) or previous (`delta = -1`) space, wrapping at the
+/// Select the next (`delta = 1`) or previous (`delta = -1`) space, stopping at the
 /// ends and restoring each space's remembered active tab.
 pub fn select_adjacent_space(delta: i32) -> bool {
     if !matches!(delta, -1 | 1) {
@@ -1024,9 +1121,11 @@ pub fn select_adjacent_space(delta: i32) -> bool {
         let Some(pos) = store.spaces.iter().position(|s| s.id == store.active_space) else {
             return false;
         };
-        let len = store.spaces.len() as i32;
-        let next_pos = (pos as i32 + delta).rem_euclid(len) as usize;
-        let id = store.spaces[next_pos].id;
+        let next_pos = pos as i32 + delta;
+        if next_pos < 0 || next_pos as usize >= store.spaces.len() {
+            return false;
+        }
+        let id = store.spaces[next_pos as usize].id;
         store.active_space = id;
         let remembered = store
             .spaces
@@ -1077,12 +1176,32 @@ pub fn move_visible_tab(delta: i32) -> bool {
     .unwrap_or(false)
 }
 
-/// Close a tab. Favorites are dismissed from the strip (browser stays loaded);
-/// other tabs are recorded for reopen (⌘⇧T), removed, and torn down.
+/// Hide an active saved tab (minus affordance): deselect it and suspend its
+/// browser, but keep it in the saved section. No-op for open tabs, inactive
+/// saved tabs, and favorites — callers use [`close_tab`] to delete those.
+pub fn hide_saved_tab(id: TabId) {
+    let browser = structural(|store| store.hide_saved(id)).flatten();
+    if browser.is_some() {
+        close_browser(browser);
+        emit(Event::TabSuspended, id, None);
+    }
+}
+
+/// Permanently delete a tab (context-menu path). Unlike [`close_tab`] on a
+/// favorite, this removes the tab and tears down its browser rather than
+/// dismissing it from the strip.
+pub fn delete_tab(id: TabId) {
+    let browser = structural(|store| store.remove_tab_recording(id)).flatten();
+    close_browser(browser);
+}
+
+/// Close a tab. Closing a favorite just deselects it — the icon and its loaded
+/// browser stay (favorites are permanent, ADR-0038). Other tabs are recorded
+/// for reopen (⌘⇧T), removed, and torn down.
 pub fn close_tab(id: TabId) {
     let browser = structural(|store| {
         if store.tab(id).is_some_and(|t| t.favorite) {
-            store.dismiss_favorite(id);
+            store.deselect_favorite(id);
             None
         } else {
             store.remove_tab_recording(id)
@@ -1132,7 +1251,6 @@ pub fn set_pinned(id: TabId, pinned: bool) {
             tab.pinned = pinned;
             if pinned {
                 tab.favorite = false;
-                tab.dismissed = false;
             } else {
                 tab.folder = None;
             }
@@ -1144,28 +1262,16 @@ pub fn set_pinned(id: TabId, pinned: bool) {
 /// saved/folder membership; unpinning returns the tab to the open section.
 pub fn set_favorite(id: TabId, favorite: bool) {
     structural(|store| {
+        if favorite && !store.can_show_favorite(id) {
+            return;
+        }
         if let Some(tab) = store.tabs.iter_mut().find(|t| t.id == id) {
             tab.favorite = favorite;
-            tab.dismissed = false;
             if favorite {
                 tab.pinned = false;
                 tab.folder = None;
             }
         }
-    });
-}
-
-/// Restore a dismissed favorite to the icon strip and make it active.
-pub fn restore_favorite(id: TabId) {
-    structural(|store| {
-        let Some(space) = store.tab(id).filter(|t| t.favorite).map(|t| t.space) else {
-            return;
-        };
-        if let Some(tab) = store.tabs.iter_mut().find(|t| t.id == id) {
-            tab.dismissed = false;
-        }
-        store.active_space = space;
-        store.set_space_active(space, Some(id));
     });
 }
 
@@ -1191,7 +1297,6 @@ pub fn move_to_folder(id: TabId, folder: Option<FolderId>) {
             if folder.is_some() {
                 tab.pinned = true;
                 tab.favorite = false;
-                tab.dismissed = false;
             }
         }
     });
@@ -1470,6 +1575,10 @@ pub fn apply_arc_import(
 
         if let Some(fav_space) = first_imported_space {
             for fav in &import.favorites {
+                if store.favorite_count() >= MAX_VISIBLE_FAVORITES {
+                    skipped += 1;
+                    continue;
+                }
                 if space_has_url(store, fav_space, &fav.url) {
                     skipped += 1;
                     continue;
@@ -1611,7 +1720,6 @@ fn push_imported_tab(
             folder,
             pinned,
             favorite,
-            dismissed: false,
             browser: None,
             url: tab.url.clone(),
             title: tab.title.clone(),
@@ -1659,7 +1767,6 @@ pub fn folder_to_space(folder_id: FolderId) -> SpaceId {
             }
             tab.pinned = true;
             tab.favorite = false;
-            tab.dismissed = false;
             first.get_or_insert(tab.id);
         }
         for folder in store.folders.iter_mut().filter(|f| subtree.contains(&f.id)) {
@@ -1732,7 +1839,6 @@ pub fn space_to_folder(space_id: SpaceId) -> FolderId {
             tab.folder = Some(folder_id);
             tab.pinned = true;
             tab.favorite = false;
-            tab.dismissed = false;
         }
         store.folders.retain(|f| f.space != space_id);
         store.spaces.retain(|s| s.id != space_id);
@@ -1910,7 +2016,6 @@ pub struct TabView {
     pub folder: Option<FolderId>,
     pub pinned: bool,
     pub favorite: bool,
-    pub dismissed: bool,
     /// `false` when the tab is suspended (`browser: None`) — runtime discard or
     /// lazy session restore (ADR-0013 / ADR-0033).
     pub hydrated: bool,
@@ -1955,7 +2060,6 @@ pub fn snapshot() -> Snapshot {
                 folder: t.folder,
                 pinned: t.pinned,
                 favorite: t.favorite,
-                dismissed: t.dismissed,
                 hydrated: t.browser.is_some(),
                 url: t.url.clone(),
                 title: t.title.clone(),
@@ -2016,7 +2120,6 @@ mod tests {
                     folder,
                     pinned,
                     favorite: false,
-                    dismissed: false,
                     url: format!("https://t{id}.example/"),
                     title: format!("t{id}"),
                 })
@@ -2089,9 +2192,9 @@ mod tests {
 
     /// The write-through + shutdown mask, against the real global store: a
     /// structural mutation persists the session; once [`begin_shutdown`] has
-    /// run, further mutations (the app-quit browser teardown) do not. The only
-    /// test that touches the module globals — everything else works on
-    /// `TabStore` values — so it can't race another test over them.
+    /// run, further mutations (the app-quit browser teardown) do not. Runs
+    /// under [`with_global_store_test_lock`] like every test that touches the
+    /// module globals (see also the Arc-import end-to-end test).
     #[test]
     fn persist_writes_through_until_shutdown() {
         with_global_store_test_lock(|| {
@@ -2149,7 +2252,7 @@ mod tests {
         store
             .tabs
             .iter()
-            .filter(|t| t.space == 1 && t.favorite && !t.dismissed)
+            .filter(|t| t.space == 1 && t.favorite)
             .map(|t| t.id)
             .collect()
     }
@@ -2382,7 +2485,73 @@ mod tests {
     }
 
     #[test]
-    fn favorite_dismiss_keeps_tab_and_browser_slot() {
+    fn hide_saved_tab_keeps_pinned_and_selects_neighbor() {
+        let mut store = TabStore::from_saved(saved(
+            1,
+            vec![(1, Some(1))],
+            vec![],
+            vec![(1, 1, None, true), (2, 1, None, false)],
+        ));
+        assert!(store.hide_saved(1).is_none()); // suspended — no browser to hand back
+        let t = store.tabs.iter().find(|t| t.id == 1).unwrap();
+        assert!(t.pinned);
+        assert_eq!(store.visible_tab(), Some(2));
+    }
+
+    #[test]
+    fn hide_saved_tab_empty_canvas_when_last_visible() {
+        let mut store = TabStore::from_saved(saved(
+            1,
+            vec![(1, Some(1))],
+            vec![],
+            vec![(1, 1, None, true)],
+        ));
+        assert!(store.hide_saved(1).is_none());
+        assert!(store.tabs.iter().any(|t| t.id == 1 && t.pinned));
+        assert_eq!(store.visible_tab(), None);
+    }
+
+    #[test]
+    fn hide_saved_tab_empty_canvas_when_other_saved_exist() {
+        let mut store = TabStore::from_saved(saved(
+            1,
+            vec![(1, Some(1))],
+            vec![],
+            vec![(1, 1, None, true), (2, 1, None, true)],
+        ));
+        assert!(store.hide_saved(1).is_none());
+        assert!(store.tabs.iter().any(|t| t.id == 2 && t.pinned));
+        assert_eq!(store.visible_tab(), None);
+    }
+
+    #[test]
+    fn close_last_open_tab_empty_canvas_when_saved_remain() {
+        let mut store = TabStore::from_saved(saved(
+            1,
+            vec![(1, Some(2))],
+            vec![],
+            vec![(1, 1, None, true), (2, 1, None, false)],
+        ));
+        store.remove_tab_recording(2);
+        assert!(store.tabs.iter().any(|t| t.id == 1 && t.pinned));
+        assert_eq!(store.visible_tab(), None);
+    }
+
+    #[test]
+    fn hide_saved_tab_noop_for_inactive_or_open() {
+        let mut store = TabStore::from_saved(saved(
+            1,
+            vec![(1, Some(2))],
+            vec![],
+            vec![(1, 1, None, true), (2, 1, None, false)],
+        ));
+        assert!(store.hide_saved(1).is_none());
+        assert_eq!(store.visible_tab(), Some(2));
+        assert!(store.hide_saved(2).is_none());
+    }
+
+    #[test]
+    fn delete_tab_removes_favorite_entirely() {
         let mut store = TabStore::from_saved(saved(
             1,
             vec![(1, Some(2))],
@@ -2390,13 +2559,29 @@ mod tests {
             vec![(1, 1, None, false), (2, 1, None, false)],
         ));
         store.tabs.iter_mut().find(|t| t.id == 2).unwrap().favorite = true;
-        store.dismiss_favorite(2);
+        store.remove_tab_recording(2);
+        assert_eq!(store.tabs.len(), 1);
+        assert!(!store.tabs[0].favorite);
+    }
+
+    #[test]
+    fn favorite_close_deselects_but_keeps_icon() {
+        let mut store = TabStore::from_saved(saved(
+            1,
+            vec![(1, Some(2))],
+            vec![],
+            vec![(1, 1, None, false), (2, 1, None, false)],
+        ));
+        store.tabs.iter_mut().find(|t| t.id == 2).unwrap().favorite = true;
+        store.set_space_active(1, Some(2));
+        store.deselect_favorite(2);
+        // The tab, its favorite flag, and its icon all persist — only the
+        // active pointer moved back to the canvas (ADR-0038).
         assert_eq!(store.tabs.len(), 2);
         let t = store.tabs.iter().find(|t| t.id == 2).unwrap();
         assert!(t.favorite);
-        assert!(t.dismissed);
-        assert_eq!(store.visible_tab(), Some(1));
-        assert!(favorite_ids(&store).is_empty());
+        assert_ne!(store.visible_tab(), Some(2));
+        assert_eq!(favorite_ids(&store), vec![2]);
     }
 
     #[test]
@@ -2416,6 +2601,41 @@ mod tests {
     }
 
     #[test]
+    fn favorite_strip_caps_at_six() {
+        let mut store = TabStore::default_store();
+        for id in 1..=7 {
+            store.tabs.push(Tab {
+                id,
+                space: 1,
+                folder: None,
+                pinned: false,
+                favorite: false,
+                browser: None,
+                url: String::new(),
+                title: String::new(),
+                loading: false,
+                can_go_back: false,
+                can_go_forward: false,
+                last_shown_at: 0,
+            });
+        }
+        for id in 1..=6 {
+            store.relocate_tab(id, true, false, None, None);
+        }
+        assert_eq!(favorite_ids(&store).len(), MAX_VISIBLE_FAVORITES);
+        store.relocate_tab(7, true, false, None, None);
+        assert!(!store.tabs.iter().find(|t| t.id == 7).unwrap().favorite);
+        // Reordering at the cap still works.
+        store.relocate_tab(3, true, false, None, Some(1));
+        assert_eq!(favorite_ids(&store).len(), MAX_VISIBLE_FAVORITES);
+        // Unpinning frees a slot, letting a new favorite in.
+        store.relocate_tab(1, false, false, None, None);
+        assert_eq!(store.favorite_count(), 5);
+        store.relocate_tab(7, true, false, None, None);
+        assert!(store.tabs.iter().find(|t| t.id == 7).unwrap().favorite);
+    }
+
+    #[test]
     fn closed_stack_is_capped_and_evicts_oldest() {
         let mut store = TabStore::default_store();
         let n = CLOSED_STACK_CAP + 5;
@@ -2426,7 +2646,6 @@ mod tests {
                 folder: None,
                 pinned: false,
                 favorite: false,
-                dismissed: false,
                 browser: None,
                 url: String::new(),
                 title: String::new(),
@@ -2442,6 +2661,23 @@ mod tests {
         assert_eq!(store.closed.len(), CLOSED_STACK_CAP);
         // Newest survives at the top; the oldest 5 closes were evicted.
         assert_eq!(store.reopen_closed(), Some(n as TabId));
+    }
+
+    #[test]
+    fn sidebar_tab_order_includes_favorites_from_all_spaces() {
+        let mut store = TabStore::from_saved(saved(
+            2,
+            vec![(1, Some(1)), (2, Some(3))],
+            vec![],
+            vec![
+                (1, 1, None, false),
+                (2, 2, None, false),
+                (3, 2, None, false),
+            ],
+        ));
+        store.tabs[0].favorite = true;
+        store.tabs[1].favorite = true;
+        assert_eq!(store.sidebar_tab_order(2), vec![1, 2, 3]);
     }
 
     #[test]

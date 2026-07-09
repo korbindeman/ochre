@@ -56,9 +56,6 @@ pub struct SavedTab {
     /// Arc-style pinned icon strip (ADR-0032). Distinct from `pinned` (saved).
     #[serde(default)]
     pub favorite: bool,
-    /// Hidden from the strip after a user close; the browser stays loaded.
-    #[serde(default)]
-    pub dismissed: bool,
     pub url: String,
     /// Saved so the restored sidebar shows real titles before hydration.
     pub title: String,
@@ -120,7 +117,6 @@ mod tests {
                 folder: Some(2),
                 pinned: true,
                 favorite: false,
-                dismissed: false,
                 url: "https://example.com/".into(),
                 title: "Example".into(),
             }],

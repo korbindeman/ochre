@@ -31,22 +31,22 @@ extension CommandBarController {
     /// event through to the text field for normal editing.
     func handleKey(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
         guard isVisible,
-              modifiers.intersection([.command, .option, .control]).isEmpty
+            modifiers.intersection([.command, .option, .control]).isEmpty
         else {
             return false
         }
         switch keyCode {
-        case 126: // up arrow
+        case 126:  // up arrow
             suggestions.moveSelection(by: -1)
-        case 125: // down arrow
+        case 125:  // down arrow
             suggestions.moveSelection(by: 1)
-        case 53: // escape
+        case 53:  // escape
             hide()
-        case 36, 76: // return, enter
+        case 36, 76:  // return, enter
             if let selected = suggestions.selected() {
                 selected.run()
             } else {
-                Navigation.open(suggestions.currentQuery)
+                Navigation.open(suggestions.commitQuery)
             }
             hide()
         default:

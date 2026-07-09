@@ -186,6 +186,7 @@ fn global_hide_css_from_rules(rules: &str) -> String {
     fold_css(&selectors)
 }
 
+#[cfg(test)]
 fn global_hide_css_cached() -> String {
     GLOBAL_HIDE_CSS
         .get()

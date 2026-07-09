@@ -59,7 +59,7 @@ final class URLBarModel: ObservableObject {
 
     /// Commit the typed query (Return with nothing highlighted).
     func commit() {
-        Navigation.open(suggestions.currentQuery)
+        Navigation.open(suggestions.commitQuery)
         endEditing()
     }
 

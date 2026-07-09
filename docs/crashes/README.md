@@ -57,3 +57,4 @@ When a crash is understood and fixed:
 | CRASH | Title | Status | Date |
 |-------|-------|--------|------|
 | [0001](0001-swiftui-hit-test-stack-overflow.md) | SwiftUI hit-test stack overflow in sidebar tab list | Fixed | 2026-07-08 |
+| [0002](0002-isarepeat-on-non-key-event.md) | `isARepeat` asked of a non-key `NSApp.currentEvent` aborts ⌘W empty-canvas close | Fixed | 2026-07-09 |

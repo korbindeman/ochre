@@ -107,6 +107,25 @@ focus-selftest: gen-macos
     ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
     HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/Browser.app/Contents/MacOS/Browser --focus-selftest
 
+# P1-27 sidebar drag regression (ADR-0035): builds the app and runs the in-process
+# drag self-test, which drives reorder / save / folder / favorite / cancel drags
+# through the gesture pipeline against live row frames and asserts the core's
+# resulting structure after each. Exits non-zero on any failure. Throwaway $HOME
+# so it never collides with a running Browser on Chromium's process singleton.
+drag-selftest: gen-macos
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
+    HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/Browser.app/Contents/MacOS/Browser --drag-selftest
+
+# P1-30 ⌘W close-path regression (ADR-0037): builds the app and runs the
+# in-process close self-test, which drives ⌘W through the menu against an
+# ordinary tab, an active saved tab (the suspend path that raced CEF's
+# DoClose→performClose:), and the empty canvas, asserting the window only
+# closes from the empty canvas. Exits non-zero on any failure. Throwaway $HOME
+# so it never collides with a running Browser on Chromium's process singleton.
+close-selftest: gen-macos
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
+    HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/Browser.app/Contents/MacOS/Browser --close-selftest
+
 # ── Dogfood (release) ───────────────────────────────────────────────
 
 # Release build of Browser.app, install to /Applications, and launch.

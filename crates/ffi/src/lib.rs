@@ -106,6 +106,21 @@ pub extern "C" fn browser_tab_select(id: i32) {
     browser_core::embed::select_tab(id);
 }
 
+/// Hide an active saved tab (minus affordance) without removing it from the
+/// saved section. Emits `StructureChanged` and `TabSuspended` when a browser
+/// was loaded. Call on the main thread.
+#[no_mangle]
+pub extern "C" fn browser_tab_hide_saved(id: i32) {
+    browser_core::embed::hide_saved_tab(id);
+}
+
+/// Permanently delete tab `id` (context-menu path). Emits `StructureChanged`.
+/// Call on the main thread.
+#[no_mangle]
+pub extern "C" fn browser_tab_delete(id: i32) {
+    browser_core::embed::delete_tab(id);
+}
+
 /// Close tab `id`. Emits `StructureChanged`. Call on the main thread.
 #[no_mangle]
 pub extern "C" fn browser_tab_close(id: i32) {
@@ -166,13 +181,6 @@ pub extern "C" fn browser_tab_set_pinned(id: i32, pinned: bool) {
 #[no_mangle]
 pub extern "C" fn browser_tab_set_favorite(id: i32, favorite: bool) {
     browser_core::embed::set_tab_favorite(id, favorite);
-}
-
-/// Restore a dismissed favorite to the icon strip. Emits `StructureChanged`.
-/// Main thread only.
-#[no_mangle]
-pub extern "C" fn browser_tab_restore_favorite(id: i32) {
-    browser_core::embed::restore_tab_favorite(id);
 }
 
 /// Move tab `id` into folder `folder` (negative ⇒ out of any folder). Moving

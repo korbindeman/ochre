@@ -6,12 +6,11 @@
 //! - Window and browser-view delegates for the Views framework.
 
 mod devtools;
-mod error_page;
 mod favicon;
 mod handlers;
 
 use cef::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::history;
@@ -58,6 +57,12 @@ pub struct BrowserHandler {
     /// translate, ADR-0013); multi-tab means one "current page" per browser,
     /// not one globally.
     current_url: HashMap<i32, String>,
+    /// CEF ids of browsers whose view is embedded in a **host-owned** window
+    /// (tabs, normal and private) — registered at creation, dropped in
+    /// `on_before_close`. [`do_close`](Self::do_close) must return `true` for
+    /// these: CEF's default close would `performClose:` the browser's
+    /// top-level parent window, i.e. the whole app window (ADR-0037).
+    embedded_tabs: HashSet<i32>,
 }
 
 impl BrowserHandler {
@@ -76,6 +81,7 @@ impl BrowserHandler {
                 is_closing: false,
                 weak_self: weak.clone(),
                 current_url: HashMap::new(),
+                embedded_tabs: HashSet::new(),
             })
         })
     }
@@ -179,12 +185,47 @@ impl BrowserHandler {
         self.browser_list.push(browser);
     }
 
-    /// Let every browser close proceed. Unlike the old single-window logic, this
-    /// no longer flags "app closing" when one browser remains — closing the last
-    /// *tab* must leave the app alive on its empty state. The app-quit flag is
-    /// set only by [`mark_closing`](Self::mark_closing) (from `request_close_all`).
-    fn do_close(&mut self, _browser: Option<&mut Browser>) -> bool {
-        false
+    /// Decide who closes the window when a browser closes (ADR-0037).
+    ///
+    /// Returning `false` makes CEF send the platform close (`performClose:` on
+    /// macOS) to the browser's **top-level parent window** — for a tab that is
+    /// the host's own `NSWindow`, so a mere tab close/hide/suspend would close
+    /// the whole window whenever the tab's view is still attached when CEF's
+    /// close pipeline lands. The host's view detach usually wins that race,
+    /// but nothing guarantees it (⌘W on an active saved tab lost it). So for
+    /// host-embedded tabs return `true`: the host always detaches the tab's
+    /// view, and that detach is what completes browser destruction.
+    ///
+    /// The default `false` remains for:
+    /// - app shutdown (`is_closing`): CEF's close re-request is what lets the
+    ///   host's vetoed `windowShouldClose` proceed (`embed::request_close_all`);
+    /// - non-tab browsers (popups, DevTools): CEF created their window, and
+    ///   the default close is what closes it — OAuth popups rely on
+    ///   `window.close()` working this way.
+    fn do_close(&mut self, browser: Option<&mut Browser>) -> bool {
+        if self.is_closing {
+            return false;
+        }
+        let Some(id) = browser.as_deref().map(|b| b.identifier()) else {
+            return false;
+        };
+        eprintln!(
+            "[client] do_close id={id} embedded={}",
+            self.embedded_tabs.contains(&id)
+        );
+        if !self.embedded_tabs.contains(&id) {
+            return false;
+        }
+        // A page that closed itself (`window.close()` in a tab) arrives here
+        // with its tab still in the model: drop the tab row so the host prunes
+        // the view, completing destruction. A no-op for host-initiated closes —
+        // those already removed the tab or took its browser binding.
+        if crate::private_window::is_private_cef(id) {
+            crate::private_window::note_closed(id);
+        } else {
+            tabs::note_closed(id);
+        }
+        true
     }
 
     fn on_before_close(&mut self, browser: Option<&mut Browser>) {
@@ -200,11 +241,17 @@ impl BrowserHandler {
         // Drop this tab's history-attribution entry and tell the host (a no-op
         // for non-tab browsers like popups / DevTools).
         self.current_url.remove(&id);
+        self.embedded_tabs.remove(&id);
         if crate::private_window::is_private_cef(id) {
             crate::private_window::note_closed(id);
         } else {
             tabs::note_closed(id);
         }
+        eprintln!(
+            "[client] on_before_close id={id} remaining={} closing={}",
+            self.browser_list.len(),
+            self.is_closing
+        );
         // Quit only when the whole app is closing (window close / ⌘Q) and the
         // last browser is gone — *not* when the user merely closed the last tab.
         if self.is_closing && self.browser_list.is_empty() {
@@ -281,9 +328,19 @@ impl BrowserHandler {
     pub fn is_closing(&self) -> bool {
         self.is_closing
     }
+}
 
-    pub(crate) fn runtime_style(&self) -> RuntimeStyle {
-        self.runtime_style
+/// Register `browser` as host-embedded — a tab whose view lives inside a
+/// host-owned window (ADR-0037). Called right after the synchronous tab
+/// creation paths (`embed::create_tab_browser`, private windows); popups and
+/// DevTools never pass through those, so they keep CEF's default close.
+pub(crate) fn note_embedded_tab(browser: &Browser) {
+    if let Some(handler) = BrowserHandler::instance() {
+        handler
+            .lock()
+            .expect("Failed to lock handler")
+            .embedded_tabs
+            .insert(browser.identifier());
     }
 }
 
@@ -330,14 +387,22 @@ wrap_client! {
 }
 
 impl BrowserClient {
-    /// Build a CEF client wired to a fresh handler for the given runtime style.
+    /// Build a CEF client wired to **the** shared handler (creating it on first
+    /// use). Every client must share one `BrowserHandler`: `browser_list`,
+    /// `is_closing`, and `embedded_tabs` are app-global state, and everything
+    /// that drains or counts browsers (`close_all_browsers`, `browser_count`,
+    /// `mark_closing`) reaches them through [`BrowserHandler::instance`]. A
+    /// fresh handler per client silently splits that state per tab — each
+    /// browser's `do_close`/`on_before_close` then consults a handler the rest
+    /// of the app never talks to.
     ///
     /// `wrap_client!` generates the actual `new(inner) -> Client` constructor
     /// (which fills the hidden `cef_object` field and returns the ref-counted
-    /// `cef::Client`), so this convenience just constructs the handler and
+    /// `cef::Client`), so this convenience just resolves the handler and
     /// delegates to it.
     pub fn create(runtime_style: RuntimeStyle) -> Client {
-        let inner = BrowserHandler::new(runtime_style);
+        let inner =
+            BrowserHandler::instance().unwrap_or_else(|| BrowserHandler::new(runtime_style));
         Self::new(inner)
     }
 }

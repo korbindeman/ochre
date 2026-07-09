@@ -386,7 +386,8 @@ final class RootView: NSView {
 
     /// Close tab `id`: route it through CEF's close flow, then detach its child
     /// view so teardown completes (CEF finishes destroying a browser only once
-    /// its host view is released — mirroring the window-close path).
+    /// its host view is released — mirroring the window-close path). A favorite
+    /// dismiss keeps its browser resident (ADR-0032).
     func closeTab(_ id: Int32) {
         let keepView = !isPrivate && (state.tabs.first { $0.id == id }?.favorite ?? false)
         if isPrivate {
@@ -395,17 +396,32 @@ final class RootView: NSView {
             browser_tab_close(id)
         }
         guard !keepView else { return }
+        detachTabView(id)
+    }
+
+    /// Permanently delete tab `id` — tears down its browser and removes the host
+    /// view. Used for context-menu deletes on pinned/saved tabs.
+    func deleteTab(_ id: Int32) {
+        if isPrivate {
+            browser_private_tab_close(state.windowId, id)
+        } else {
+            browser_tab_delete(id)
+        }
+        detachTabView(id)
+    }
+
+    private func detachTabView(_ id: Int32) {
         if let container = tabViews.removeValue(forKey: id) {
             container.detachCEFView()
             container.removeFromSuperview()
         }
     }
 
-    /// Pre-hydrate every favorite in the active space so they stay loaded
-    /// (ADR-0032), including dismissed ones.
+    /// Pre-hydrate every favorite so they stay loaded (ADR-0032). Favorites are
+    /// permanent (ADR-0038) and global across spaces.
     private func preloadFavoriteTabs() {
         guard !isPrivate else { return }
-        let favorites = state.tabs.filter { $0.space == state.activeSpaceId && $0.favorite }
+        let favorites = state.tabs.filter(\.favorite)
         for tab in favorites where tabViews[tab.id] == nil {
             hydrateRestoredTab(tab.id)
         }

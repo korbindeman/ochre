@@ -1,6 +1,6 @@
 # ADR-0032: Pinned tabs (favorites) — Arc-style resident icons, distinct from saved
 
-- **Status:** Accepted
+- **Status:** Accepted — **dismiss semantics superseded by [ADR-0038](0038-pinned-favorites-are-permanent.md)** (favorites are permanent; close deselects, the `dismissed` flag is gone). The rest (the `favorite` section, always-loaded, drag relocation, persistence) still stands.
 - **Date:** 2026-07-08
 
 ## Context

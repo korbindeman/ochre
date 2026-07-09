@@ -42,9 +42,34 @@ if CommandLine.arguments.contains("--focus-selftest") {
     }
 }
 
+// P1-27 sidebar drag regression (ADR-0035): `--drag-selftest` drives the drag
+// pipeline at its gesture entry points against live row frames and exits
+// non-zero on any failure.
+var dragSelfTest: DragSelfTest?
+if CommandLine.arguments.contains("--drag-selftest") {
+    dragSelfTest = MainActor.assumeIsolated {
+        let test = DragSelfTest(app: delegate)
+        DispatchQueue.main.async { MainActor.assumeIsolated { test.run() } }
+        return test
+    }
+}
+
+// P1-30 ⌘W close-path regression (ADR-0037): `--close-selftest` drives ⌘W
+// through the menu against ordinary / saved / no tabs and asserts the window
+// only closes from the empty canvas. Exits non-zero on any failure.
+var closeSelfTest: CloseSelfTest?
+if CommandLine.arguments.contains("--close-selftest") {
+    closeSelfTest = MainActor.assumeIsolated {
+        let test = CloseSelfTest(app: delegate)
+        DispatchQueue.main.async { MainActor.assumeIsolated { test.run() } }
+        return test
+    }
+}
+
 // Hand the run loop to CEF; it drives the AppKit event loop internally until
 // the window closes (which calls `browser_quit`).
 browser_run_message_loop()
 
 // Loop returned — tear CEF down and exit cleanly.
+NSLog("[main] message loop returned — shutting down")
 browser_shutdown()
