@@ -319,6 +319,16 @@ decide the build-vs-prebuilt question before Phase 2 scope locks.
 Five phases. Each: **goal · scope · exit criteria · key risks.** Effort is expressed in estimated tokens
 (agentic sizing), not calendar time. Phases 0–1 reference the existing docs rather than duplicating them.
 
+> **Phases are the *public-product bar*, not the *frontend schedule*.** The five phases below track
+> "how complete/releasable is the product" and are written from the macOS lead frontend. **Platform
+> expansion is an orthogonal track:** because ~80% of behavior is in the shared Rust core, a second
+> frontend is mostly native view + binding, gated only on the core (done) — not on any later phase.
+> **Windows is now starting as a parallel frontend track** (README: "Windows is next"), building
+> against `parity.md`'s Win column as macOS MVP1 completes — *not* deferred behind the Phase-4 AI
+> work it was originally filed under (§5.4). So read Phase 2/3 as the macOS-lead product bar with a
+> concurrent Windows build catching up to parity beneath it; the two converge, they aren't
+> sequential. Sequencing detail: `spec §8,§16`.
+
 ### 5.0 Phase 0 — Foundation (de-risk the thesis) · *mostly done*
 
 **Goal:** prove the whole bet physically works on a signed build.
@@ -442,7 +452,7 @@ native feel + speed + hackability + OSS trust. **Risks:** scope discipline (§9)
   of Commands** (and Tweaks) in-app — propose TypeScript/CSS, user reviews and enables; **MCP host/client** +
   **BYOM/local models** (Ollama); a native semantic MCP server exposing our spaces/vault/adblock/Commands;
   safe-by-design agentic actions (approved-sites, human-in-loop, prompt-injection defenses).
-- **Windows** (spec §8) — `windows-reactor`/WinUI mirror (Mica/Fluent), keeping the app all-Rust if the reactor holds.
+- **Windows** (spec §8) — `windows-reactor`/WinUI mirror (Mica/Fluent), keeping the app all-Rust if the reactor holds. **Pulled forward to a parallel track** (see the §5 callout): it's started as soon as the core is stable and builds against `parity.md`'s Win column concurrently with Phase 2/3 — it is *not* gated on reaching Phase 4. Listed here only because it's cross-platform *depth*; the schedule is parallel, not Phase-4-sequential.
 - **Mobile companion** (§3.6) as a sync target.
 - **Depth:** theming/Mods, mouse gestures, notes/annotations, advanced spaces — each gated on usage data.
 - **DRM:** the castLabs/CWIP Widevine workstream (§3.2), if pursued.

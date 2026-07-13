@@ -86,10 +86,10 @@ Single Cargo workspace. Modules:
 
 Expose a stable, coarse-grained API from the Rust core (commands + an event/observation stream). Keep it chatty-averse: the native UI observes core state and issues intents.
 
-- **macOS:** `UniFFI` (Rust→Swift) for the data/command surface, or `swift-bridge` where the boundary needs richer types / bidirectional calls. The web view is embedded by handing the CEF-created `NSView` into SwiftUI via `NSViewRepresentable`.
-- **Windows:** if the UI is `windows-reactor` (Rust, recommended — see §8), there is **no FFI boundary** — the UI is another Rust crate calling the core in-process. If you fall back to **C#/WinUI 3**, bridge to the core via a C ABI (UniFFI's community C# bindings or `csbindgen`). Either way the web view is a child `HWND` (or `SwapChainPanel`/`HwndHost`-style hosting).
+- **macOS:** the web view is embedded by handing the CEF-created `NSView` into SwiftUI via `NSViewRepresentable`. The data/command surface is a **hand-rolled coarse C ABI** — `crates/ffi/src/lib.rs` (~40+ `#[no_mangle]` fns) plus a C function-pointer event callback into Swift. The `UniFFI`/`swift-bridge` in the plan is **aspirational, not wired** — the shipped surface is the C ABI (it works well enough that the bridge dep was never added; revisit only if the boundary needs richer bidirectional types).
+- **Windows:** if the UI is `windows-reactor` (Rust, recommended — see §8), there is **no FFI boundary** — the UI is another Rust crate calling the core in-process (the whole surface below is direct Rust). If you fall back to **C#/WinUI 3**, bind the same C ABI (`csbindgen`, or UniFFI's community C# bindings). Either way the web view is a child `HWND` (or `SwapChainPanel`/`HwndHost`-style hosting).
 
-Exposed surface (illustrative): `open_tab`, `close_tab`, `reorder_tab`, `switch_space`, `navigate`, `command_bar_query`, `vault_lookup(host)`, `toggle_devtools`, plus an event stream: `TabTitleChanged`, `TabFaviconChanged`, `LoadStateChanged`, `NavigationCommitted`.
+**The observation model (ADR-0005) — bind this, not a fine-grained event per change.** Hot, high-frequency per-tab signals stay fine-grained events (`TabTitleChanged`, `TabFaviconChanged`, `LoadStateChanged`, `NavigationCommitted`, `TabThemeColorChanged`); **every structural change** (create/close/reorder/pin/folder/space CRUD/transform) emits **one coarse `StructureChanged`**, on which the frontend **re-pulls a JSON snapshot** (`browser_structure_json`) and rebinds its view model. So a Windows frontend implements two things: a handful of hot-event handlers, and one snapshot decode. The illustrative commands (`open_tab`, `close_tab`, `switch_space`, `navigate`, `command_bar_query`, `vault_lookup(host)`, `toggle_devtools`, …) are all in the C ABI; **`crates/ffi/src/lib.rs` is the authoritative manifest** — treat it as the build-spec for the binding layer (the parity ledger's core rows should ultimately anchor to it, `parity` · ADR-0007).
 
 ---
 
@@ -135,6 +135,13 @@ The interaction model is view logic bound to the shared core; the "feel" is nati
 - **Reference:** Edge's "Project Mai" is essentially this target (Mica, floating panels, rounded corners, vertical tabs, opaque address bar/active tab) — a good north star.
 
 **Decision:** try `windows-reactor` first (keeps the whole app in Rust; see §18 monorepo payoff). De-risk it in the step-0 spike — a Fluent panel + the Cmd+T expand + CEF `HWND` embed. Fall back to C#/WinUI **only for the control layer** if it can't cover them; window/material/CEF stay `windows-rs` regardless.
+
+**Starting Windows — the build-spec and what to carry over from macOS.**
+
+- **The checklist is `parity.md`'s Win column.** Every `⬜` there is a to-do; the core rows are wired *by construction* (the capability already lives in the shared core), so the work is the native surface + binding, not re-implementing logic. Flip each cell as it lands, exactly like macOS did.
+- **The de-risk spike is the first gate** (the Windows analogue of macOS's P0-1 focus-routing proof): a Fluent panel + the Cmd+T Composition expand + a CEF `HWND` embed, proving CEF↔WinUI **keyboard/focus routing** (§15 #1 — the highest risk on every frontend), window activation, and per-tab view lifecycle. Don't build UI on top until it holds. Replicate macOS's standing-regression discipline (`just focus-selftest` / `close-selftest` / `drag-selftest` / `redirect-selftest`) with in-process Windows equivalents — the CEF security-bump treadmill re-breaks these surfaces on every bump.
+- **Codecs need a Windows build of their own.** The proprietary-codec CEF (H.264/AAC, ADR-0040/0042) is a *from-source* build; the current pipeline (`scripts/build-cef-codecs.sh`) targets **macOS-arm64 only**. Windows either gets its own codec-enabled CEF build or ships the **codec-less fallback** (the documented one-flag retreat). Also note the CEF web-platform gaps that bite Windows specifically — **WebGPU is broken out of the box on Windows** (a flag + two missing DLLs, rm §4.2).
+- **Mirror the macOS structural decisions** so the two frontends stay one product: the **snapshot observation model** (§5, ADR-0005); AppKit-owns-frames → **the OS compositor owns the CEF view's frame** (SwiftUI/XAML structural churn around the platform view stalls Chromium's pipeline — CLAUDE.md gotcha, and the WinUI equivalent applies); the **custom in-sidebar window controls** idiom (traffic lights on macOS → caption buttons on Windows, ADR-0012 — a documented `style §2` divergence); and the shared **document-start injection substrate** (ADR-0017) that adblock-cosmetic, cookie-consent, and autofill all ride.
 
 ---
 
@@ -209,9 +216,9 @@ A bonus of going native: the chrome gets platform accessibility **for free** —
 
 Authoritative sequencing lives in `rm §5` (the five phases) and `mvp` (the macOS M1–M5 milestones); this is the coarse component-dependency chain they realize:
 
-**Spike** (de-risk — done, see `spike.md`) → **Rust core** (`engine` + `tabs`/session model + `adblock` + CDP surface + `ffi`) → **macOS shell** (SwiftUI window, sidebar + vertical tabs + spaces, CEF via `NSViewRepresentable`, Cmd+T glass command bar) → **Vault** (rbw-derived client wired into the command bar + autofill) → **Windows shell** (WinUI 3 mirror — Mica/Acrylic, Fluent, Segoe icons, Composition animations) → **Sync service** (separate; last).
+**Spike** (de-risk — done, see `spike.md`) → **Rust core** (`engine` + `tabs`/session model + `adblock` + CDP surface + `ffi`) → **macOS shell** (SwiftUI window, sidebar + vertical tabs + spaces, CEF via `NSViewRepresentable`, Cmd+T glass command bar) → **Vault** (rbw-derived client wired into the command bar + autofill) → **Sync service** (separate; last).
 
-Each stage depends on the one before it.
+The chain is a *dependency* order, not a strict schedule. Everything hangs off the shared core, so once it stands, **the Windows shell (WinUI 3 mirror — Mica/Acrylic, Fluent, Segoe icons, Composition animations) is a parallel frontend track**, not a stage gated behind the vault: it depends only on the core + FFI (both done) and builds against `parity.md`'s Win column (§8, `rm §5.4`). macOS-only stages (vault polish, feature depth) and the Windows shell can proceed concurrently.
 
 ---
 

@@ -2,7 +2,7 @@
 
 A minimal, fast, open-source browser with Arc's UX and real native OS apps.
 
-Chromium via CEF. A shared Rust core. Thin native UI per platform: SwiftUI on macOS, [Windows Reactor](https://github.com/microsoft/windows-rs) on Windows.
+Chromium via CEF. A shared Rust core. Thin native UI per platform: SwiftUI on macOS, Windows Reactor (native WinUI 3 in Rust) on Windows.
 
 **Early development.** macOS MVP in progress. Windows is next.
 
@@ -50,7 +50,7 @@ macOS only for now. Windows is next. The bar for release is dogfooding — it ha
 └────────────────────────────────┘   └────────────────────────┘
 ```
 
-The native app owns the window. CEF renders into embedded child views. Windows UI uses [Windows Reactor](https://github.com/microsoft/windows-rs) on WinUI 3.
+The native app owns the window. CEF renders into embedded child views. Windows UI uses Windows Reactor (native WinUI 3 in Rust) on WinUI 3.
 
 | Path | Contents |
 |------|----------|

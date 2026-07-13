@@ -126,8 +126,11 @@ Everything is reachable from the keyboard; the command bar is the hub. Shortcuts
 | Action | Shortcut (macOS) |
 |---|---|
 | Open command bar (new tab) | `Cmd+T` |
-| Open command bar (edit current URL) | `Cmd+L` |
+| Edit current tab's URL (inline sidebar chip) | `Cmd+L` |
+| New private window | `Cmd+Shift+N` |
+| New space | `Cmd+Opt+N` |
 | Close tab | `Cmd+W` |
+| Close window | `Cmd+Shift+W` |
 | Reopen last closed tab | `Cmd+Shift+T` |
 | Next / previous tab | `Cmd+Shift+]` / `Cmd+Shift+[` |
 | Select tab 1–8 / last tab | `Cmd+1`…`Cmd+8` / `Cmd+9` |
