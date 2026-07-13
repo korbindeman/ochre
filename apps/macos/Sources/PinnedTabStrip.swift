@@ -140,27 +140,60 @@ private struct PinnedTabButton: View {
     let selection: Namespace.ID
     let onSelect: () -> Void
 
+    @Environment(\.colorScheme) private var scheme
     @State private var hovering = false
+    /// Dominant favicon hue, `nil` for monochrome icons (then the neutral floor
+    /// carries presence on its own). Resolved from the same cached favicon image.
+    @State private var tint: Color?
 
     var body: some View {
-        TabFavicon(tab: tab)
+        TabFavicon(tab: tab, size: 18)
             .frame(width: 20, height: 20)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(.quaternary)
-                    .opacity(!isActive && hovering ? 0.45 : 0)
-                    .hoverFade(hovering)
-                if isActive {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(.quaternary)
-                        .matchedGeometryEffect(id: SidebarSelection.pill, in: selection)
-                }
-            }
+            .background(chip)
             .contentShape(.rect)
             .onTapGesture(perform: onSelect)
             .onHover { hovering = $0 }
             .help(tab.displayTitle)
+            .task(id: "\(tab.host)#\(tab.faviconVersion)") {
+                let ns = tab.host.isEmpty ? nil : await FaviconLoader.shared.dominantColor(for: tab.host)
+                tint = ns.map(Color.init(nsColor:))
+            }
+    }
+
+    /// Rest → hover → active as a presence ladder: a persistent neutral floor gives
+    /// every tile a body even at rest (fixing the "invisible favicon" problem), a
+    /// favicon-tinted wash layers identity where the icon has a real hue, and the
+    /// active tile gains a matched ring that slides between tiles.
+    @ViewBuilder private var chip: some View {
+        let dark = scheme == .dark
+        RoundedRectangle(cornerRadius: 10)
+            .fill(.primary.opacity(floorOpacity))
+            .hoverFade(hovering)
+        if let tint {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(tint.opacity(washOpacity(dark: dark)))
+                .hoverFade(hovering)
+        }
+        if isActive {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder((tint ?? .primary).opacity(tint == nil ? 0.25 : 0.55), lineWidth: 1.5)
+                .matchedGeometryEffect(id: SidebarSelection.pill, in: selection)
+        }
+    }
+
+    /// Neutral floor: always present; a touch stronger when active, and stronger
+    /// still for monochrome tiles (no wash to lean on).
+    private var floorOpacity: Double {
+        if isActive { return tint == nil ? 0.16 : 0.10 }
+        return hovering ? 0.10 : 0.06
+    }
+
+    /// Favicon wash: dark sidebars need more of it to read at the same presence.
+    private func washOpacity(dark: Bool) -> Double {
+        if isActive { return dark ? 0.42 : 0.28 }
+        let base = dark ? 0.30 : 0.16
+        return hovering ? base + 0.06 : base
     }
 }
 

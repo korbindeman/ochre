@@ -44,7 +44,6 @@ struct TabRow: View {
             }
         }
         .font(.system(size: 13, weight: .medium))
-        .opacity(tab.isHydrated ? 1 : 0.55)
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
         .background {

@@ -109,6 +109,9 @@ void browser_clear_ephemeral_tabs(const int32_t *keep_ids, int32_t count);
 // Delete folder `id`, keeping its tabs (they drop to loose saved).
 void browser_delete_folder(int32_t id);
 void browser_rename_folder(int32_t id, const char *name);
+// Persist folder `id`'s sidebar expand/collapse state (survives relaunch and
+// space switches).
+void browser_set_folder_expanded(int32_t id, bool expanded);
 
 // Spaces are switchable tab sets. Create a new empty space (with an emoji
 // icon, shown in the switcher) and switch to it.

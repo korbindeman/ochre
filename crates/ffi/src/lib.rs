@@ -158,7 +158,7 @@ unsafe fn cstr(ptr: *const c_char) -> String {
 /// The current structure as a JSON snapshot (ADR-0005) — the host rebuilds its
 /// tree from this on `StructureChanged`. Shape:
 /// `{"active_space":i,"active_tab":i|null,"spaces":[{"id","name"}],
-///   "folders":[{"id","space","name"}],
+///   "folders":[{"id","space","name","parent":i|null,"expanded"}],
 ///   "tabs":[{"id","space","folder":i|null,"pinned","url","title","loading"}]}`.
 /// Heap-allocated by Rust — free with [`browser_string_free`].
 #[no_mangle]
@@ -263,6 +263,14 @@ pub extern "C" fn browser_delete_folder(id: i32) {
 #[no_mangle]
 pub unsafe extern "C" fn browser_rename_folder(id: i32, name: *const c_char) {
     browser_core::embed::rename_folder(id, &cstr(name));
+}
+
+/// Set folder `id`'s sidebar expand/collapse state — persisted, so it survives
+/// relaunch and space switches (ADR-0039). Emits `StructureChanged`. Main
+/// thread only.
+#[no_mangle]
+pub extern "C" fn browser_set_folder_expanded(id: i32, expanded: bool) {
+    browser_core::embed::set_folder_expanded(id, expanded);
 }
 
 /// Create a new empty space (named `name`, with emoji `icon`) and switch to it;

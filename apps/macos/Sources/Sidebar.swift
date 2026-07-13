@@ -29,6 +29,30 @@ struct Sidebar: View {
         }
     }
 
+    /// One space's scrolling tree, sized to a filmstrip cell. `interactive` is true
+    /// only for the active space's panel: the inert panels render their rows for the
+    /// slide but wire no drag, drop-frame reporting, or taps, so the sidebar keeps
+    /// exactly one live list (see `SpaceContents`). Empty scroll space taps dismiss
+    /// the inline URL editor and clear the selection (only the active panel resigns
+    /// focus; bare chrome otherwise never would).
+    @ViewBuilder
+    private func spacePanel(spaceId: Int32, interactive: Bool, width: CGFloat, height: CGFloat)
+        -> some View
+    {
+        ScrollView {
+            SpaceContents(spaceId: spaceId, interactive: interactive, drag: tabDrag)
+                .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
+                .contentShape(.rect)
+                .onTapGesture {
+                    guard interactive else { return }
+                    URLBarModel.shared.endEditing()
+                    BrowserState.shared.clearTabSelection()
+                }
+        }
+        .scrollIndicators(.never)
+        .frame(width: width)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             // Controls share the traffic lights' row (Arc): the custom lights
@@ -67,27 +91,42 @@ struct Sidebar: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            // The active space's tree: saved section (folders + loose saved)
-            // above New Tab + open tabs. Scrolls independently.
-            // Fill the scroll viewport so empty list space is tappable — clicking
-            // it dismisses the inline URL editor (the field only resigns on its
-            // own when focus moves elsewhere, which bare sidebar chrome doesn't).
+            // The spaces' trees as a horizontal filmstrip: every space is laid out
+            // side by side, one panel each, and the strip is offset to the active
+            // one. A switch animates that offset, so the outgoing and incoming lists
+            // always travel together in the switcher's left→right direction — a real
+            // slide, immune to the transition-capture quirks that made an `.id`-swap
+            // slide flip or cross-fade on reversals (ADR-0043). Only the active panel
+            // is interactive; the rest are inert display so they can't pollute the
+            // Y-based drop resolver. Private windows have no spaces — one static panel.
             GeometryReader { proxy in
-                ScrollView {
-                    SpaceContents(drag: tabDrag)
-                        .frame(
-                            maxWidth: .infinity, minHeight: proxy.size.height,
-                            alignment: .topLeading
-                        )
-                        .contentShape(.rect)
-                        .onTapGesture {
-                            URLBarModel.shared.endEditing()
-                            BrowserState.shared.clearTabSelection()
+                let w = proxy.size.width
+                if isPrivate {
+                    spacePanel(spaceId: 0, interactive: true, width: w, height: proxy.size.height)
+                } else {
+                    let activeIndex = state.spaces.firstIndex { $0.id == state.activeSpaceId } ?? 0
+                    HStack(spacing: 0) {
+                        ForEach(state.spaces) { space in
+                            spacePanel(
+                                spaceId: space.id,
+                                interactive: space.id == state.activeSpaceId,
+                                width: w,
+                                height: proxy.size.height
+                            )
                         }
+                    }
+                    .frame(width: w, alignment: .leading)
+                    // The strip offset rides `applyStructure`'s animation transaction
+                    // (the same structural spring that springs every sidebar change):
+                    // it snaps on first population and under Reduce Motion because that
+                    // path applies the change bare, and slides on a real switch. No
+                    // separate `.animation(value:)` — that also fires on the launch
+                    // hydration, sliding the initial space into place (ADR-0043).
+                    .offset(x: -CGFloat(activeIndex) * w)
                 }
-                .scrollIndicators(.never)
             }
             .frame(maxHeight: .infinity)
+            .clipped()
             // The scroll viewport — the drag model autoscrolls at its edges.
             .reportSidebarDropFrame(.viewport)
 

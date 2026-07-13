@@ -1,3 +1,7 @@
+# Secrets — never commit (public repo). SSH keys for the CEF build box.
+/scaleway
+/scaleway.pub
+
 # Rust
 /target
 **/*.rs.bk

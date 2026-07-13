@@ -6,6 +6,14 @@ import SwiftUI
 /// row between them. Membership + order come from the core-owned `BrowserState`
 /// (ADR-0006).
 struct SpaceContents: View {
+    /// Which space this panel renders — the sidebar lays every space out in a
+    /// filmstrip and slides to the active one (ADR-0043), so the panel is told its
+    /// space rather than reading the active one.
+    let spaceId: Int32
+    /// Only the active space's panel is live. Inert panels render their rows for the
+    /// slide but wire no drag, drop-frame reporting, or selection, so the Y-based
+    /// drop resolver only ever sees the one on-screen list.
+    var interactive: Bool = true
     @ObservedObject private var state = BrowserState.shared
     @ObservedObject var drag: TabDragModel
     /// Namespace for the sliding active-tab highlight, shared across saved and
@@ -13,30 +21,32 @@ struct SpaceContents: View {
     @Namespace private var selection
 
     var body: some View {
-        let folders = state.rootFolders
-        let loose = state.looseSavedTabs
-        let open = state.openTabs
+        let folders = state.rootFolders(inSpace: spaceId)
+        let loose = state.looseSavedTabs(inSpace: spaceId)
+        let open = state.openTabs(inSpace: spaceId)
         let hasSaved = !folders.isEmpty || !loose.isEmpty
 
         VStack(alignment: .leading, spacing: 4) {
-            if let space = state.activeSpace {
+            if let space = state.spaces.first(where: { $0.id == spaceId }) {
                 TabSectionHeader(title: space.name)
             }
             ForEach(folders) { folder in
-                FolderRow(folder: folder, drag: drag, selection: selection)
+                FolderRow(folder: folder, drag: drag, selection: selection, interactive: interactive)
             }
             sectionRows(loose)
             if hasSaved {
                 Divider()
                     .padding(.vertical, 4)
             }
-            NewTabRow(looseEmpty: loose.isEmpty, firstOpen: open.first?.id)
+            NewTabRow(
+                looseEmpty: loose.isEmpty, firstOpen: open.first?.id, interactive: interactive)
             if !open.isEmpty {
                 TabSectionHeader(
                     title: "Open",
-                    actionTitle: "Clear",
+                    actionTitle: interactive ? "Clear" : nil,
                     actionHelp: "Close open tabs (selected tabs are kept)",
-                    onAction: { (NSApp.delegate as? AppDelegate)?.clearOpenTabs() }
+                    onAction: interactive
+                        ? { (NSApp.delegate as? AppDelegate)?.clearOpenTabs() } : nil
                 )
             }
             sectionRows(open)
@@ -45,7 +55,7 @@ struct SpaceContents: View {
             Spacer(minLength: 0)
                 .frame(maxWidth: .infinity)
                 .overlay {
-                    if !drag.isDragging {
+                    if interactive && !drag.isDragging {
                         SidebarEmptyDragArea {
                             URLBarModel.shared.endEditing()
                             BrowserState.shared.clearTabSelection()
@@ -53,7 +63,11 @@ struct SpaceContents: View {
                     }
                 }
         }
-        .background(ScrollViewProbe(drag: drag))
+        .background {
+            if interactive {
+                ScrollViewProbe(drag: drag)
+            }
+        }
     }
 
     /// A section's tabs in order, each a drag source; the shared resolver derives
@@ -68,22 +82,22 @@ struct SpaceContents: View {
     @ViewBuilder
     func tabRow(_ tab: TabItem) -> some View {
         let app = NSApp.delegate as? AppDelegate
-        let isActive = tab.id == state.activeTabId && !state.isSurfaceOpen
+        let isActive = interactive && tab.id == state.activeTabId && !state.isSurfaceOpen
         TabRow(
             tab: tab,
             // A tab and a native surface are mutually exclusive — no tab reads as
             // active while History/Passwords/Settings covers the canvas.
             isActive: isActive,
-            isMultiSelected: state.selectedTabIds.contains(tab.id),
+            isMultiSelected: interactive && state.selectedTabIds.contains(tab.id),
             selection: selection,
-            onSelect: { state.handleTabClick(tab.id) },
+            onSelect: { if interactive { state.handleTabClick(tab.id) } },
             onClose: { app?.closeTab(tab.id) },
             onHideSaved: tab.pinned && !tab.favorite && isActive
                 ? { app?.hideSavedTab(tab.id) } : nil
         )
         .contextMenu { TabMenu(tab: tab) }
-        .sidebarTabDrag(tab: tab, drag: drag)
-        .reportSidebarDropFrame(.tab(tab.id))
+        .sidebarTabDrag(tab: tab, drag: drag, enabled: interactive)
+        .reportSidebarDropFrame(.tab(tab.id), active: interactive)
         .transition(SidebarSelection.rowTransition)
     }
 }
@@ -94,6 +108,7 @@ struct SpaceContents: View {
 private struct NewTabRow: View {
     let looseEmpty: Bool
     let firstOpen: Int32?
+    var interactive: Bool = true
 
     @State private var hovering = false
 
@@ -117,9 +132,13 @@ private struct NewTabRow: View {
                 .hoverFade(hovering)
         }
         .contentShape(.rect)
-        .onTapGesture { (NSApp.delegate as? AppDelegate)?.toggleCommandBar() }
+        .onTapGesture {
+            guard interactive else { return }
+            (NSApp.delegate as? AppDelegate)?.toggleCommandBar()
+        }
         .onHover { hovering = $0 }
-        .reportSidebarDropFrame(.newTab(looseEmpty: looseEmpty, firstOpen: firstOpen))
+        .reportSidebarDropFrame(
+            .newTab(looseEmpty: looseEmpty, firstOpen: firstOpen), active: interactive)
     }
 }
 
@@ -215,7 +234,9 @@ private struct TabSectionHeader: View {
 }
 
 /// A collapsible folder in the saved section, with nested subfolders and saved
-/// tabs indented beneath. Collapse state is view-local (UI only, not in the core).
+/// tabs indented beneath. Expand/collapse state is core-owned so it persists
+/// across launches and space switches (ADR-0039); a collapsed folder still peeks
+/// the active tab if it lives inside, so the current tab is never hidden.
 struct FolderRow: View {
     let folder: FolderItem
     var depth: Int = 0
@@ -224,7 +245,8 @@ struct FolderRow: View {
     /// Shared with the rest of the sidebar so the active-tab highlight can slide
     /// between a folder tab and a loose/open tab.
     let selection: Namespace.ID
-    @State private var collapsed = true
+    /// False for a non-active space's filmstrip panel — display only, no drag/taps.
+    var interactive: Bool = true
     @State private var hovering = false
 
     private var app: AppDelegate? { NSApp.delegate as? AppDelegate }
@@ -234,15 +256,20 @@ struct FolderRow: View {
     private var isDropTarget: Bool { drag.slot == .ontoFolder(folder.id) }
 
     var body: some View {
+        let expanded = folder.expanded
         let tabs = state.tabs(inFolder: folder.id)
         let children = state.childFolders(of: folder.id)
         let itemCount = tabs.count + children.count
+        // Collapsed: peek the active tab if it lives anywhere inside this folder,
+        // so switching to it never leaves it hidden (ADR-0039). The tinted glyph
+        // signals the folder holds the current tab.
+        let peek = expanded ? nil : state.activeDescendantTab(of: folder.id)
 
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Image(systemName: collapsed ? "folder" : "folder.fill")
+                Image(systemName: expanded ? "folder.fill" : "folder")
                     .contentTransition(.symbolEffect(.replace))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(peek != nil ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                 Text(folder.name)
                     .lineLimit(1)
                 Spacer(minLength: 0)
@@ -267,7 +294,8 @@ struct FolderRow: View {
             .contentShape(.rect)
             .onHover { hovering = $0 }
             .onTapGesture {
-                withAnimation(.easeOut(duration: 0.15)) { collapsed.toggle() }
+                guard interactive else { return }
+                app?.setFolderExpanded(folder.id, !expanded)
             }
             .contextMenu {
                 Button("New Space from Folder") { app?.folderToSpace(folder.id) }
@@ -275,39 +303,62 @@ struct FolderRow: View {
                 Divider()
                 Button("Delete Folder") { app?.deleteFolder(folder.id) }
             }
-            .reportSidebarDropFrame(.folder(folder.id))
+            .reportSidebarDropFrame(.folder(folder.id), active: interactive)
 
-            if !collapsed {
+            if expanded {
                 ForEach(children) { child in
                     FolderRow(
                         folder: child,
                         depth: depth + 1,
                         drag: drag,
-                        selection: selection
+                        selection: selection,
+                        interactive: interactive
                     )
                 }
                 ForEach(tabs) { tab in
-                    let isActive = tab.id == state.activeTabId && !state.isSurfaceOpen
+                    let isActive = interactive && tab.id == state.activeTabId && !state.isSurfaceOpen
                     TabRow(
                         tab: tab,
                         isActive: isActive,
-                        isMultiSelected: state.selectedTabIds.contains(tab.id),
+                        isMultiSelected: interactive && state.selectedTabIds.contains(tab.id),
                         selection: selection,
-                        onSelect: { state.handleTabClick(tab.id) },
+                        onSelect: { if interactive { state.handleTabClick(tab.id) } },
                         onClose: { app?.closeTab(tab.id) },
                         onHideSaved: tab.pinned && !tab.favorite && isActive
                             ? { app?.hideSavedTab(tab.id) } : nil
                     )
                     .contextMenu { TabMenu(tab: tab) }
-                    .sidebarTabDrag(tab: tab, drag: drag)
+                    .sidebarTabDrag(tab: tab, drag: drag, enabled: interactive)
                     // Report before the indent padding so the frame (and the
                     // insertion indicator derived from it) is the visible row.
-                    .reportSidebarDropFrame(.tab(tab.id))
+                    .reportSidebarDropFrame(.tab(tab.id), active: interactive)
                     .padding(.leading, indent)
                     .transition(SidebarSelection.rowTransition)
                 }
+            } else if let peek {
+                peekRow(peek)
             }
         }
+    }
+
+    /// The single active tab shown beneath a *collapsed* folder header so it is
+    /// never hidden (ADR-0039). Display + selection only — no drag source or drop
+    /// frame, so the collapsed folder stays one unit for drag purposes (dropping
+    /// onto the header still files into it).
+    @ViewBuilder
+    private func peekRow(_ tab: TabItem) -> some View {
+        TabRow(
+            tab: tab,
+            isActive: true,
+            isMultiSelected: state.selectedTabIds.contains(tab.id),
+            selection: selection,
+            onSelect: { state.handleTabClick(tab.id) },
+            onClose: { app?.closeTab(tab.id) },
+            onHideSaved: tab.pinned && !tab.favorite ? { app?.hideSavedTab(tab.id) } : nil
+        )
+        .contextMenu { TabMenu(tab: tab) }
+        .padding(.leading, indent)
+        .transition(SidebarSelection.rowTransition)
     }
 }
 

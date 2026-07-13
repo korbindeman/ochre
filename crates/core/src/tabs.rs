@@ -151,6 +151,10 @@ struct Folder {
     name: String,
     /// `None` at the space root; `Some` when nested inside another folder.
     parent: Option<FolderId>,
+    /// Sidebar expand/collapse state (ADR-0039). Part of the core-owned tree so
+    /// it survives relaunch *and* space switches — the host renders folders from
+    /// this, it doesn't own the state. `false` = collapsed.
+    expanded: bool,
 }
 
 struct Space {
@@ -218,6 +222,17 @@ impl TabStore {
     /// First tab belonging to `space` in store order, if any.
     fn first_tab_in(&self, space: SpaceId) -> Option<TabId> {
         self.tabs.iter().find(|t| t.space == space).map(|t| t.id)
+    }
+
+    /// Whether `id` may be `space`'s remembered active tab: a tab the space
+    /// holds, or any favorite. Favorites are global (ADR-0032) — shown in every
+    /// space and selectable there without switching — so one can be the active
+    /// tab of a space other than its home space. Restore paths use this to avoid
+    /// dropping a favorite the space had on its canvas.
+    fn can_be_active_in(&self, space: SpaceId, id: TabId) -> bool {
+        self.tabs
+            .iter()
+            .any(|t| t.id == id && (t.space == space || t.favorite))
     }
 
     /// Whether `t` belongs to the same sidebar section as the destination triple.
@@ -372,18 +387,33 @@ impl TabStore {
         self.tab(id).is_some_and(|t| t.favorite)
     }
 
-    /// Close a favorite from the viewpoint: drop back to the space's canvas
-    /// without touching the tab, its browser, or its icon (ADR-0038). Favorites
-    /// are permanent — a close only deselects; it never dismisses or tears down.
-    /// No-op unless `id` is a favorite currently active in its space.
-    fn deselect_favorite(&mut self, id: TabId) {
-        let Some(pos) = self.tabs.iter().position(|t| t.id == id) else {
+    /// Make `id` the active tab. A favorite shows on the *current* space's canvas
+    /// (it's global — ADR-0032 — and appears in every space, so selecting one is
+    /// not a space switch); any other tab switches to the space it belongs to.
+    fn select(&mut self, id: TabId) {
+        let Some(tab) = self.tab(id) else {
             return;
         };
-        if !self.tabs[pos].favorite {
+        let space = if tab.favorite {
+            self.active_space
+        } else {
+            tab.space
+        };
+        self.active_space = space;
+        self.set_space_active(space, Some(id));
+    }
+
+    /// Close a favorite from the viewpoint: drop the *current* space back to its
+    /// canvas without touching the tab, its browser, or its icon (ADR-0038).
+    /// Favorites are permanent — a close only deselects; it never dismisses or
+    /// tears down. Favorites are global (ADR-0032), so a close acts on the space
+    /// the user is in, not the favorite's home space. No-op unless `id` is a
+    /// favorite currently active in the active space.
+    fn deselect_favorite(&mut self, id: TabId) {
+        if !self.tab(id).is_some_and(|t| t.favorite) {
             return;
         }
-        let space = self.tabs[pos].space;
+        let space = self.active_space;
         let was_active = self
             .spaces
             .iter()
@@ -393,19 +423,23 @@ impl TabStore {
         }
     }
 
-    /// Remove a tab, repairing its space's active pointer, and hand back its
-    /// browser (if hydrated) so the caller can tear it down. Does *not* emit —
+    /// Remove a tab, repairing every space whose active pointer named it, and
+    /// hand back its browser (if hydrated) so the caller can tear it down. A
+    /// favorite is global (ADR-0032) and can be the active tab of several spaces
+    /// at once, so repair them all — not just its home space. Does *not* emit —
     /// callers run inside [`structural`].
     fn remove_tab(&mut self, id: TabId) -> Option<Browser> {
         let pos = self.tabs.iter().position(|t| t.id == id)?;
-        let space = self.tabs[pos].space;
         let browser = self.tabs.remove(pos).browser;
-        let was_active = self
+        let stale: Vec<SpaceId> = self
             .spaces
             .iter()
-            .any(|s| s.id == space && s.active == Some(id));
-        if was_active {
-            self.set_space_active(space, self.next_canvas_tab_after_close(space, id));
+            .filter(|s| s.active == Some(id))
+            .map(|s| s.id)
+            .collect();
+        for space in stale {
+            let next = self.next_canvas_tab_after_close(space, id);
+            self.set_space_active(space, next);
         }
         browser
     }
@@ -616,6 +650,7 @@ impl TabStore {
                 space: f.space,
                 name: f.name,
                 parent: f.parent,
+                expanded: f.expanded,
             })
             .collect();
         let folder_ids: std::collections::HashSet<FolderId> =
@@ -679,7 +714,7 @@ impl TabStore {
             .map(|s| {
                 let active = s
                     .active
-                    .filter(|tid| store.tabs.iter().any(|t| t.id == *tid && t.space == s.id))
+                    .filter(|tid| store.can_be_active_in(s.id, *tid))
                     .or_else(|| store.first_tab_in(s.id));
                 (s.id, active)
             })
@@ -712,6 +747,7 @@ impl TabStore {
                     space: f.space,
                     name: f.name.clone(),
                     parent: f.parent,
+                    expanded: f.expanded,
                 })
                 .collect(),
             tabs: self
@@ -1038,14 +1074,12 @@ pub fn attach_browser(id: TabId, browser: Browser) {
     }
 }
 
-/// Make `id` the active tab of its space (and switch to that space).
+/// Make `id` the active tab. A favorite (the global icon strip, ADR-0032) shows
+/// on the *current* space's canvas without leaving the space — it appears in
+/// every space, so selecting one is not a space switch. Any other tab switches
+/// to the space it belongs to and becomes that space's active tab.
 pub fn select_tab(id: TabId) {
-    structural(|store| {
-        if let Some(space) = store.tab(id).map(|t| t.space) {
-            store.active_space = space;
-            store.set_space_active(space, Some(id));
-        }
-    });
+    structural(|store| store.select(id));
 }
 
 /// Select a tab by its 1-based sidebar position (`1`…`8`, or `9` = last) in the
@@ -1132,7 +1166,7 @@ pub fn select_adjacent_space(delta: i32) -> bool {
             .iter()
             .find(|s| s.id == id)
             .and_then(|s| s.active)
-            .filter(|tid| store.tabs.iter().any(|t| t.id == *tid && t.space == id));
+            .filter(|tid| store.can_be_active_in(id, *tid));
         let active = remembered.or_else(|| store.first_tab_in(id));
         store.set_space_active(id, active);
         true
@@ -1327,6 +1361,7 @@ pub fn create_folder(name: &str) -> FolderId {
             space,
             name: name.to_string(),
             parent: None,
+            expanded: true, // a folder you just made opens so you see it (Arc)
         });
         id
     })
@@ -1358,6 +1393,7 @@ pub fn create_folder_with_tabs(name: &str, tab_ids: &[TabId]) -> FolderId {
             space,
             name: name.to_string(),
             parent: None,
+            expanded: true, // show the tabs you just grouped, not an empty header
         });
         let ordered: Vec<TabId> = store
             .tabs
@@ -1431,6 +1467,17 @@ pub fn rename_folder(id: FolderId, name: &str) {
     });
 }
 
+/// Persist folder `id`'s sidebar expand/collapse state (ADR-0039). A structural
+/// change so it writes through to the session and every window's sidebar
+/// re-pulls the snapshot; a no-op for an unknown folder.
+pub fn set_folder_expanded(id: FolderId, expanded: bool) {
+    structural(|store| {
+        if let Some(folder) = store.folders.iter_mut().find(|f| f.id == id) {
+            folder.expanded = expanded;
+        }
+    });
+}
+
 // ─── Spaces ────────────────────────────────────────────────────────────────
 
 /// Create a new (empty) space and switch to it. Returns its id (or -1).
@@ -1462,7 +1509,7 @@ pub fn select_space(id: SpaceId) {
             .iter()
             .find(|s| s.id == id)
             .and_then(|s| s.active)
-            .filter(|tid| store.tabs.iter().any(|t| t.id == *tid && t.space == id));
+            .filter(|tid| store.can_be_active_in(id, *tid));
         let active = remembered.or_else(|| store.first_tab_in(id));
         store.set_space_active(id, active);
     });
@@ -1665,6 +1712,7 @@ fn import_arc_folder(
         space: space_id,
         name: folder.name.clone(),
         parent,
+        expanded: false, // a bulk Arc import stays tidy; expand what you need
     });
     let mut folders_added = 1usize;
     let mut tabs_added = 0usize;
@@ -1822,6 +1870,7 @@ pub fn space_to_folder(space_id: SpaceId) -> FolderId {
             space: target,
             name,
             parent: None,
+            expanded: true, // show the demoted space's tabs where they landed
         });
         // Close the source space's ephemeral tabs — only persistent survives.
         // (Suspended ones have no browser; removal below is all they need.)
@@ -2007,6 +2056,7 @@ pub struct FolderView {
     pub space: SpaceId,
     pub name: String,
     pub parent: Option<FolderId>,
+    pub expanded: bool,
 }
 
 #[derive(Serialize)]
@@ -2049,6 +2099,7 @@ pub fn snapshot() -> Snapshot {
                 space: f.space,
                 name: f.name.clone(),
                 parent: f.parent,
+                expanded: f.expanded,
             })
             .collect(),
         tabs: store
@@ -2110,6 +2161,7 @@ mod tests {
                     space,
                     name: format!("folder{id}"),
                     parent: None,
+                    expanded: false,
                 })
                 .collect(),
             tabs: tabs
@@ -2328,6 +2380,7 @@ mod tests {
                 space: 1,
                 name: "Batch".to_string(),
                 parent: None,
+                expanded: true,
             });
             let ordered: Vec<TabId> = store
                 .tabs
@@ -2350,6 +2403,23 @@ mod tests {
         assert_eq!(folder_tabs, vec![2, 4]);
         assert!(store.tabs.iter().find(|t| t.id == 2).unwrap().pinned);
         assert_eq!(today_ids(&store), Vec::<TabId>::new());
+    }
+
+    #[test]
+    fn folder_expanded_survives_save_restore() {
+        // `saved()` builds folders collapsed; flipping one and round-tripping
+        // through saved_state() must preserve it (ADR-0039 persistence path).
+        let mut store = TabStore::from_saved(saved(1, vec![(1, None)], vec![(2, 1)], vec![]));
+        assert!(
+            !store.folders[0].expanded,
+            "fixture folder starts collapsed"
+        );
+        store.folders[0].expanded = true;
+        let restored = TabStore::from_saved(store.saved_state());
+        assert!(
+            restored.folders[0].expanded,
+            "expansion state lost across save/restore"
+        );
     }
 
     #[test]
@@ -2582,6 +2652,72 @@ mod tests {
         assert!(t.favorite);
         assert_ne!(store.visible_tab(), Some(2));
         assert_eq!(favorite_ids(&store), vec![2]);
+    }
+
+    /// A favorite is global (ADR-0032) — clicking one from another space must
+    /// show it on the current canvas, not yank you back to its home space.
+    fn store_with_favorite_in_other_space() -> TabStore {
+        // Favorite 2 is homed in space 1; tab 3 is space 2's own tab. Viewing
+        // space 2.
+        let mut store = TabStore::from_saved(saved(
+            2,
+            vec![(1, Some(1)), (2, Some(3))],
+            vec![],
+            vec![
+                (1, 1, None, false),
+                (2, 1, None, false),
+                (3, 2, None, false),
+            ],
+        ));
+        store.tabs.iter_mut().find(|t| t.id == 2).unwrap().favorite = true;
+        store
+    }
+
+    #[test]
+    fn selecting_favorite_stays_in_current_space() {
+        let mut store = store_with_favorite_in_other_space();
+        assert_eq!(store.active_space, 2);
+        store.select(2);
+        assert_eq!(store.active_space, 2); // did not jump to the favorite's home
+        assert_eq!(store.visible_tab(), Some(2)); // shown on space 2's canvas
+    }
+
+    #[test]
+    fn selecting_a_normal_tab_still_switches_space() {
+        let mut store = store_with_favorite_in_other_space();
+        store.select(1); // tab 1 lives in space 1
+        assert_eq!(store.active_space, 1);
+        assert_eq!(store.visible_tab(), Some(1));
+    }
+
+    #[test]
+    fn deselecting_favorite_acts_on_the_current_space() {
+        let mut store = store_with_favorite_in_other_space();
+        store.select(2); // favorite active in space 2 (a non-home space)
+        store.deselect_favorite(2);
+        assert_ne!(store.visible_tab(), Some(2)); // dropped from space 2's canvas
+        assert_eq!(store.visible_tab(), Some(3));
+        assert!(store.tabs.iter().any(|t| t.id == 2 && t.favorite)); // icon stays
+    }
+
+    #[test]
+    fn deleting_favorite_repairs_every_space_that_showed_it() {
+        let mut store = store_with_favorite_in_other_space();
+        store.select(2); // active in space 2, whose home is space 1
+        store.remove_tab(2);
+        assert!(store.tabs.iter().all(|t| t.id != 2));
+        // Space 2 must not be left pointing at the removed favorite.
+        assert_eq!(store.visible_tab(), Some(3));
+    }
+
+    #[test]
+    fn favorite_active_in_non_home_space_survives_restore() {
+        let mut store = store_with_favorite_in_other_space();
+        store.select(2);
+        assert_eq!(store.visible_tab(), Some(2));
+        let restored = TabStore::from_saved(store.saved_state());
+        assert_eq!(restored.active_space, 2);
+        assert_eq!(restored.visible_tab(), Some(2)); // still on space 2's canvas
     }
 
     #[test]

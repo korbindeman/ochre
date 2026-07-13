@@ -45,6 +45,11 @@ pub struct SavedFolder {
     /// `None` for a space-root folder; `Some` when nested inside another folder.
     #[serde(default)]
     pub parent: Option<FolderId>,
+    /// Sidebar expand/collapse state (ADR-0039). Defaults to collapsed so a
+    /// pre-ADR-0039 session (no field) restores the way it looked before —
+    /// folders were always collapsed at launch.
+    #[serde(default)]
+    pub expanded: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +115,7 @@ mod tests {
                 space: 1,
                 name: "Work".into(),
                 parent: None,
+                expanded: true,
             }],
             tabs: vec![SavedTab {
                 id: 7,
@@ -137,7 +143,20 @@ mod tests {
         assert_eq!(loaded.spaces[0].active, Some(7));
         assert_eq!(loaded.tabs[0].url, "https://example.com/");
         assert_eq!(loaded.tabs[0].folder, Some(2));
+        assert!(loaded.folders[0].expanded, "folder expansion persists");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn folder_expanded_defaults_collapsed_when_absent() {
+        // A pre-ADR-0039 session file has no `expanded` field on folders; it must
+        // restore as collapsed (how folders always looked at launch before).
+        let json = br#"{"active_space":1,
+            "spaces":[{"id":1,"name":"Home","icon":"H","active":null}],
+            "folders":[{"id":2,"space":1,"name":"Work","parent":null}],
+            "tabs":[]}"#;
+        let state: SavedState = serde_json::from_slice(json).expect("legacy session parses");
+        assert!(!state.folders[0].expanded);
     }
 
     #[test]

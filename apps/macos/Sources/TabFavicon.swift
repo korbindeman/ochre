@@ -6,6 +6,9 @@ import SwiftUI
 /// spinner while the page loads and a globe glyph when no icon is available.
 struct TabFavicon: View {
     let tab: TabItem
+    /// Rendered glyph size. Tab rows use the default 16; the pinned strip renders
+    /// a hair larger so the icon fills more of its spacious slot.
+    var size: CGFloat = 16
     @State private var image: NSImage?
 
     var body: some View {
@@ -17,9 +20,10 @@ struct TabFavicon: View {
             } else if let image {
                 Image(nsImage: image)
                     .resizable()
-                    .frame(width: 16, height: 16)
+                    .frame(width: size, height: size)
             } else {
                 Image(systemName: "globe")
+                    .font(.system(size: size))
                     .foregroundStyle(.secondary)
             }
         }

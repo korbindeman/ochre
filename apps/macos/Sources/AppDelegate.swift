@@ -479,6 +479,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Delete a folder — its tabs survive (drop to loose pinned), so no confirm.
     func deleteFolder(_ id: Int32) { browser_delete_folder(id) }
 
+    /// Persist a folder's expand/collapse state (ADR-0039). Round-trips through
+    /// the core so it survives relaunch and space switches.
+    func setFolderExpanded(_ id: Int32, _ expanded: Bool) {
+        browser_set_folder_expanded(id, expanded)
+    }
+
     /// Promote a folder to its own space.
     func folderToSpace(_ id: Int32) { browser_folder_to_space(id) }
 

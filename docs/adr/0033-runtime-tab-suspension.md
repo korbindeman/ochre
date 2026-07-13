@@ -32,7 +32,8 @@ The suspend/hydrate machinery already exists; runtime suspension is the policy l
   no longer maps once the handle is cleared).
 - **New event `TabSuspended` (type 8):** lightweight signal for the host to detach the CEF
   `NSView` without a full `StructureChanged` reload. Snapshot adds `hydrated: bool` for sidebar
-  dimming.
+  dimming. *(Update: the sidebar dimming was later removed — ADR-0045. The event and the
+  snapshot's `hydrated` field remain; the frontend just no longer dims suspended rows.)*
 - **Settings / manual suspend:** deferred — v1 is automatic only; per-space hibernation knobs
   (roadmap §5.3) land later.
 

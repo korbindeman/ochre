@@ -157,14 +157,25 @@ Chromium ships them *off* by default; enabling `ffmpeg_branding=Chrome` means **
 - **DRM:** Ship L3 EME plumbing (near-free via CEF). **Do not advertise Netflix/Disney+ at launch** — document
   it as a known limitation. Budget a **post-1.0 castLabs/CWIP workstream** to secure a license + VMP signing
   (also requires the signed bundle we need anyway). This still *beats Zen*, which has no DRM at all.
-- **Codecs:** Note first that the **stock prebuilt CEF ships H.264/AAC *disabled*** — mainstream MP4 video
-  won't play until this is addressed (§4.2), likely via a **custom CEF build**. Given you're building anyway,
-  default to **OS-provided decoders** (macOS VideoToolbox / Windows Media Foundation) with FFmpeg software
-  proprietary-codec paths **disabled**; lean on royalty-free **AV1/VP9**; leave **HEVC to the OS or omit it**;
-  never flip `ffmpeg_branding=Chrome` without legal sign-off. Known sharp edge to solve:
-  **AAC-audio-via-OS-decoder on Windows.**
+- **Codecs — RESOLVED 2026-07-09 (ADR-0040), revising the earlier OS-decoder recommendation:** we build a
+  **custom CEF with `proprietary_codecs=true ffmpeg_branding=Chrome`** on the pinned line (ADR-0028), via a
+  scripted ephemeral cloud-Mac build (~€10/build, ~€12 per CEF bump), and point `cef-dll-sys` at it. Research
+  confirmed **no usable prebuilt exists** (OBS's is the only codec-enabled macOS arm64 prebuilt — CEF 127,
+  ABI-incompatible) and the OS-decoder path has a known-unsolved AAC problem (cef#3559). Patent posture,
+  accepted deliberately: AVC is royalty-free under Via LA's 100k-units/yr tier; **AAC has no free tier** —
+  exposure carried knowingly at pre-launch scale, revisit before distribution numbers matter. **HEVC stays
+  out of the bundle** (OS or absent) — that part of the old recommendation stands. Lean on AV1/VP9 where
+  sites offer them.
+  - **Distribution posture — DECIDED 2026-07-09 (ADR-0042, supplements 0040):** public GitHub-Actions browser
+    releases **ship the codecs** (a conscious pre-launch risk — the app makes them public regardless of where
+    the CEF artifact is stored; the private `ochre_cef` repo is upstream-hygiene, not patent cover). Maintainer
+    release workflow (read-only PAT for `ochre_cef` in repo secrets) builds codec-full; fork-PR CI can't reach the secret so
+    contributor builds fall back to the stock codec-less prebuilt — a free **maintainer-codecs /
+    contributor-codecless** split. Codec-less is the **one-flag retreat**, kept working, for when scale or
+    visibility makes the AAC exposure uncomfortable.
 
-**→ Your call:** accept "no premium DRM at launch, labeled clearly" and the OS-decoder codec posture.
+**→ Your call:** ~~accept "no premium DRM at launch, labeled clearly" and the OS-decoder codec posture.~~
+DRM half stands as recommended (labeled limitation); codec half **decided** → ADR-0040.
 
 ### 3.3 The CEF release lane — Stable vs. LTS
 
@@ -278,11 +289,10 @@ runtime is the default since M128**, so camera/mic/geolocation *permission promp
 out of the box (the old Alloy "silently deny" DX is gone). The real gaps:
 
 - **Proprietary codecs (H.264 / H.265 / AAC) are OFF in the prebuilt binary** — patent reasons. Stock CEF
-  **cannot play most MP4 / a lot of web video**. Two fixes, both with cost: (a) **build CEF from source** with
-  `proprietary_codecs=true ffmpeg_branding=Chrome` (needs the full Chromium toolchain + accepts patent exposure,
-  §3.2), or (b) **wire OS-provided hardware decoders** (VideoToolbox/Media Foundation) — cleaner on patents, but
-  **AAC-audio-on-Windows is a known sharp edge**. **This is a Phase-2 blocker to decide early** — "video doesn't
-  play" fails the complete-browser bar. AV1/VP9 (YouTube's usual path) are royalty-free and work.
+  **cannot play most MP4 / a lot of web video**. **Decided 2026-07-09 (ADR-0040):** fix (a) — **build CEF from
+  source** with `proprietary_codecs=true ffmpeg_branding=Chrome` on the pinned line, via a scripted cloud-Mac
+  build (backlog P2-38). Fix (b), OS-provided decoders, was rejected: AAC can't be cleanly routed through OS
+  decode APIs (the finding that stalled cef#3559). AV1/VP9 (YouTube's usual path) are royalty-free and work.
 - **Web Push / FCM is effectively unsupported** on stock CEF (needs Google's private API keys, only compiled in
   from a source build). So Slack-web/calendar notifications don't arrive → this is 🔨, not free.
 - **The Google-API-key cluster is off:** Safe Browsing, network **geolocation**, Google-backed spellcheck/
@@ -595,7 +605,7 @@ The twin failure modes are **Arc's novelty tax** (clever features nobody uses) a
 | # | Decision | Recommendation | Revisits spec? |
 |---|---|---|---|
 | 3.1 | **Extensions** | Abandon general extensions; native-absorb + userscript engine | Confirms spec §2 |
-| 3.2 | **DRM / codecs** | No premium DRM at launch (labeled); OS-decoder codecs, no HEVC bundle | New |
+| 3.2 | **DRM / codecs** | DRM: no premium-DRM promise at launch (labeled). Codecs: **resolved → ADR-0040** — custom CEF build w/ proprietary codecs, no HEVC bundle | New |
 | 3.3 | **CEF lane** | LTS default + Stable hot-jump for KEV 0-days | New |
 | 3.4 | **Sync** | 1.0 pillar — design early, ship Phase 3, E2E | Sharpens spec §12 |
 | 3.5 | **AI layer** | Clean table-stakes + dev MCP/local-models + safety-as-position | Sharpens spec §19 |

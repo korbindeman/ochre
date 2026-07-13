@@ -73,20 +73,28 @@ enum SidebarDropSpace {
 }
 
 extension View {
-    func reportSidebarDropFrame(_ kind: SidebarDropFrameKind) -> some View {
-        background(
-            GeometryReader { geo in
-                Color.clear.preference(
-                    key: SidebarDropFramesKey.self,
-                    value: [
-                        SidebarDropFrame(
-                            kind: kind,
-                            rect: geo.frame(in: .named(SidebarDropSpace.name))
-                        )
-                    ]
-                )
-            }
-        )
+    /// Report this row's frame into the drop resolver. `active: false` (the inert
+    /// filmstrip panels for non-active spaces, ADR-0043) reports nothing, so the
+    /// Y-based resolver only ever sees the one live list.
+    @ViewBuilder
+    func reportSidebarDropFrame(_ kind: SidebarDropFrameKind, active: Bool = true) -> some View {
+        if active {
+            background(
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: SidebarDropFramesKey.self,
+                        value: [
+                            SidebarDropFrame(
+                                kind: kind,
+                                rect: geo.frame(in: .named(SidebarDropSpace.name))
+                            )
+                        ]
+                    )
+                }
+            )
+        } else {
+            self
+        }
     }
 }
 
@@ -531,8 +539,15 @@ struct SidebarTabDrag: ViewModifier {
 }
 
 extension View {
-    func sidebarTabDrag(tab: TabItem, drag: TabDragModel) -> some View {
-        modifier(SidebarTabDrag(tab: tab, drag: drag))
+    /// `enabled: false` (an inert filmstrip panel, ADR-0043) attaches no drag
+    /// gesture, so only the active space's rows are draggable.
+    @ViewBuilder
+    func sidebarTabDrag(tab: TabItem, drag: TabDragModel, enabled: Bool = true) -> some View {
+        if enabled {
+            modifier(SidebarTabDrag(tab: tab, drag: drag))
+        } else {
+            self
+        }
     }
 }
 

@@ -66,6 +66,13 @@ final class RootView: NSView {
     /// `BrowserState.isFloatingSidebarShown`. Drives the floating card's geometry
     /// in `applyLayout`; kept in step by `syncFloatingSidebar`.
     private var floatingShown = false
+    /// True only while a *direct* pinned↔floating swap is cross-fading — pinning
+    /// while the floating card is revealed, or unpinning back onto an empty canvas.
+    /// In that case both hosts carry the same content at nearly the same spot, so
+    /// `applyLayout` freezes the column at x=0 and the card at its inset and they
+    /// dissolve in place rather than sliding past each other (`setSidebarPinned`
+    /// runs the column's fade). Cleared when the swap animation completes.
+    private var inPlaceSwap = false
 
     /// A divider drag is in progress — suspends the floating sidebar's hover
     /// dismissal so dragging its edge past the grace margin doesn't snap it shut.
@@ -582,10 +589,12 @@ final class RootView: NSView {
         background.frame = bounds
 
         let chrome = sidebarPinned ? chromeWidth : 0
-        // The pinned sidebar slides out to the left instead of shrinking, so
-        // its content never squishes mid-animation.
+        // The pinned sidebar slides out to the left instead of shrinking, so its
+        // content never squishes mid-animation — except during a direct swap with
+        // the floating card, where it's frozen at x=0 and cross-fades in place
+        // (`inPlaceSwap`) so the two identical panels don't slide past each other.
         sidebarHost.frame = NSRect(
-            x: chrome - chromeWidth,
+            x: inPlaceSwap ? 0 : chrome - chromeWidth,
             y: 0,
             width: sidebarWidth,
             height: bounds.height
@@ -601,8 +610,10 @@ final class RootView: NSView {
         hotZone.frame = NSRect(x: 0, y: 0, width: 12, height: bounds.height)
         let inset = floatingSidebarInset
         let floatingHeight = max(1, bounds.height - inset * 2)
+        // Slides off-screen when dismissed by a hover exit, but held at its inset
+        // (fade only) during a direct swap so it settles into/out of the column.
         floatingHost.frame = NSRect(
-            x: floatingShown ? inset : -sidebarWidth - 16,
+            x: (floatingShown || inPlaceSwap) ? inset : -sidebarWidth - 16,
             y: inset,
             width: sidebarWidth,
             height: floatingHeight
@@ -763,12 +774,49 @@ final class RootView: NSView {
         }
         CEFContainerView.sidebarLayout = .sidebarTransition
         lastSyncedCEFSize = .zero
+
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        // A direct swap with the floating card — pinning while it's revealed, or
+        // unpinning back onto an empty canvas — cross-fades the column in place of
+        // the card instead of sliding it in from (or out to) off-screen while the
+        // near-identical card slides the other way. Everything else (collapse to
+        // nothing, reveal from nothing) keeps the slide. No point under Reduce Motion.
+        let inPlace = !reduceMotion && (pinned ? floatingShown : state.isFloatingSidebarShown)
         sidebarPinned = pinned
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        inPlaceSwap = inPlace
+        if !inPlace {
+            // Normal slide: undo any residual alpha/hidden state an interrupted
+            // cross-fade may have left on the column.
+            sidebarHost.alphaValue = 1
+            sidebarHost.isHidden = false
+        }
+
+        if reduceMotion {
             finishSidebarTransition()
             applyLayout()
             return
         }
+
+        if inPlace {
+            sidebarHost.isHidden = false
+            if pinned {
+                // Drop the column into the pinned slot at zero alpha with no
+                // animation, so it fades up in place as the card fades out over it
+                // rather than sliding in from the left.
+                sidebarHost.frame = NSRect(
+                    x: 0, y: 0, width: sidebarWidth, height: bounds.height)
+                sidebarHost.alphaValue = 0
+            }
+            // Cross-fade the column opposite the card (whose fade lives in
+            // `syncFloatingSidebar`), matched to the same 0.16s so they dissolve
+            // together rather than one lagging the other.
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                sidebarHost.animator().alphaValue = pinned ? 1 : 0
+            }
+        }
+
         startSidebarTransitionSync()
         sidebarTransitionGeneration &+= 1
         let generation = sidebarTransitionGeneration
@@ -782,6 +830,15 @@ final class RootView: NSView {
             completionHandler: { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self, self.sidebarTransitionGeneration == generation else { return }
+                    if inPlace {
+                        self.inPlaceSwap = false
+                        if !self.sidebarPinned {
+                            // Faded out onto the card — park the column off-screen
+                            // and restore its opacity for the next slide.
+                            self.sidebarHost.isHidden = true
+                            self.sidebarHost.alphaValue = 1
+                        }
+                    }
                     self.finishSidebarTransition()
                 }
             })

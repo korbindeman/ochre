@@ -20,9 +20,6 @@ struct TabItem: Identifiable, Equatable {
     /// back/forward controls (disabled when there's nowhere to go).
     var canGoBack: Bool = false
     var canGoForward: Bool = false
-    /// `false` when the core has discarded the tab's CEF browser (lazy restore or
-    /// runtime suspension, ADR-0013 / ADR-0033).
-    var isHydrated: Bool = true
     /// Bumped when the engine captures a fresh favicon, to retrigger the load.
     var faviconVersion: Int = 0
     /// Sampled page theme/background color for viewport URL-bar tinting.
@@ -52,6 +49,9 @@ struct FolderItem: Identifiable, Equatable {
     var name: String
     /// `nil` at the space root; set when nested inside another folder.
     var parent: Int32?
+    /// Sidebar expand/collapse state, owned by the core so it persists across
+    /// launches and space switches (ADR-0039). `false` = collapsed.
+    var expanded: Bool
 }
 
 /// Observable UI state, a projection of the core-owned tree. Structure (spaces /
@@ -180,11 +180,26 @@ final class BrowserState: ObservableObject {
 
     // Folders / tabs of the active space, split into the sidebar's sections.
     var activeFolders: [FolderItem] { folders.filter { $0.space == activeSpaceId } }
-    var rootFolders: [FolderItem] {
-        activeFolders.filter { $0.parent == nil }
-    }
+    var rootFolders: [FolderItem] { rootFolders(inSpace: activeSpaceId) }
+    // Space-agnostic: a folder's parent uniquely determines its space, so filtering
+    // by parent alone is correct for any space (the sidebar filmstrip renders every
+    // space's tree at once, ADR-0043).
     func childFolders(of parent: Int32) -> [FolderItem] {
-        activeFolders.filter { $0.parent == parent }
+        folders.filter { $0.parent == parent }
+    }
+
+    // Per-space section accessors — the sidebar renders each space's tree in a
+    // side-by-side filmstrip (ADR-0043), so it asks for a specific space rather
+    // than the active one. The `active…` / bare computed forms above are the
+    // `inSpace: activeSpaceId` case, kept for drag, selection, and the self-tests.
+    func rootFolders(inSpace s: Int32) -> [FolderItem] {
+        folders.filter { $0.space == s && $0.parent == nil }
+    }
+    func looseSavedTabs(inSpace s: Int32) -> [TabItem] {
+        tabs.filter { $0.space == s && $0.pinned && !$0.favorite && $0.folder == nil }
+    }
+    func openTabs(inSpace s: Int32) -> [TabItem] {
+        tabs.filter { $0.space == s && !$0.pinned && !$0.favorite }
     }
     /// Maximum visible favorites — 3×2 grid; matches core `MAX_VISIBLE_FAVORITES`.
     static let maxFavoriteTabs = 6
@@ -194,19 +209,33 @@ final class BrowserState: ObservableObject {
         tabs.filter { $0.favorite }
     }
     var canPinMoreFavorites: Bool { favoriteTabs.count < Self.maxFavoriteTabs }
-    var looseSavedTabs: [TabItem] {
-        tabs.filter {
-            $0.space == activeSpaceId && $0.pinned && !$0.favorite && $0.folder == nil
-        }
-    }
-    var openTabs: [TabItem] {
-        tabs.filter { $0.space == activeSpaceId && !$0.pinned && !$0.favorite }
-    }
+    var looseSavedTabs: [TabItem] { looseSavedTabs(inSpace: activeSpaceId) }
+    var openTabs: [TabItem] { openTabs(inSpace: activeSpaceId) }
     /// Whether any ephemeral tab exists in any space — saved tabs alone don't
     /// count as "open."
     var hasOpenTabs: Bool { tabs.contains { !$0.pinned && !$0.favorite } }
 
     func tabs(inFolder folder: Int32) -> [TabItem] { tabs.filter { $0.folder == folder } }
+
+    /// The active tab, if it lives inside `folderId` or any of its nested
+    /// descendant folders — the tab a collapsed folder peeks out so the current
+    /// tab is never hidden (ADR-0039). `nil` while a surface covers the canvas
+    /// (no tab reads as active then) or when the active tab is elsewhere. Walks
+    /// up the tab's folder-parent chain, so the *nearest* collapsed ancestor is
+    /// the one that peeks it.
+    func activeDescendantTab(of folderId: Int32) -> TabItem? {
+        guard !isSurfaceOpen, let activeTabId,
+            let tab = tabs.first(where: { $0.id == activeTabId }),
+            var current = tab.folder
+        else { return nil }
+        while true {
+            if current == folderId { return tab }
+            guard let parent = folders.first(where: { $0.id == current })?.parent else {
+                return nil
+            }
+            current = parent
+        }
+    }
 
     private func appendFolderTabOrder(_ folderId: Int32, into ids: inout [Int32]) {
         for child in childFolders(of: folderId) {
@@ -266,7 +295,6 @@ final class BrowserState: ObservableObject {
             guard let url = payload else { return }
             (NSApp.delegate as? AppDelegate)?.openTab(url: url, windowId: windowId)
         case 8:  // TabSuspended — background discard (ADR-0033)
-            patch(id) { $0.isHydrated = false }
             suspendedTabId = id
         default: break
         }
@@ -303,13 +331,14 @@ final class BrowserState: ObservableObject {
                 isLoading: dto.loading,
                 canGoBack: dto.canGoBack,
                 canGoForward: dto.canGoForward,
-                isHydrated: dto.hydrated,
                 faviconVersion: priorFavicon[dto.id] ?? 0
             )
         }
         let newSpaces = snap.spaces.map { SpaceItem(id: $0.id, name: $0.name, icon: $0.icon) }
         let newFolders = snap.folders.map {
-            FolderItem(id: $0.id, space: $0.space, name: $0.name, parent: $0.parent)
+            FolderItem(
+                id: $0.id, space: $0.space, name: $0.name, parent: $0.parent,
+                expanded: $0.expanded)
         }
 
         // Spring the sidebar through structural changes (reorder / pin / create /
@@ -668,6 +697,7 @@ private struct Snapshot: Decodable {
         let space: Int32
         let name: String
         let parent: Int32?
+        let expanded: Bool
     }
     struct TabDTO: Decodable {
         let id: Int32
@@ -680,7 +710,6 @@ private struct Snapshot: Decodable {
         let loading: Bool
         let canGoBack: Bool
         let canGoForward: Bool
-        let hydrated: Bool
     }
 }
 

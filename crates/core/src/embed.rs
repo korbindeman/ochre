@@ -546,6 +546,11 @@ pub fn rename_folder(id: i32, name: &str) {
     tabs::rename_folder(id, name);
 }
 
+/// Persist folder `id`'s sidebar expand/collapse state (ADR-0039).
+pub fn set_folder_expanded(id: i32, expanded: bool) {
+    tabs::set_folder_expanded(id, expanded);
+}
+
 /// Create a new empty space (named `name`, with emoji `icon`) and switch to it;
 /// returns its id.
 pub fn create_space(name: &str, icon: &str) -> i32 {

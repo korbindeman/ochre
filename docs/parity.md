@@ -86,6 +86,7 @@ bind) so they can't silently drift from the code — see ADR-0007 · *Future*.
 | New tab adjacent + focused; close selects neighbor | Inv | 🚧 | ⬜ | ⬜ | style §4 |
 | Reopen closed tab (⌘⇧T) — faithful restore of space/folder/pinned/slot | Inv | 🚧 | ⬜ | ⬜ | style §4 · ADR-0013 |
 | Saved vs. open tab split | Inv | 🚧 | ⬜ | ⬜ | style §4 · ADR-0006 |
+| Folder expand/collapse persisted (survives space switch); collapsed folder peeks the active tab | Inv | ✅ | ⬜ | ⬜ | ADR-0039 |
 | Pinned favorites — permanent Arc-style icon strip; click focuses, ⌘W deselects (icon never leaves) | Inv | ✅ | ⬜ | ⬜ | style §4 · ADR-0032 · ADR-0038 |
 | Session persistence — tabs/spaces/folders survive restart (lazy hydration) | Inv | 🚧 | ⬜ | ⬜ | rm §4 · ADR-0013 |
 
