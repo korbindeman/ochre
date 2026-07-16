@@ -2,37 +2,32 @@
 
 A minimal, fast, open-source browser with Arc's UX and real native OS apps.
 
-Chromium via CEF. A shared Rust core. Thin native UI per platform: SwiftUI on macOS, Windows Reactor (native WinUI 3 in Rust) on Windows.
+Chromium via CEF, a shared Rust core, and a thin native UI per platform: SwiftUI on macOS, Windows Reactor (native WinUI 3 in Rust) on Windows.
 
-**Early development.** macOS MVP in progress. Windows is next.
+**Early development.** The macOS MVP is complete and daily-driven; the Windows frontend is underway.
 
 ## Viability
 
-Building a browser is hard — especially for one person. I'm not sure this project is viable in the long run.
-
-So far, though, I'm impressed with what CEF makes possible. Embedding Chromium in a native shell, driving tabs and navigation from a Rust core, shipping real features without maintaining a rendering engine — it works better than I expected. There may be a ceiling eventually: licensing walls, engine limitations, things CEF simply won't let you do. I plan to keep going until I hit it.
-
-I'm also interested in forking an engine outright someday — maybe something like [Ladybird](https://ladybird.org/) if it matures into a realistic base. That's the point where solo development stops being feasible. For now, CEF is the pragmatic path.
+Building a browser is hard, and harder for one person. So far CEF has exceeded my expectations: Chromium in a native shell, driven from a Rust core, with no rendering engine to maintain. There may be a ceiling (licensing walls, things CEF won't allow), and I plan to keep going until I hit it. Forking an engine like [Ladybird](https://ladybird.org/) is a possible long-term path, but that's past solo scale; for now CEF is the pragmatic choice.
 
 ## Features
 
-> Snapshot only — may be out of date with the repo.
+> A snapshot; it may lag the repo.
 
-Ochre is built to be **scriptable and extensible**: a Rust core with a thin native shell, a consent-gated automation surface, and room for users to add their own workflows — including AI — without waiting on us to ship every idea.
+Ochre is **scriptable and extensible**: a Rust core with a thin native shell and a consent-gated automation surface, so you can add your own workflows, AI included, without waiting on us to ship them.
 
-- **Arc-style UX** — vertical tabs, spaces, pinned tabs & folders
-- **Native adblock & cookie consent** — request-path blocking; reject or hide consent banners
-- **Bitwarden / Vaultwarden vault** — unlock, sync, and autofill against your existing server
-- **Arc import** — migrate spaces, folders, and tabs from Arc's sidebar export
-- **Commands** *(planned)* — user-scriptable automation in the command bar; TypeScript commands with access to tabs, spaces, navigation, clipboard, and more
-- **AI** *(experimental)* — exploring what actually helps; won't ship filler. The scriptable surface is the point — users can wire in their own models and tools
+- **Arc-style UX**: vertical tabs, spaces, pinned tabs & folders
+- **Native adblock & cookie consent**: request-path blocking; reject or hide consent banners
+- **Bitwarden / Vaultwarden vault**: unlock, sync, and autofill against your existing server
+- **Proprietary media codecs**: H.264/AAC playback via a custom CEF build
+- **Arc import**: migrate spaces, folders, and tabs from Arc's sidebar export
+- **Commands** *(planned)*: user-scriptable automation in the command bar; TypeScript commands with access to tabs, spaces, navigation, clipboard, and more
+- **AI** *(experimental)*: exploring what helps; no filler features. The scriptable surface is the point: wire in your own models and tools
 
 **Not yet:**
 
-- **Chrome extensions** — blocked by the engine: CEF removed its extension loader, and the replacement only works with Chrome's own toolbar UI — incompatible with a native shell. Real extension support seems to mean forking all of Chromium. Commands and native features are the interim; extensions stay on the radar.
-- **DRM / protected streaming** — blocked by licensing: bundling Widevine is easy, but Netflix and similar services need a Google Widevine agreement and VMP signing that open-source indie browsers have historically been denied. Will look into this eventually.
-
-macOS only for now. Windows is next. The bar for release is dogfooding — it has to hold up as a real daily browser first.
+- **Chrome extensions**: blocked by the engine. CEF removed its extension loader, and the replacement works only with Chrome's own toolbar UI, which a native shell can't host. Real extension support seems to mean forking all of Chromium. Commands and native features are the interim; extensions stay on the radar.
+- **DRM / protected streaming**: blocked by licensing. Bundling Widevine is easy, but Netflix and similar services need a Google Widevine agreement and VMP signing, and Google has a track record of denying both to open-source indie browsers. On the list for later.
 
 ## Architecture
 
@@ -50,7 +45,7 @@ macOS only for now. Windows is next. The bar for release is dogfooding — it ha
 └────────────────────────────────┘   └────────────────────────┘
 ```
 
-The native app owns the window. CEF renders into embedded child views. Windows UI uses Windows Reactor (native WinUI 3 in Rust) on WinUI 3.
+The native app owns the window; CEF renders into embedded child views.
 
 | Path | Contents |
 |------|----------|
@@ -63,16 +58,9 @@ See [`docs/architecture.md`](docs/architecture.md) for the full design.
 
 ## Development
 
-Development is mostly agentic. You describe a goal in natural language, a feature, a bug, a polish pass, and a coding agent implements it as an end-to-end vertical slice: Rust core, FFI, native UI, menu/shortcut, and verification. Human review and dogfooding sit on top of that loop.
+Development is agentic for the most part: coding agents implement features as end-to-end vertical slices (core, FFI, native UI, verification). Nothing ships on the agent's word alone; I review and dogfood every change, and the bar is a browser that holds up as a real daily driver.
 
-The workflow:
-
-1. **Steer**: name what you want built or fixed. Agents read the design set in `docs/` (architecture, style guide, ADRs) to stay aligned with existing decisions.
-2. **Implement**: the agent works the full stack in one pass rather than leaving half-wired stubs. The native UI layer is SwiftUI/AppKit on macOS; browser logic stays in the Rust core.
-3. **Verify**: `just verify` for the Rust workspace; `just run` to launch the app; targeted self-tests (`just focus-selftest`, `just redirect-selftest`, etc.) guard regressions called out in the docs.
-4. **Dogfood**: `just dogfood` installs a release build to `/Applications` when something is ready for real daily use.
-
-[`CLAUDE.md`](CLAUDE.md) is the operating manual for agents: build commands, architecture constraints, CEF gotchas, and conventions. Point your agent at it before starting a session.
+[`CLAUDE.md`](CLAUDE.md) is the operating manual for agents: build commands, architecture constraints, CEF gotchas, and conventions. Point your agent at it and describe a concrete slice.
 
 ### Prerequisites
 
@@ -112,7 +100,7 @@ cd ochre
 just run
 ```
 
-`just run` builds the SwiftUI app, assembles the CEF bundle into `Browser.app`, and launches it. **CEF must run from an app bundle.** Do not use `cargo run` directly.
+`just run` builds the SwiftUI app, assembles the CEF bundle into `Browser.app`, and launches it. **CEF must run from an app bundle.** Do not use `cargo run`.
 
 The first build downloads the CEF binary distribution and can take several minutes.
 
@@ -132,22 +120,13 @@ Run `just --list` for self-tests, formatting, and everything else.
 
 ## Contributing
 
-The project is in early development and not yet set up for external contributions. When that opens up, work will be tracked in GitHub issues.
-
-Today, development runs through AI coding agents with manual review and dogfooding for quality. If you want to drive a session yourself:
-
-1. Clone the repo and satisfy the [prerequisites](#prerequisites) above.
-2. Open the tree in an agent-capable editor (Cursor, Claude Code, etc.).
-3. Point the agent at [`CLAUDE.md`](CLAUDE.md), which encodes how to build, test, and stay within project conventions.
-4. Describe a concrete slice ("add X", "fix Y", "make Z feel better") and let the agent run the implement → verify loop.
-
-Design rationale and decisions live in [`docs/`](docs/README.md) if you want to read ahead; agents use those automatically.
+The project is in early development and not yet set up for external contributions. When that opens up, I'll track work in GitHub issues. In the meantime, if you want to experiment: satisfy the [prerequisites](#prerequisites), point an agent at [`CLAUDE.md`](CLAUDE.md), and drive a session. Design rationale lives in [`docs/`](docs/README.md).
 
 ## Acknowledgements
 
-- **[Arc](https://arc.net/)** — the interaction model this browser is built around.
-- **[Glide](https://github.com/glide-browser/glide)** — inspiration for Commands; see [Introducing Glide](https://blog.craigie.dev/introducing-glide/).
-- **[I Still Don't Care About Cookies](https://github.com/OhMyGuus/I-Still-Dont-Care-About-Cookies)** — inspiration for cookie-banner handling. Not used directly in this repo (licensing differs); Ochre's consent feature is a native reimplementation.
+- **[Arc](https://arc.net/)**: the interaction model behind this browser.
+- **[Glide](https://github.com/glide-browser/glide)**: inspiration for Commands; see [Introducing Glide](https://blog.craigie.dev/introducing-glide/).
+- **[I Still Don't Care About Cookies](https://github.com/OhMyGuus/I-Still-Dont-Care-About-Cookies)**: inspiration for cookie-banner handling. This repo doesn't use its code (licensing differs); Ochre's consent feature is a native reimplementation.
 
 ## License
 
