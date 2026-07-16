@@ -1,0 +1,109 @@
+# Alpha release — build Browser.app with proprietary codecs and publish a public
+# pre-release on this repo. See docs/adr/0040 (codec build) and 0042 (why public
+# builds ship codecs, and the maintainer-codecs / contributor-codecless split).
+#
+# Prerequisite (one-time, manual): a fine-grained PAT with read-only "Contents"
+# on the private korbindeman/ochre_cef repo, stored here as the repo secret
+# CEF_ARTIFACT_TOKEN. The built-in GITHUB_TOKEN is scoped to this repo only and
+# cannot read a separate private repo. Fork PRs never receive this secret — that
+# is deliberate (ADR-0042): forks build codec-less, only maintainer runs ship codecs.
+name: Alpha release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v0.1.0-alpha.1"
+        required: true
+        type: string
+  push:
+    tags: ["v*-alpha*"]
+
+permissions:
+  contents: write # to create the release on this repo
+
+jobs:
+  build:
+    # macos-26 = arm64 + Xcode 26 (the macOS 26 SDK this app needs: Liquid Glass,
+    # LSMinimumSystemVersion 26.0). Do NOT use macos-latest — it still points at
+    # macOS 15 / Xcode 16 and cannot build against the 26 SDK.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: meta
+        run: echo "tag=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          rustc --version
+          brew install xcodegen just
+
+      # Pulls the codec-enabled CEF from the private ochre_cef release matching the
+      # cef-dll-sys pin in Cargo.lock. Hard-fail if unavailable: a silently
+      # codec-less "alpha" would defeat the point of the release.
+      - name: Fetch codec-enabled CEF
+        env:
+          GH_TOKEN: ${{ secrets.CEF_ARTIFACT_TOKEN }}
+        run: |
+          cef="$(scripts/fetch-cef.sh)"
+          if [ -z "$cef" ]; then
+            echo "::error::Codec-enabled CEF not available. Check the CEF_ARTIFACT_TOKEN secret (needs read Contents on korbindeman/ochre_cef) and that a release matching the Cargo.lock pin exists."
+            exit 1
+          fi
+          echo "CEF_PATH=$cef" >> "$GITHUB_ENV"
+          echo "Using $cef"
+
+      # CEF_PATH is already exported above, so with-work-gate.sh won't re-resolve it.
+      - name: Build Browser.app (Release)
+        run: just build-release
+
+      - name: Verify the build actually has proprietary codecs
+        run: |
+          fw="apps/macos/build/Build/Products/Release/Browser.app/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"
+          if grep -q -a "h264_annex_b_to_avc_bitstream_converter" "$fw"; then
+            echo "H.264 code present in the shipped framework"
+          else
+            echo "::error::Shipped framework has no H.264 code — this is a codec-less build."
+            exit 1
+          fi
+
+      # ditto (not zip) so the .app's frameworks, symlinks and the ad-hoc
+      # signature survive archiving intact.
+      - name: Package
+        run: |
+          ditto -c -k --keepParent \
+            apps/macos/build/Build/Products/Release/Browser.app \
+            "Browser-${{ steps.meta.outputs.tag }}-macos-arm64.zip"
+
+      - name: Publish pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.meta.outputs.tag }}" \
+            "Browser-${{ steps.meta.outputs.tag }}-macos-arm64.zip" \
+            --prerelease \
+            --title "Browser ${{ steps.meta.outputs.tag }} (alpha)" \
+            --notes "$(cat <<'EOF'
+          **Alpha build — expect rough edges.**
+
+          ### Requirements
+          - **Apple Silicon** Mac (arm64 only)
+          - **macOS 26 (Tahoe)** or newer
+
+          ### Install
+          This build is ad-hoc signed but **not notarized**, so macOS quarantines it
+          on download. Unzip, then run this once or it won't open:
+
+          ```
+          xattr -cr /path/to/Browser.app
+          ```
+
+          Then double-click as usual.
+
+          ### Notes
+          Includes proprietary codecs (H.264/AAC), so mainstream MP4 video plays.
+          EOF
+          )"

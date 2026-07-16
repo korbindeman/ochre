@@ -128,10 +128,16 @@ close-selftest: gen-macos
 
 # ── Dogfood (release) ───────────────────────────────────────────────
 
+# The artifact `dogfood` installs and the alpha-release CI workflow publishes —
+# one definition so local and CI can't drift.
+#
+# Release build of Browser.app (no install).
+build-release: gen-macos
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Release -derivedDataPath build build'
+
 # Release build of Browser.app, install to /Applications, and launch.
 # Replaces any existing /Applications/Browser.app (quits a running instance first).
-dogfood: gen-macos
-    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Release -derivedDataPath build build'
+dogfood: build-release
     ./scripts/install-dogfood.sh apps/macos/build/Build/Products/Release/Browser.app
 
 # ── Convenience ─────────────────────────────────────────────────────
