@@ -26,5 +26,7 @@ pub mod http;
 pub mod import;
 pub mod lookup;
 pub mod manager;
+pub mod search;
 pub mod service;
 pub mod sync;
+pub mod usage;

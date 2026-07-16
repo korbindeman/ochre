@@ -13,6 +13,11 @@ import SwiftUI
 /// reliable escape hatch when the auto-picker can't find the fields (e.g. a
 /// two-step `google.com` sign-in). Passwords cross only on the explicit Fill/Copy
 /// gesture; the list carries metadata only.
+///
+/// Two orthogonal scopes (both ranked by the core, never here):
+/// - **Un-searched** — this site's matches, ordered by last use (ADR-0048).
+/// - **Searching** — `browser_vault_search` over the whole vault (ADR-0049), so a
+///   login saved under a different host is still reachable and fillable here.
 
 // ─── The button ────────────────────────────────────────────────────────────────
 
@@ -100,6 +105,16 @@ private struct VaultQuickPopover: View {
     @Binding var isPresented: Bool
     @ObservedObject private var state = BrowserState.shared
 
+    /// The search box (P2-42). Empty ⇒ the list stays scoped to this site's
+    /// matches; typing widens it to the whole vault, so a login filed under a
+    /// different host (shared SSO, a renamed site) is reachable without leaving
+    /// the page. Ranking is the core's (ADR-0049) — this never filters.
+    @State private var query = ""
+    @State private var results: [VaultLogin] = []
+
+    private var isSearching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
+    private var rows: [VaultLogin] { isSearching ? results : state.vaultMatches }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -112,33 +127,51 @@ private struct VaultQuickPopover: View {
 
             if state.vaultLocked {
                 locked
-            } else if state.vaultMatches.isEmpty {
-                empty
             } else {
-                Divider()
-                ScrollView {
-                    VStack(spacing: 2) {
-                        ForEach(state.vaultMatches) { login in
-                            VaultQuickRow(login: login, isPresented: $isPresented)
+                VaultQuickSearchField(text: $query)
+                if rows.isEmpty {
+                    empty
+                } else {
+                    Divider()
+                    ScrollView {
+                        VStack(spacing: 2) {
+                            ForEach(rows) { login in
+                                VaultQuickRow(login: login, isPresented: $isPresented)
+                            }
                         }
                     }
+                    .frame(maxHeight: 264)
                 }
-                .frame(maxHeight: 264)
             }
         }
         .padding(14)
         .frame(width: 300)
+        .onChange(of: query) { _, q in
+            results = VaultModel.fetchSearch(query: q)
+        }
+        .onChange(of: isPresented) { _, open in
+            // Never reopen onto a stale search.
+            if !open { query = "" }
+        }
     }
 
     private var locked: some View {
         VaultQuickUnlock(isPresented: $isPresented)
     }
 
+    /// Nothing to show: either this site has no saved logins (point at search —
+    /// the entry may be filed elsewhere), or the search itself found nothing.
     private var empty: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("No saved logins for this site.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            Text(
+                isSearching
+                    ? "No results for “\(query.trimmingCharacters(in: .whitespaces))”."
+                    : "No saved logins for this site. Search to find one saved elsewhere."
+            )
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
             Button {
                 BrowserState.shared.openVault()
                 isPresented = false
@@ -148,6 +181,39 @@ private struct VaultQuickPopover: View {
             }
             .buttonStyle(.bordered)
         }
+    }
+}
+
+// ─── Search field ────────────────────────────────────────────────────────────
+
+/// The popover's search box — mirrors the Passwords page's `SearchField` idiom
+/// (magnifier + Liquid Glass capsule + clear button), sized for the popover.
+/// Deliberately **not** focused on open: the primary action is picking from this
+/// site's list; search is the escape hatch.
+private struct VaultQuickSearchField: View {
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+            TextField("Search all passwords", text: $text)
+                .textFieldStyle(.plain)
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear search")
+            }
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .glassEffect(.regular, in: .capsule)
     }
 }
 
@@ -250,6 +316,7 @@ private struct VaultQuickRow: View {
                     help: "Copy username"
                 ) {
                     copy(login.username ?? "")
+                    BrowserState.shared.noteVaultUse(id: login.id)
                     copiedUser = true
                     resetFlags()
                 }
@@ -303,6 +370,7 @@ private struct VaultQuickRow: View {
         // Auto-clear after 30s (Bitwarden-style), but only if the user hasn't
         // copied something else since — never clobber a later clipboard.
         copy(password, clearAfter: 30)
+        BrowserState.shared.noteVaultUse(id: login.id)
         copiedPassword = true
         resetFlags()
     }

@@ -15,11 +15,25 @@
 //! over-offer beyond the host), and **RegEx** is treated as no-match (no regex
 //! engine yet; failing closed is the safe choice). Path-precise Exact/StartsWith
 //! and RegEx arrive if/when lookup grows to take a full URL — filed, not silent.
+//!
+//! ## Ordering
+//!
+//! Match strength ranks first — an exact-host match is *more relevant to this
+//! page* than a domain-wide one, and that stays true however long ago it was
+//! used. Recency ([`usage`](crate::vault::usage)) breaks the tie **within** a
+//! tier, which is where the order was previously arbitrary-but-frozen (the
+//! vault's sync order), so the account you actually sign in with rises to the top
+//! among equally-relevant entries. Never-used logins keep vault order below the
+//! used ones in their tier.
 
 use crate::vault::sync::{Login, LoginUri, UriMatch, Vault};
+use crate::vault::usage::UsageMap;
+use std::cmp::Reverse;
 
-/// Logins matching `host`, strongest match first.
-pub fn matching_logins<'a>(vault: &'a Vault, host: &str) -> Vec<&'a Login> {
+/// Logins matching `host`: strongest match first, most-recently-used first within
+/// a tier. `usage` maps login id → last-used unix seconds (see
+/// [`crate::vault::usage::snapshot`]); an empty map degrades to vault order.
+pub fn matching_logins<'a>(vault: &'a Vault, host: &str, usage: &UsageMap) -> Vec<&'a Login> {
     let host = normalize_host(host);
     if host.is_empty() {
         return Vec::new();
@@ -31,9 +45,15 @@ pub fn matching_logins<'a>(vault: &'a Vault, host: &str) -> Vec<&'a Login> {
         .iter()
         .filter_map(|login| login_quality(login, &host, host_domain.as_deref()).map(|q| (login, q)))
         .collect();
-    // Ord on MatchQuality puts Host before Domain; stable sort keeps vault order
-    // within a tier.
-    scored.sort_by_key(|(_, quality)| *quality);
+    // Ord on MatchQuality puts Host before Domain, then most-recent-first (never
+    // used ⇒ 0, so they sink). The sort is stable, so vault order still decides
+    // among logins that tie on both.
+    scored.sort_by_key(|(login, quality)| {
+        (
+            *quality,
+            Reverse(usage.get(&login.id).copied().unwrap_or(0)),
+        )
+    });
     scored.into_iter().map(|(login, _)| login).collect()
 }
 
@@ -175,10 +195,17 @@ mod tests {
         };
         // Same registrable domain, different subdomain → matches.
         assert_eq!(
-            ids(matching_logins(&vault, "accounts.google.com")),
+            ids(matching_logins(
+                &vault,
+                "accounts.google.com",
+                &UsageMap::new()
+            )),
             vec!["g"]
         );
-        assert_eq!(ids(matching_logins(&vault, "google.com")), vec!["g"]);
+        assert_eq!(
+            ids(matching_logins(&vault, "google.com", &UsageMap::new())),
+            vec!["g"]
+        );
     }
 
     #[test]
@@ -188,8 +215,11 @@ mod tests {
         let vault = Vault {
             logins: vec![login("a", &[("https://a.co.uk", UriMatch::Domain)])],
         };
-        assert!(matching_logins(&vault, "b.co.uk").is_empty());
-        assert_eq!(ids(matching_logins(&vault, "www.a.co.uk")), vec!["a"]);
+        assert!(matching_logins(&vault, "b.co.uk", &UsageMap::new()).is_empty());
+        assert_eq!(
+            ids(matching_logins(&vault, "www.a.co.uk", &UsageMap::new())),
+            vec!["a"]
+        );
     }
 
     #[test]
@@ -201,13 +231,17 @@ mod tests {
             )],
         };
         assert_eq!(
-            ids(matching_logins(&vault, "accounts.google.com")),
+            ids(matching_logins(
+                &vault,
+                "accounts.google.com",
+                &UsageMap::new()
+            )),
             vec!["h"]
         );
         // A sibling subdomain does NOT match under Host.
-        assert!(matching_logins(&vault, "mail.google.com").is_empty());
+        assert!(matching_logins(&vault, "mail.google.com", &UsageMap::new()).is_empty());
         // The bare domain does not match a host-scoped subdomain URI.
-        assert!(matching_logins(&vault, "google.com").is_empty());
+        assert!(matching_logins(&vault, "google.com", &UsageMap::new()).is_empty());
     }
 
     #[test]
@@ -218,7 +252,7 @@ mod tests {
                 login("regex", &[("https://example.com", UriMatch::RegEx)]),
             ],
         };
-        assert!(matching_logins(&vault, "example.com").is_empty());
+        assert!(matching_logins(&vault, "example.com", &UsageMap::new()).is_empty());
     }
 
     #[test]
@@ -230,13 +264,25 @@ mod tests {
             ],
         };
         // Same host → offered (a safe subset of the true full-URL rule).
-        assert_eq!(ids(matching_logins(&vault, "example.com")), vec!["e"]);
-        assert_eq!(ids(matching_logins(&vault, "shop.example.com")), vec!["s"]);
+        assert_eq!(
+            ids(matching_logins(&vault, "example.com", &UsageMap::new())),
+            vec!["e"]
+        );
+        assert_eq!(
+            ids(matching_logins(
+                &vault,
+                "shop.example.com",
+                &UsageMap::new()
+            )),
+            vec!["s"]
+        );
         // Different host under the same domain → NOT offered (Exact/StartsWith
         // do not widen to the domain).
-        assert!(!matching_logins(&vault, "other.example.com")
-            .iter()
-            .any(|l| l.id == "e"));
+        assert!(
+            !matching_logins(&vault, "other.example.com", &UsageMap::new())
+                .iter()
+                .any(|l| l.id == "e")
+        );
     }
 
     #[test]
@@ -249,8 +295,69 @@ mod tests {
         };
         // Querying the exact host: the Host match must come first.
         assert_eq!(
-            ids(matching_logins(&vault, "accounts.google.com")),
+            ids(matching_logins(
+                &vault,
+                "accounts.google.com",
+                &UsageMap::new()
+            )),
             vec!["host", "domain"]
+        );
+    }
+
+    #[test]
+    fn recency_orders_within_a_tier() {
+        // Three equally-relevant (domain-tier) logins for the same site — the case
+        // the frozen sync order used to pin forever.
+        let vault = Vault {
+            logins: vec![
+                login("first", &[("https://example.com", UriMatch::Domain)]),
+                login("second", &[("https://example.com", UriMatch::Domain)]),
+                login("third", &[("https://example.com", UriMatch::Domain)]),
+            ],
+        };
+        // Untouched: vault order, exactly as before.
+        assert_eq!(
+            ids(matching_logins(&vault, "example.com", &UsageMap::new())),
+            vec!["first", "second", "third"]
+        );
+        // Used third, then second → most recent first, never-used sinks.
+        let usage = UsageMap::from([("third".to_string(), 100), ("second".to_string(), 200)]);
+        assert_eq!(
+            ids(matching_logins(&vault, "example.com", &usage)),
+            vec!["second", "third", "first"]
+        );
+    }
+
+    #[test]
+    fn recency_never_outranks_a_stronger_match() {
+        // The invariant recency must not break: a long-unused exact-host match is
+        // still more relevant to this page than a just-used domain-wide one.
+        let vault = Vault {
+            logins: vec![
+                login("domain", &[("https://google.com", UriMatch::Domain)]),
+                login("host", &[("https://accounts.google.com", UriMatch::Host)]),
+            ],
+        };
+        let usage = UsageMap::from([("domain".to_string(), 999_999)]);
+        assert_eq!(
+            ids(matching_logins(&vault, "accounts.google.com", &usage)),
+            vec!["host", "domain"]
+        );
+    }
+
+    #[test]
+    fn usage_for_unmatched_logins_is_ignored() {
+        // A recently-used login for another site must not be dragged in.
+        let vault = Vault {
+            logins: vec![
+                login("here", &[("https://example.com", UriMatch::Domain)]),
+                login("elsewhere", &[("https://other.org", UriMatch::Domain)]),
+            ],
+        };
+        let usage = UsageMap::from([("elsewhere".to_string(), 999_999)]);
+        assert_eq!(
+            ids(matching_logins(&vault, "example.com", &usage)),
+            vec!["here"]
         );
     }
 
@@ -259,8 +366,8 @@ mod tests {
         let vault = Vault {
             logins: vec![login("g", &[("https://google.com", UriMatch::Domain)])],
         };
-        assert!(matching_logins(&vault, "example.org").is_empty());
-        assert!(matching_logins(&vault, "").is_empty());
-        assert!(matching_logins(&vault, "   ").is_empty());
+        assert!(matching_logins(&vault, "example.org", &UsageMap::new()).is_empty());
+        assert!(matching_logins(&vault, "", &UsageMap::new()).is_empty());
+        assert!(matching_logins(&vault, "   ", &UsageMap::new()).is_empty());
     }
 }

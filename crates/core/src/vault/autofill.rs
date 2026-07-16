@@ -57,7 +57,14 @@ pub fn handle(msg: &Message) -> Option<serde_json::Value> {
         // (the script only sends this when the user selects a picker entry).
         "password" => {
             let id = msg.data.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            Some(password_reply(service::password_for(id)))
+            let password = service::password_for(id);
+            // Selecting an entry in the picker is a use — record it so it leads
+            // this site's list next time. Only on a real hit: an unknown id or a
+            // locked vault filled nothing.
+            if password.is_some() {
+                service::note_used(id);
+            }
+            Some(password_reply(password))
         }
         _ => None,
     }

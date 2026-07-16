@@ -442,9 +442,19 @@ final class BrowserState: ObservableObject {
 
     /// Fill the active tab's login form from vault login `id` — the popover's Fill
     /// action. The secret crosses in the core on this gesture (ADR-0029); nothing
-    /// comes back. Main thread only.
+    /// comes back. The core records the use itself. Main thread only.
     func fillActiveTab(id: String) {
         id.withCString { browser_vault_fill_active_tab($0) }
+        refreshVaultMatches()
+    }
+
+    /// Record that login `id` was just used, for the gestures that live entirely
+    /// in the host — Copy username / Copy password (ADR-0048). Re-reads the
+    /// matches so the popover reflects the new order without waiting for a
+    /// navigation. Main thread only.
+    func noteVaultUse(id: String) {
+        id.withCString { browser_vault_note_used($0) }
+        refreshVaultMatches()
     }
 
     /// Toggle cookie-consent handling (menu "Block Cookie Notices"). The core

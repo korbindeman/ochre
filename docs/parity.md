@@ -198,7 +198,7 @@ surface**. `⬜ (post-MVP)` = spec'd but out of MVP1 scope — listed so the sur
 | Commands — user scripts (command bar · palette · settings manager · cookbook) | Inv | ⬜ | ⬜ | ⬜ | ADR-0034 · rm §5.3 |
 | Commands — agentic create/edit (in-app AI authoring) | Idiom | ⬜ | ⬜ | ⬜ | ADR-0034 · spec §19 · rm §5.4 · P4-1 |
 | Password vault UI (setup · unlock · list/search · reveal · add/edit/delete · import · sidebar access) | Inv | 🚧 (settings · registration pending) | ⬜ | ⬜ | spec §10 · ADR-0010/0016 |
-| Password vault autofill | Inv | 🚧 (substrate + in-page multi-match picker + URL-bar quick-access [Fill/Copy] + core-initiated fill; SPA/two-step detection → P2-28/29, native save banner → P2-23/M2) | ⬜ | ⬜ | spec §10 · ADR-0016/0017/0029 |
+| Password vault autofill | Inv | 🚧 (substrate + in-page multi-match picker + URL-bar quick-access [Fill/Copy] + core-initiated fill + last-used ordering + whole-vault search; SPA/two-step detection → P2-28/29, native save banner → P2-23/M2) | ⬜ | ⬜ | spec §10 · ADR-0016/0017/0029/0048/0049 |
 | Settings UI (beyond minimum) | Inv | 🚧 (Appearance, page tint, tab-suspension, Arc import, vault; growing) | ⬜ | ⬜ | mvp · `SettingsView.swift` |
 | Sync | Inv | ⬜ (post-MVP) | ⬜ | ⬜ | spec §12 |
 | Downloads UI (beyond command-bar suggestions) | Inv | ⬜ (post-MVP) | ⬜ | ⬜ | mvp (out) |

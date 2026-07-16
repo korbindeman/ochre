@@ -292,10 +292,24 @@ char *browser_vault_unlock_offline(const char *password);
 // Lock the vault (wipes the in-memory key).
 void browser_vault_lock(void);
 // Logins matching `host` as a JSON array [{ "id","name","username","uris" }]
-// (metadata only, no passwords). Empty array when locked.
+// (metadata only, no passwords). Empty array when locked. Ordered strongest
+// match first, then most-recently-used within a tier (ADR-0048).
 char *browser_vault_lookup(const char *host);
+// Record that login `id` was just used, so it leads its site's list next time
+// (ADR-0048). For the gestures the host owns — copying the username/password out
+// of the URL-bar popover; the core's own fill and in-page picker record
+// themselves. NOT for revealing an entry on the Passwords page. Private-window
+// use is ignored by the core.
+void browser_vault_note_used(const char *id);
 // All logins as a JSON array (metadata only).
 char *browser_vault_list(void);
+// Logins matching a free-text `query` across the whole vault, as a JSON array
+// (metadata only), best-first: fuzzy-scored on name/username/URI-host, ties
+// broken by last-used (ADR-0049). An EMPTY query lists the whole vault, so the
+// filtered and unfiltered states are one call. Empty array when locked. The
+// popover's search field and the Passwords page list both use this — never
+// filter the list in the frontend.
+char *browser_vault_search(const char *query);
 // The password for login `id` — the one path a secret leaves the core, on an
 // explicit user gesture. NULL when locked/unknown. Free with browser_string_free.
 char *browser_vault_password(const char *id);

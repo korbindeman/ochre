@@ -1040,6 +1040,19 @@ pub unsafe extern "C" fn browser_vault_lookup(host: *const c_char) -> *mut c_cha
     vault_string(serde_json::to_string(&views).unwrap_or_else(|_| "[]".to_string()))
 }
 
+/// Logins matching a free-text `query` across the **whole vault**, as a JSON
+/// array (metadata only), best-first. An empty query lists everything — so the
+/// filtered and unfiltered list states are one call (ADR-0049). Empty array when
+/// locked. Free with [`browser_string_free`].
+///
+/// # Safety
+/// `query` must be null or a valid NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_vault_search(query: *const c_char) -> *mut c_char {
+    let views = browser_core::vault::service::search(&cstr(query));
+    vault_string(serde_json::to_string(&views).unwrap_or_else(|_| "[]".to_string()))
+}
+
 /// All logins as a JSON array (metadata only). Free with [`browser_string_free`].
 #[no_mangle]
 pub extern "C" fn browser_vault_list() -> *mut c_char {
@@ -1090,6 +1103,19 @@ pub unsafe extern "C" fn browser_vault_login(id: *const c_char) -> *mut c_char {
 #[no_mangle]
 pub unsafe extern "C" fn browser_vault_fill_active_tab(id: *const c_char) {
     browser_core::embed::vault_fill_active_tab(&cstr(id));
+}
+
+/// Record that login `id` was just used, so it leads its site's list next time
+/// (ADR-0048). For the gestures the **host** owns — copying the username or
+/// password out of the URL-bar popover; the core-side fill/picker paths record
+/// themselves. Not for merely revealing an entry on the Passwords page. Use
+/// inside a private window is ignored by the core.
+///
+/// # Safety
+/// `id` must be null or a valid NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_vault_note_used(id: *const c_char) {
+    browser_core::vault::service::note_used(&cstr(id));
 }
 
 /// Import a CSV export. Blocks — call off the main thread. JSON envelope with an

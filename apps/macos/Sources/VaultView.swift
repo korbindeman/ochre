@@ -682,10 +682,21 @@ func withCStrings<R>(_ strings: [String], _ body: ([UnsafePointer<CChar>]) -> R)
 final class VaultModel: ObservableObject {
     static let shared = VaultModel()
 
-    @Published var query = ""
+    /// The list filter. Ranking lives in the core (`browser_vault_search`), so a
+    /// change re-queries rather than filtering `logins` here — the semantics stay
+    /// identical to the URL-bar popover's search, and a second frontend inherits
+    /// them instead of reinventing them (ADR-0049).
+    @Published var query = "" {
+        didSet {
+            guard query != oldValue else { return }
+            refreshFiltered()
+        }
+    }
     @Published private(set) var isConfigured = false
     @Published private(set) var isLocked = true
     @Published private(set) var logins: [VaultLogin] = []
+    /// `logins` ranked against `query` by the core — what the list renders.
+    @Published private(set) var filtered: [VaultLogin] = []
     /// A blocking op (setup / unlock / import) is in flight.
     @Published private(set) var busy = false
     /// The last setup/unlock error, shown inline.
@@ -698,14 +709,10 @@ final class VaultModel: ObservableObject {
     /// The add/edit sheet target (nil = closed).
     @Published var editing: EditorTarget?
 
-    var filtered: [VaultLogin] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return logins }
-        return logins.filter {
-            $0.displayName.lowercased().contains(q)
-                || ($0.username ?? "").lowercased().contains(q)
-                || $0.host.contains(q)
-        }
+    /// Re-rank against the current query. An empty query lists the whole vault,
+    /// so this one call covers the filtered and unfiltered states alike.
+    private func refreshFiltered() {
+        filtered = isLocked ? [] : Self.fetchSearch(query: query)
     }
 
     /// Refresh configured / lock state + list from the core.
@@ -713,6 +720,7 @@ final class VaultModel: ObservableObject {
         isConfigured = browser_vault_is_configured()
         isLocked = browser_vault_is_locked()
         logins = isLocked ? [] : Self.fetchList()
+        refreshFiltered()
         // Keep the URL-bar quick-access button in sync with lock-state changes
         // that happen here (unlock / lock / setup), not just on navigation.
         BrowserState.shared.refreshVaultMatches()
@@ -915,6 +923,14 @@ final class VaultModel: ObservableObject {
 
     private static func fetchList() -> [VaultLogin] {
         guard let raw = browser_vault_list() else { return [] }
+        defer { browser_string_free(raw) }
+        let data = Data(String(cString: raw).utf8)
+        return (try? JSONDecoder().decode([VaultLogin].self, from: data)) ?? []
+    }
+
+    /// Core-ranked search over the whole vault (empty query ⇒ everything).
+    static func fetchSearch(query: String) -> [VaultLogin] {
+        guard let raw = query.withCString({ browser_vault_search($0) }) else { return [] }
         defer { browser_string_free(raw) }
         let data = Data(String(cString: raw).utf8)
         return (try? JSONDecoder().decode([VaultLogin].self, from: data)) ?? []

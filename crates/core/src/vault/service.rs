@@ -24,6 +24,7 @@ use crate::vault::http::UreqTransport;
 use crate::vault::import::{parse_bitwarden_json, parse_csv, ImportRecord};
 use crate::vault::manager::{VaultError, VaultManager};
 use crate::vault::sync::Login;
+use crate::vault::usage;
 use serde::Serialize;
 use std::sync::Mutex;
 
@@ -271,10 +272,43 @@ pub fn lock() {
     with(|m| m.lock());
 }
 
-/// Logins matching `host` (metadata only), best-first. Empty when locked.
+/// Logins matching `host` (metadata only), best-first — strongest match first,
+/// most-recently-used first within a tier. Empty when locked.
 pub fn lookup(host: &str) -> Vec<LoginView> {
+    let recency = usage::snapshot();
     with(|m| {
-        m.lookup(host)
+        m.lookup(host, &recency)
+            .map(|logins| logins.iter().map(|l| LoginView::of(l)).collect())
+            .unwrap_or_default()
+    })
+    .unwrap_or_default()
+}
+
+/// Record that login `id` was just used to sign in — the recency signal
+/// [`lookup`] orders by. Call this from the **explicit use gestures** (fill the
+/// active tab, pick an entry in the in-page picker, copy the username/password
+/// out of the URL-bar popover) — deliberately *not* from [`password_for`] /
+/// [`login_detail`] themselves, or merely revealing an entry on the Passwords
+/// page would reshuffle the autofill order (ADR-0048).
+///
+/// The one choke point for the **private-window** rule: use inside a private
+/// window is not recorded. The entry implies the site, so persisting it would
+/// leave exactly the trace a private window exists to avoid.
+pub fn note_used(id: &str) {
+    if crate::private_window::focused_is_private() {
+        return;
+    }
+    usage::note_used(id);
+}
+
+/// Logins matching a free-text `query` (metadata only), best-first across the
+/// **whole vault** — the popover's search field and the Passwords page's list
+/// (ADR-0049). An empty query lists everything, so one call serves both the
+/// filtered and unfiltered states. Empty when locked.
+pub fn search(query: &str) -> Vec<LoginView> {
+    let recency = usage::snapshot();
+    with(|m| {
+        m.search(query, &recency)
             .map(|logins| logins.iter().map(|l| LoginView::of(l)).collect())
             .unwrap_or_default()
     })

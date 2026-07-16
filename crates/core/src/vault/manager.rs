@@ -19,7 +19,9 @@ use crate::vault::crypto::{CryptoError, EncString, MasterKey};
 use crate::vault::http::HttpTransport;
 use crate::vault::import::ImportRecord;
 use crate::vault::lookup::matching_logins;
+use crate::vault::search::search_logins;
 use crate::vault::sync::{parse_sync, Login, SyncError, Vault};
+use crate::vault::usage::UsageMap;
 
 /// Owns the vault's lock state and the client used to unlock/sync it.
 pub struct VaultManager<T: HttpTransport> {
@@ -151,10 +153,23 @@ impl<T: HttpTransport> VaultManager<T> {
         self.state = State::Locked;
     }
 
-    /// Logins matching `host`, best-first. `Err(Locked)` if the vault is locked.
-    pub fn lookup(&self, host: &str) -> Result<Vec<&Login>, VaultError> {
+    /// Logins matching `host`, best-first (recency breaks ties within a match
+    /// tier — see [`matching_logins`]). `usage` is supplied by the caller rather
+    /// than read here: the manager stays a pure state machine over its own vault,
+    /// and the process-global usage store lives with the other globals in
+    /// [`service`](crate::vault::service). `Err(Locked)` if the vault is locked.
+    pub fn lookup(&self, host: &str, usage: &UsageMap) -> Result<Vec<&Login>, VaultError> {
         match &self.state {
-            State::Unlocked { vault, .. } => Ok(matching_logins(vault, host)),
+            State::Unlocked { vault, .. } => Ok(matching_logins(vault, host, usage)),
+            State::Locked => Err(VaultError::Locked),
+        }
+    }
+
+    /// Logins matching a free-text `query`, best-first (see [`search_logins`]).
+    /// An empty query lists the whole vault. `Err(Locked)` if the vault is locked.
+    pub fn search(&self, query: &str, usage: &UsageMap) -> Result<Vec<&Login>, VaultError> {
+        match &self.state {
+            State::Unlocked { vault, .. } => Ok(search_logins(vault, query, usage)),
             State::Locked => Err(VaultError::Locked),
         }
     }
@@ -384,22 +399,28 @@ mod tests {
         assert!(!m.is_locked());
 
         // The decrypted login is found by host, and its fields decrypted.
-        let hits = m.lookup("example.com").unwrap();
+        let hits = m.lookup("example.com", &UsageMap::new()).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].username.as_deref(), Some("alice"));
         assert_eq!(hits[0].password.as_deref(), Some("s3cret"));
         // A different site matches nothing.
-        assert!(m.lookup("other.org").unwrap().is_empty());
+        assert!(m.lookup("other.org", &UsageMap::new()).unwrap().is_empty());
 
         m.lock();
         assert!(m.is_locked());
-        assert!(matches!(m.lookup("example.com"), Err(VaultError::Locked)));
+        assert!(matches!(
+            m.lookup("example.com", &UsageMap::new()),
+            Err(VaultError::Locked)
+        ));
     }
 
     #[test]
     fn lookup_while_locked_errors() {
         let m = manager(vec![], None);
-        assert!(matches!(m.lookup("example.com"), Err(VaultError::Locked)));
+        assert!(matches!(
+            m.lookup("example.com", &UsageMap::new()),
+            Err(VaultError::Locked)
+        ));
     }
 
     #[test]
@@ -422,7 +443,9 @@ mod tests {
         // 2. A fresh manager (no network responses) unlocks purely from cache.
         let mut offline = manager(vec![], Some(path.clone()));
         offline.unlock_offline(PASSWORD).unwrap();
-        let hits = offline.lookup("accounts.example.com").unwrap();
+        let hits = offline
+            .lookup("accounts.example.com", &UsageMap::new())
+            .unwrap();
         assert_eq!(hits.len(), 1, "domain match reaches the cached login");
         assert_eq!(hits[0].password.as_deref(), Some("s3cret"));
 

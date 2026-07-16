@@ -455,6 +455,9 @@ pub fn vault_fill_active_tab(id: &str) {
     };
     let expr = crate::vault::autofill::fill_expression(detail.username.as_deref(), &password);
     crate::inject::evaluate_main_world(&host, &expr);
+    // The credential is now in the page — that's a use, so it rides to the top of
+    // this site's list next time (the service applies the private-window rule).
+    crate::vault::service::note_used(id);
 }
 
 /// Hide an active saved tab without removing it from the saved section. Main
