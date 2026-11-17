@@ -5,16 +5,48 @@
 //! directly and store PNG bytes NSImage can decode. Sites without `<link
 //! rel="icon">` (e.g. apple.com) never fire `on_favicon_urlchange`; a load-end
 //! fallback probes the usual well-known paths.
+//!
+//! ## Fetching runs off the UI thread, behind an SSRF guard
+//!
+//! The candidate URLs include the page's own `<link rel="icon" href="...">`
+//! values, which are attacker-controlled. Two hazards follow, both handled here:
+//!
+//!   1. **SSRF.** A page can declare an icon at an internal host
+//!      (`http://169.254.169.254/...`, `http://127.0.0.1:8080/admin`, a LAN
+//!      router). Because this fetch runs in the privileged browser process via
+//!      `ureq` (outside CEF's network stack, so it bypasses adblock/proxy), an
+//!      unguarded fetch is a blind cross-origin request into the LAN / cloud
+//!      metadata / loopback services. [`fetch_url_allowed`] blocks that: only
+//!      `http`/`https`, and a cross-origin target must resolve entirely to
+//!      publicly-routable addresses. A page fetching *its own* origin (same
+//!      host) is always allowed, so a local-dev page on loopback still gets its
+//!      favicon. The guard re-runs on every redirect hop.
+//!   2. **UI-thread stall.** The fetch is blocking HTTP; running it on the CEF
+//!      UI thread lets a slow/tarpit server freeze the browser. [`start_favicon_download`]
+//!      runs the download on a worker thread with explicit timeouts and marshals
+//!      the store + notify back to the UI thread via `post_task`.
 
 use std::io::{Cursor, Read};
+use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
+use std::time::Duration;
 
 use cef::*;
 use image::{ImageEncoder, ImageReader};
 use resvg::tiny_skia::{self, Pixmap};
 use resvg::usvg::{self, Tree};
+use url::Url;
 
 use crate::history;
 use crate::tabs;
+
+/// Per-request connect timeout for favicon fetches.
+const FAVICON_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Overall wall-clock budget for a single favicon fetch (all redirect hops).
+const FAVICON_TOTAL_TIMEOUT: Duration = Duration::from_secs(15);
+/// Redirect hops we follow before giving up on a candidate.
+const FAVICON_MAX_REDIRECTS: usize = 4;
+/// Cap on downloaded favicon bytes.
+const FAVICON_MAX_BYTES: u64 = 256 * 1024;
 
 /// Borrow every icon URL from a CEF string list without consuming it.
 fn collect_icon_urls(list: &mut CefStringList) -> Vec<String> {
@@ -35,7 +67,7 @@ fn collect_icon_urls(list: &mut CefStringList) -> Vec<String> {
     }
 }
 
-/// Higher scores win. SVG is last resort — rasterize when no raster is available.
+/// Higher scores win. SVG is last resort - rasterize when no raster is available.
 fn icon_format_score(url: &str) -> u8 {
     let path = url
         .split(['?', '#'])
@@ -150,20 +182,119 @@ pub(super) fn rank_icon_urls_from_list(
     rank_icon_urls(&collect_icon_urls(list), page_url, page_host)
 }
 
-fn fetch_icon_bytes(url: &str) -> Option<Vec<u8>> {
-    let response = ureq::get(url).call().ok()?;
-    if !response.status().is_success() {
-        return None;
+/// True if `ip` is a publicly-routable address safe to fetch from a
+/// cross-origin favicon URL. Rejects the ranges an SSRF wants to reach:
+/// loopback, private, link-local (incl. cloud metadata `169.254.169.254`),
+/// CGNAT, unique-local, unspecified, broadcast, multicast.
+fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_public_v4(v4),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            // `::ffff:a.b.c.d` reaches the same v4 host - judge it as v4.
+            Some(v4) => is_public_v4(v4),
+            None => {
+                let first = v6.segments()[0];
+                !(v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_multicast()
+                    || (first & 0xfe00) == 0xfc00  // unique-local fc00::/7
+                    || (first & 0xffc0) == 0xfe80) // link-local fe80::/10
+            }
+        },
     }
-    let mut bytes = Vec::new();
-    response
-        .into_body()
-        .with_config()
-        .limit(256 * 1024)
-        .reader()
-        .read_to_end(&mut bytes)
-        .ok()?;
-    normalize_icon_bytes(&bytes)
+}
+
+fn is_public_v4(v4: Ipv4Addr) -> bool {
+    let [a, b, ..] = v4.octets();
+    !(v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_broadcast()
+        || v4.is_unspecified()
+        || v4.is_multicast()
+        || (a == 100 && (b & 0xc0) == 0x40)) // CGNAT 100.64.0.0/10
+}
+
+/// Gate a favicon fetch target. Allows only `http`/`https`; a same-host target
+/// (the page's own origin) is always allowed so local-dev pages on loopback
+/// still get their favicon; any other host must resolve entirely to public IPs.
+fn fetch_url_allowed(url: &Url, page_host: &str) -> bool {
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case(page_host) {
+        return true;
+    }
+    let port = url.port_or_known_default().unwrap_or(80);
+    let Ok(addrs) = (host, port).to_socket_addrs() else {
+        return false;
+    };
+    let mut resolved = false;
+    for addr in addrs {
+        resolved = true;
+        if !is_public_ip(addr.ip()) {
+            return false;
+        }
+    }
+    resolved
+}
+
+/// A dedicated favicon transport: bounded timeouts, and redirects handled by us
+/// (`max_redirects(0)`) so [`fetch_icon_bytes`] can re-run the SSRF guard on
+/// every hop rather than trusting `ureq` to follow blindly.
+fn favicon_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .max_redirects_will_error(false)
+        .timeout_connect(Some(FAVICON_CONNECT_TIMEOUT))
+        .timeout_global(Some(FAVICON_TOTAL_TIMEOUT))
+        .build()
+        .into()
+}
+
+/// Fetch one candidate, following (and re-validating) up to
+/// [`FAVICON_MAX_REDIRECTS`] redirects. Returns storable PNG bytes or `None`.
+///
+/// Note: `to_socket_addrs` resolves for the guard, then `ureq` resolves again to
+/// connect, so a DNS-rebinding attacker could in principle race the two. That is
+/// a blind GET (no response reaches the page); the load-bearing wins - IP-literal
+/// targets and redirect bounces to internal hosts - are fully closed here.
+fn fetch_icon_bytes(agent: &ureq::Agent, start_url: &str, page_host: &str) -> Option<Vec<u8>> {
+    let mut current = Url::parse(start_url).ok()?;
+    for _ in 0..=FAVICON_MAX_REDIRECTS {
+        if !fetch_url_allowed(&current, page_host) {
+            eprintln!("[favicon] blocked non-public target page_host={page_host} url={current}");
+            return None;
+        }
+        let response = agent.get(current.as_str()).call().ok()?;
+        let status = response.status();
+        if status.is_redirection() {
+            let location = response
+                .headers()
+                .get(ureq::http::header::LOCATION)?
+                .to_str()
+                .ok()?;
+            current = current.join(location).ok()?;
+            continue;
+        }
+        if !status.is_success() {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        response
+            .into_body()
+            .with_config()
+            .limit(FAVICON_MAX_BYTES)
+            .reader()
+            .read_to_end(&mut bytes)
+            .ok()?;
+        return normalize_icon_bytes(&bytes);
+    }
+    None
 }
 
 /// Keep PNG bytes NSImage understands; rasterize or transcode other formats.
@@ -254,25 +385,48 @@ fn store_favicon_for_browser(cef_id: i32, host: &str, bytes: &[u8]) {
     }
 }
 
-/// Fetch ranked candidates until one yields storable icon bytes.
-pub(super) fn start_favicon_download(cef_id: i32, host: String, candidates: Vec<String>) {
-    for url in candidates {
-        eprintln!("[favicon] fetching host={host} url={url}");
-        let Some(bytes) = fetch_icon_bytes(&url) else {
-            eprintln!("[favicon] failed host={host} url={url}");
-            continue;
-        };
-        eprintln!(
-            "[favicon] captured host={host} url={url} bytes={}",
-            bytes.len()
-        );
-        store_favicon_for_browser(cef_id, &host, &bytes);
-        if !crate::private_window::note_favicon(cef_id, &host) {
-            tabs::note_favicon(cef_id, &host);
-        }
+/// Persist the captured favicon and notify the tab list. Must run on the UI
+/// thread (it emits a `tabs::Event` that the native layer marshals to its main
+/// actor).
+fn store_and_note(cef_id: i32, host: &str, bytes: &[u8]) {
+    debug_assert_ne!(currently_on(ThreadId::UI), 0);
+    store_favicon_for_browser(cef_id, host, bytes);
+    if !crate::private_window::note_favicon(cef_id, host) {
+        tabs::note_favicon(cef_id, host);
+    }
+}
+
+/// Hand the captured favicon to the UI thread, hopping via `post_task` when the
+/// caller is a background download worker.
+fn deliver_favicon(cef_id: i32, host: String, bytes: Vec<u8>) {
+    if currently_on(ThreadId::UI) != 0 {
+        store_and_note(cef_id, &host, &bytes);
         return;
     }
-    eprintln!("[favicon] exhausted candidates for host={host}");
+    let mut task = DeliverFaviconTask::new(cef_id, host, bytes);
+    post_task(ThreadId::UI, Some(&mut task));
+}
+
+/// Download ranked candidates on a worker thread (blocking HTTP must stay off
+/// the CEF UI thread), stopping at the first that yields storable icon bytes.
+pub(super) fn start_favicon_download(cef_id: i32, host: String, candidates: Vec<String>) {
+    std::thread::spawn(move || {
+        let agent = favicon_agent();
+        for url in &candidates {
+            eprintln!("[favicon] fetching host={host} url={url}");
+            let Some(bytes) = fetch_icon_bytes(&agent, url, &host) else {
+                eprintln!("[favicon] failed host={host} url={url}");
+                continue;
+            };
+            eprintln!(
+                "[favicon] captured host={host} url={url} bytes={}",
+                bytes.len()
+            );
+            deliver_favicon(cef_id, host.clone(), bytes);
+            return;
+        }
+        eprintln!("[favicon] exhausted candidates for host={host}");
+    });
 }
 
 /// Try to capture a favicon from declared page URLs and well-known fallbacks.
@@ -298,9 +452,82 @@ pub(super) fn fetch_favicon_if_missing(cef_id: i32, page_url: &str) {
     fetch_favicon(cef_id, page_url, &[]);
 }
 
+wrap_task! {
+    struct DeliverFaviconTask {
+        cef_id: i32,
+        host: String,
+        bytes: Vec<u8>,
+    }
+
+    impl Task {
+        fn execute(&self) {
+            store_and_note(self.cef_id, &self.host, &self.bytes);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{fallback_icon_urls, icon_format_score, normalize_icon_bytes, rank_icon_urls};
+    use super::{
+        fallback_icon_urls, fetch_url_allowed, icon_format_score, is_public_ip,
+        normalize_icon_bytes, rank_icon_urls,
+    };
+    use std::net::IpAddr;
+    use url::Url;
+
+    fn allowed(url: &str, page_host: &str) -> bool {
+        fetch_url_allowed(&Url::parse(url).unwrap(), page_host)
+    }
+
+    #[test]
+    fn ssrf_guard_blocks_cross_origin_internal_hosts() {
+        // Cloud metadata, loopback, LAN, CGNAT, unique-local - all cross-origin.
+        assert!(!allowed(
+            "http://169.254.169.254/latest/meta-data/",
+            "evil.com"
+        ));
+        assert!(!allowed("http://127.0.0.1:8080/admin", "evil.com"));
+        assert!(!allowed("http://10.0.0.1/setup", "evil.com"));
+        assert!(!allowed("http://192.168.1.1/", "evil.com"));
+        assert!(!allowed("http://172.16.5.4/", "evil.com"));
+        assert!(!allowed("http://100.64.0.1/", "evil.com"));
+        assert!(!allowed("http://[::1]/", "evil.com"));
+        assert!(!allowed("http://[fd00::1]/", "evil.com"));
+        assert!(!allowed("http://0.0.0.0/", "evil.com"));
+    }
+
+    #[test]
+    fn ssrf_guard_rejects_non_http_schemes() {
+        assert!(!allowed("ftp://example.com/icon.ico", "evil.com"));
+        assert!(!allowed("file:///etc/passwd", "evil.com"));
+        assert!(!allowed("data:image/png;base64,AAAA", "evil.com"));
+    }
+
+    #[test]
+    fn ssrf_guard_allows_same_origin_even_on_loopback() {
+        // A user visiting their own local-dev server still gets its favicon.
+        assert!(allowed("http://127.0.0.1:8080/favicon.ico", "127.0.0.1"));
+        assert!(allowed("http://localhost/favicon.ico", "localhost"));
+        assert!(allowed("https://EXAMPLE.com/favicon.ico", "example.com"));
+    }
+
+    #[test]
+    fn ssrf_guard_allows_cross_origin_public_ip() {
+        // Public IP literal (example.com) fetched cross-origin is fine.
+        assert!(allowed("https://93.184.216.34/favicon.ico", "example.com"));
+    }
+
+    #[test]
+    fn public_ip_classification() {
+        let pub_v4: IpAddr = "8.8.8.8".parse().unwrap();
+        let meta: IpAddr = "169.254.169.254".parse().unwrap();
+        let loop_v6: IpAddr = "::1".parse().unwrap();
+        let mapped_loopback: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        assert!(is_public_ip(pub_v4));
+        assert!(!is_public_ip(meta));
+        assert!(!is_public_ip(loop_v6));
+        assert!(!is_public_ip(mapped_loopback));
+    }
 
     #[test]
     fn prefers_ico_over_svg() {
