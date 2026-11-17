@@ -4,7 +4,7 @@
 - **Date:** YYYY-MM-DD
 - **Fixed:** YYYY-MM-DD (commit/PR if known)
 - **Severity:** crash / hang / data-loss
-- **Build:** debug (`Browser Dev`) | release (`Browser`) | both
+- **Build:** debug (`{name} Dev`) | release (`{name}`) | both
 - **Platform:** macOS (version) | Windows | Linux
 
 ## Summary
@@ -23,16 +23,16 @@ Where the diagnosis came from. Link or paste the minimum needed to re-derive the
 
 | Source | Path / command |
 |--------|----------------|
-| Local payload | `just crash-latest --print` → `~/Library/Application Support/…/crashes/latest.json` |
-| Diagnostics log | `~/Library/Application Support/…/diagnostics.log` |
-| macOS report | `~/Library/Logs/DiagnosticReports/Browser-*.ips` |
-| Rust backtrace | from payload `backtrace` field |
-| In-app logs | terminal `just run` stderr |
+| Local payload | `just crash-latest --print` (panic/signal/swift/system JSON, or harvested `.ips`) |
+| Diagnostics log | `~/Library/Application Support/{name}{ Dev,}/diagnostics.log` |
+| macOS report | `system_report_path` or `~/Library/Logs/DiagnosticReports/{name}-*.ips` |
+| Rust backtrace | from payload `backtrace` field (panic only) |
+| In-app logs | terminal `just run` stderr / diagnostics tee |
 
 ### Key stack / backtrace
 
 ```
-(paste the faulting thread or panic backtrace — 10–25 frames is enough)
+(paste the faulting thread or panic backtrace - 10–25 frames is enough)
 ```
 
 ### Exception / signal
@@ -43,19 +43,19 @@ Where the diagnosis came from. Link or paste the minimum needed to re-derive the
 
 ## Root cause
 
-What actually went wrong — mechanism, not symptom. Name the file(s) and the interaction
+What actually went wrong - mechanism, not symptom. Name the file(s) and the interaction
 (overlay + gesture tree, lock poisoned, CEF view detached while animating, …).
 
 ## Fix
 
 What changed to stop it. Bullet the commits/files; explain *why* each change addresses the cause.
 
-- `path/to/file` — …
+- `path/to/file` - …
 
 ## Prevention
 
 Rules or patterns so the next agent doesn't reintroduce it. These often become `CLAUDE.md`
-gotchas or code comments — link them here.
+gotchas or code comments - link them here.
 
 - …
 
