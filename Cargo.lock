@@ -213,12 +213,14 @@ dependencies = [
  "cbc",
  "cef",
  "csv",
+ "flate2",
  "form_urlencoded",
  "getrandom",
  "hkdf",
  "hmac",
  "image",
  "libc",
+ "minisign-verify",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -232,7 +234,9 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tar",
  "ureq",
+ "url",
  "usvg",
  "zeroize",
 ]
@@ -243,6 +247,7 @@ version = "0.1.0"
 dependencies = [
  "browser-core",
  "serde_json",
+ "zeroize",
 ]
 
 [[package]]
@@ -1223,6 +1228,12 @@ checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "minisign-verify"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22f9645cb765ea72b8111f36c522475d2daa0d22c957a9826437e97534bc4e9e"
 
 [[package]]
 name = "miniz_oxide"

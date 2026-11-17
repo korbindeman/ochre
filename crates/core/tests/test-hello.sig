@@ -1,0 +1,4 @@
+untrusted comment: signature from minisign secret key
+RUSiXRmg9I33yKDU84M0uKBjfqgnjZGc5sBF/9Gv6gXB9J7oWSewrzrxJXZvqNQ7Zh862CvwqMqWWGWF3h+OcF/l448G29VOKAc=
+trusted comment: timestamp:1784484953	file:hello-upd.txt	hashed
+450RtdJPNad/vqnROzRMx1RMk7S/xA1H8ZA4aDsXViI0QNjUDWorEgSV8mm9hxqbpQMrkYWmmUE7FfKco031AA==

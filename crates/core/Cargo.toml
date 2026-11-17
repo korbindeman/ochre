@@ -18,8 +18,8 @@ path = "src/bin/browser.rs"
 name = "browser_helper"
 path = "src/bin/browser_helper.rs"
 
-# Dev-only: builds `browser` + `browser_helper` and assembles `Browser.app`
-# (CEF must run from a bundle). See `src/bin/bundle.rs` and `just run`.
+# Dev-only: builds `browser` + `browser_helper` and assembles the standalone
+# `browser.app` (CEF must run from a bundle). See `src/bin/bundle.rs`.
 [[bin]]
 name = "bundle"
 path = "src/bin/bundle.rs"
@@ -53,7 +53,7 @@ semver = "1"
 rusqlite = { workspace = true }
 # Derive `Serialize` on the suggestion type surfaced across the FFI boundary.
 serde = { workspace = true }
-# Session persistence — the tab/space/folder tree as JSON (see `src/session.rs`).
+# Session persistence - the tab/space/folder tree as JSON (see `src/session.rs`).
 serde_json = { workspace = true }
 # Password vault crypto (Bitwarden key hierarchy + EncString; ADR-0016, spec §10).
 pbkdf2 = { workspace = true }
@@ -69,12 +69,19 @@ zeroize = { workspace = true }
 # Vault auth/sync HTTP client + OAuth form encoding (ADR-0016, spec §10).
 ureq = { workspace = true }
 form_urlencoded = { workspace = true }
+# Auto-update (ADR-0052): minisign verify + tar.gz extract of the app bundle.
+flate2 = { workspace = true }
+tar = { workspace = true }
+minisign-verify = { workspace = true }
+libc = { workspace = true }
 # Registrable-domain matching for `vault_lookup` (ADR-0016, spec §10).
 psl = { workspace = true }
 # Credential-import CSV parsing (ADR-0016, spec §10).
 csv = { workspace = true }
 # Native request-path ad-blocking on the CEF resource path (ADR-0019, spec §11).
 adblock = { workspace = true }
+# URL parsing for the favicon SSRF guard (scheme/host extraction; see `client/favicon.rs`).
+url = { workspace = true }
 # Favicon raster decode (ICO/PNG/JPEG/WebP/GIF → PNG) and SVG rasterization.
 image = { version = "0.25", default-features = false, features = [
     "png",
@@ -90,7 +97,6 @@ rsa = { version = "0.9", optional = true }
 rand = { version = "0.8", optional = true }
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true }
-libc = { workspace = true }
 objc2-app-kit = { workspace = true, features = [
     "NSApplication",
     "NSEvent",

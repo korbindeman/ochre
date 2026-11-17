@@ -1,7 +1,7 @@
 [package]
 name = "browser-ffi"
 version = "0.1.0"
-description = "UniFFI + C ABI exports — the bridge between Rust core and native UIs (§17 architecture spec)"
+description = "UniFFI + C ABI exports - the bridge between Rust core and native UIs (§17 architecture spec)"
 edition.workspace = true
 license.workspace = true
 
@@ -10,7 +10,14 @@ name = "browser_ffi"
 # cdylib: linked by the SwiftUI app. rlib: usable by other Rust crates/tests.
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Forwarded to browser-core. Enable only for Developer-ID-signed builds
+# (stable keychain ACL). See `app::append_mock_keychain_switch`.
+production-keychain = ["browser-core/production-keychain"]
+
 [dependencies]
 browser-core = { path = "../core" }
 # Serialize the suggestion payload for `browser_query_suggestions`.
 serde_json = { workspace = true }
+# Wipe the master-password copy read across the FFI boundary (see `cstr_secret`).
+zeroize = { workspace = true }

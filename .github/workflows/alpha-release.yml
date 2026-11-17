@@ -1,11 +1,11 @@
-# Alpha release — build Browser.app with proprietary codecs and publish a public
+# Alpha release - build the macOS .app with proprietary codecs and publish a public
 # pre-release on this repo. See docs/adr/0040 (codec build) and 0042 (why public
 # builds ship codecs, and the maintainer-codecs / contributor-codecless split).
 #
 # Prerequisite (one-time, manual): a fine-grained PAT with read-only "Contents"
 # on the private korbindeman/ochre_cef repo, stored here as the repo secret
 # CEF_ARTIFACT_TOKEN. The built-in GITHUB_TOKEN is scoped to this repo only and
-# cannot read a separate private repo. Fork PRs never receive this secret — that
+# cannot read a separate private repo. Fork PRs never receive this secret - that
 # is deliberate (ADR-0042): forks build codec-less, only maintainer runs ship codecs.
 name: Alpha release
 
@@ -25,7 +25,7 @@ permissions:
 jobs:
   build:
     # macos-26 = arm64 + Xcode 26 (the macOS 26 SDK this app needs: Liquid Glass,
-    # LSMinimumSystemVersion 26.0). Do NOT use macos-latest — it still points at
+    # LSMinimumSystemVersion 26.0). Do NOT use macos-latest - it still points at
     # macOS 15 / Xcode 16 and cannot build against the 26 SDK.
     runs-on: macos-26
     steps:
@@ -33,13 +33,31 @@ jobs:
 
       - name: Resolve tag
         id: meta
-        run: echo "tag=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          # Marketing version = tag without leading v (semver / prerelease ok).
+          ver="${tag#v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
 
       - name: Toolchain versions
         run: |
           xcodebuild -version
           rustc --version
-          brew install xcodegen just
+          brew install xcodegen just minisign
+
+      # Pin CFBundleShortVersionString to the release tag so the updater can
+      # compare running vs remote (ADR-0052).
+      - name: Set marketing version from tag
+        run: |
+          ver="${{ steps.meta.outputs.version }}"
+          # project.yml is the source of truth for XcodeGen.
+          sed -i '' "s/MARKETING_VERSION: \".*\"/MARKETING_VERSION: \"${ver}\"/" apps/macos/project.yml
+          # Keep Cargo package version in the same ballpark for diagnostics
+          # (prerelease tags are valid cargo versions).
+          sed -i '' "s/^version = \".*\"/version = \"${ver}\"/" crates/core/Cargo.toml
+          grep MARKETING_VERSION apps/macos/project.yml
+          grep '^version' crates/core/Cargo.toml
 
       # Pulls the codec-enabled CEF from the private ochre_cef release matching the
       # cef-dll-sys pin in Cargo.lock. Hard-fail if unavailable: a silently
@@ -56,55 +74,97 @@ jobs:
           echo "CEF_PATH=$cef" >> "$GITHUB_ENV"
           echo "Using $cef"
 
+      - name: Resolve product name
+        id: product
+        run: echo "name=$(python3 scripts/product.py name)" >> "$GITHUB_OUTPUT"
+
       # CEF_PATH is already exported above, so with-work-gate.sh won't re-resolve it.
-      - name: Build Browser.app (Release)
+      - name: Build app (Release)
         run: just build-release
 
       - name: Verify the build actually has proprietary codecs
         run: |
-          fw="apps/macos/build/Build/Products/Release/Browser.app/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"
+          name="${{ steps.product.outputs.name }}"
+          fw="apps/macos/build/Build/Products/Release/${name}.app/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"
           if grep -q -a "h264_annex_b_to_avc_bitstream_converter" "$fw"; then
             echo "H.264 code present in the shipped framework"
           else
-            echo "::error::Shipped framework has no H.264 code — this is a codec-less build."
+            echo "::error::Shipped framework has no H.264 code - this is a codec-less build."
             exit 1
           fi
 
       # ditto (not zip) so the .app's frameworks, symlinks and the ad-hoc
-      # signature survive archiving intact.
+      # signature survive archiving intact. Also produce the updater archive
+      # (<App>.app.tar.gz + latest.json, minisign-signed) - ADR-0052.
       - name: Package
+        env:
+          UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY }}
+          UPDATE_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_PASSWORD }}
+          RELEASE_NOTES: "Alpha build. Expect rough edges."
         run: |
+          name="${{ steps.product.outputs.name }}"
+          app="apps/macos/build/Build/Products/Release/${name}.app"
           ditto -c -k --keepParent \
-            apps/macos/build/Build/Products/Release/Browser.app \
-            "Browser-${{ steps.meta.outputs.tag }}-macos-arm64.zip"
+            "$app" \
+            "${name}-${{ steps.meta.outputs.tag }}-macos-arm64.zip"
+          chmod +x scripts/package-update-artifacts.sh
+          scripts/package-update-artifacts.sh \
+            "${{ steps.meta.outputs.tag }}" \
+            "$app" \
+            "$RUNNER_TEMP/update-artifacts"
+          cp "$RUNNER_TEMP/update-artifacts/${name}.app.tar.gz" .
+          cp "$RUNNER_TEMP/update-artifacts/latest.json" .
+          # Fail the release if we expected a signature but got an empty one.
+          if [ -n "${UPDATE_SIGNING_PRIVATE_KEY:-}" ]; then
+            python3 -c 'import json,sys; d=json.load(open("latest.json")); s=d["platforms"]["darwin-aarch64"]["signature"]; sys.exit(0 if s else 1)'
+          else
+            echo "::warning::UPDATE_SIGNING_PRIVATE_KEY secret missing - latest.json has no signature; in-app updates will fail verify."
+          fi
 
       - name: Publish pre-release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          name="${{ steps.product.outputs.name }}"
+          tag="${{ steps.meta.outputs.tag }}"
           cat > "$RUNNER_TEMP/release-notes.md" <<'EOF'
-          **Alpha build — expect rough edges.**
+          **Alpha build. Expect rough edges.**
 
           ### Requirements
-          - **Apple Silicon** Mac (arm64 only)
+          - An **Apple Silicon** Mac (M1 or later; Intel Macs are not supported)
           - **macOS 26 (Tahoe)** or newer
 
           ### Install
-          This build is ad-hoc signed but **not notarized**, so macOS quarantines it
-          on download. Unzip, then run this once or it won't open:
+          This build is not yet notarized by Apple, so macOS will refuse to open it
+          until you clear its quarantine flag. That takes one extra step, done once:
 
-          ```
-          xattr -cr /path/to/Browser.app
-          ```
+          1. Double-click the downloaded `.zip` file to unpack it. You get `__PRODUCT__.app`.
+          2. Drag `__PRODUCT__.app` into your **Applications** folder in Finder.
+          3. Open the **Terminal** app: press `Cmd` + `Space`, type `Terminal`, press `Return`.
+          4. Copy the line below, paste it into the Terminal window, and press `Return`:
 
-          Then double-click as usual.
+             ```
+             xattr -cr /Applications/__PRODUCT__.app
+             ```
+
+             Nothing visible happens when it works. That's normal.
+          5. Open `__PRODUCT__.app` from Applications. From now on it opens like any other app.
+
+          If you put the app somewhere other than Applications: in step 4, type
+          `xattr -cr ` (with a space after it), drag `__PRODUCT__.app` from Finder into
+          the Terminal window (this fills in its location), then press `Return`.
+
+          Installed builds check for updates automatically (sidebar card → Update & Restart).
 
           ### Notes
           Includes proprietary codecs (H.264/AAC), so mainstream MP4 video plays.
           EOF
+          sed -i '' "s/__PRODUCT__/${name}/g" "$RUNNER_TEMP/release-notes.md"
 
-          gh release create "${{ steps.meta.outputs.tag }}" \
-            "Browser-${{ steps.meta.outputs.tag }}-macos-arm64.zip" \
+          gh release create "$tag" \
+            "${name}-${tag}-macos-arm64.zip" \
+            "${name}.app.tar.gz" \
+            latest.json \
             --prerelease \
-            --title "Browser ${{ steps.meta.outputs.tag }} (alpha)" \
+            --title "${name} ${tag} (alpha)" \
             --notes-file "$RUNNER_TEMP/release-notes.md"

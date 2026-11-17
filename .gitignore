@@ -1,4 +1,4 @@
-# Secrets — never commit (public repo). SSH keys for the CEF build box.
+# Secrets - never commit (public repo). SSH keys for the CEF build box.
 /scaleway
 /scaleway.pub
 
@@ -15,3 +15,6 @@ xcuserdata/
 
 # Generated bindings (§18: generated, disposable)
 /bindings/
+
+# Update signing private key (never commit)
+.update-keys/
