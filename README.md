@@ -100,7 +100,7 @@ cd ochre
 just run
 ```
 
-`just run` builds the SwiftUI app, assembles the CEF bundle into `Browser.app`, and launches it. **CEF must run from an app bundle.** Do not use `cargo run`.
+`just run` builds the SwiftUI app, assembles the CEF bundle into `{name}.app` (`product.toml`, currently `Ochre.app`), and launches it. **CEF must run from an app bundle.** Do not use `cargo run`.
 
 The first build downloads the CEF binary distribution and can take several minutes.
 
