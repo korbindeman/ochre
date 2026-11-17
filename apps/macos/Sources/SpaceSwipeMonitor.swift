@@ -3,12 +3,13 @@ import AppKit
 /// Two-finger horizontal trackpad swipes switch spaces (Arc-style), wired through
 /// the same `browser_space_select_adjacent` path as ⌘⌥← / ⌘⌥→.
 ///
-/// A local `scrollWheel` monitor sees events before CEF or SwiftUI dispatch them,
-/// so a qualifying horizontal gesture is consumed instead of scrolling the page.
-/// Vertical scrolls pass through untouched.
+/// A local `scrollWheel` monitor sees events before CEF or SwiftUI dispatch them.
+/// It consumes qualifying horizontal gestures over the visible sidebar only;
+/// page gestures pass through to Chromium for back/forward navigation.
 @MainActor
 final class SpaceSwipeMonitor {
     private weak var window: NSWindow?
+    private weak var rootView: RootView?
     private let isPrivate: Bool
     private let commandBar: CommandBarController
     private let findBar: FindBarController
@@ -28,10 +29,12 @@ final class SpaceSwipeMonitor {
 
     init(
         isPrivate: Bool,
+        rootView: RootView,
         commandBar: CommandBarController,
         findBar: FindBarController
     ) {
         self.isPrivate = isPrivate
+        self.rootView = rootView
         self.commandBar = commandBar
         self.findBar = findBar
     }
@@ -57,6 +60,9 @@ final class SpaceSwipeMonitor {
     private func handle(_ event: NSEvent) -> NSEvent? {
         guard !isPrivate else { return event }
         guard event.window === window else { return event }
+        guard rootView?.containsVisibleSidebar(atWindowPoint: event.locationInWindow) == true else {
+            return event
+        }
         guard BrowserState.shared.spaces.count > 1 else { return event }
         if commandBar.isVisible || findBar.isVisible { return event }
         if event.modifierFlags.contains(.shift) { return event }

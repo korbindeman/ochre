@@ -4,7 +4,7 @@
 //! shortcuts through a local key monitor in the AppDelegate. macOS routes
 //! ⌘-equivalents, the standard application/window items, and the clipboard/undo
 //! actions through `NSApp.mainMenu`, so a real menu is both the discoverable
-//! home for our shortcuts and the only way to get working Cut/Copy/Paste — those
+//! home for our shortcuts and the only way to get working Cut/Copy/Paste - those
 //! use nil-targeted first-responder selectors that dispatch down the responder
 //! chain into CEF's web view.
 //!
@@ -40,7 +40,7 @@ enum MainMenu {
             keyEquivalent: "")
         menu.addItem(.separator())
 
-        // Passwords (the vault surface) — a native app-UI page (ADR-0010/0016).
+        // Passwords (the vault surface) - a native app-UI page (ADR-0010/0016).
         target(
             menu.addItem(
                 withTitle: "Passwords…",
@@ -49,6 +49,10 @@ enum MainMenu {
             menu.addItem(
                 withTitle: "Settings…",
                 action: #selector(AppDelegate.showSettings), keyEquivalent: ","), actions)
+        target(
+            menu.addItem(
+                withTitle: "Check for Updates…",
+                action: #selector(AppDelegate.checkForUpdates), keyEquivalent: ""), actions)
         target(
             menu.addItem(
                 withTitle: "Make Default Browser",
@@ -73,7 +77,7 @@ enum MainMenu {
         menu.addItem(.separator())
 
         // Route Quit through the same CEF-safe close flow as the window's close
-        // button — not `NSApp.terminate`, which would exit the process before
+        // button - not `NSApp.terminate`, which would exit the process before
         // `browser_shutdown` runs (the message loop returning in main.swift is
         // what drives a clean teardown).
         let quit = menu.addItem(
@@ -128,6 +132,18 @@ enum MainMenu {
             menu.addItem(
                 withTitle: "Import from Arc…",
                 action: #selector(AppDelegate.importFromArc), keyEquivalent: ""), actions)
+        target(
+            menu.addItem(
+                withTitle: "Replace Pinned URL with Current",
+                action: #selector(AppDelegate.replaceActivePinnedURL), keyEquivalent: ""), actions)
+        target(
+            menu.addItem(
+                withTitle: "Pin Tab",
+                action: #selector(AppDelegate.toggleActiveTabPinned), keyEquivalent: "d"), actions)
+        target(
+            menu.addItem(
+                withTitle: "Move to Favorites",
+                action: #selector(AppDelegate.toggleActiveTabFavorite), keyEquivalent: ""), actions)
         menu.addItem(.separator())
         target(
             menu.addItem(
@@ -139,7 +155,7 @@ enum MainMenu {
         closeWindow.keyEquivalentModifierMask = [.command, .shift]
         target(closeWindow, actions)
         // ⌘⇧T reopens the last closed tab; disabled (and the shortcut inert)
-        // when there's nothing to reopen — see `AppDelegate.validateMenuItem`.
+        // when there's nothing to reopen - see `AppDelegate.validateMenuItem`.
         let reopen = menu.addItem(
             withTitle: "Reopen Closed Tab",
             action: #selector(AppDelegate.reopenClosedTab), keyEquivalent: "t")
@@ -169,7 +185,7 @@ enum MainMenu {
     }
 
     /// The Find submenu (⌘F / ⌘G / ⇧⌘G). Find Next / Previous are enabled only
-    /// while a search is active — see `AppDelegate.validateMenuItem`.
+    /// while a search is active - see `AppDelegate.validateMenuItem`.
     private static func findMenu(actions: AppDelegate) -> NSMenu {
         let menu = NSMenu(title: "Find")
         target(
@@ -221,18 +237,22 @@ enum MainMenu {
                 action: #selector(AppDelegate.toggleSidebar), keyEquivalent: "s"), actions)
         target(
             menu.addItem(
+                withTitle: "Collapse Pinned Section",
+                action: #selector(AppDelegate.togglePinnedSection), keyEquivalent: ""), actions)
+        target(
+            menu.addItem(
                 withTitle: "Show Address Bar in Page",
                 action: #selector(AppDelegate.toggleViewportURLBar), keyEquivalent: ""), actions)
         menu.addItem(.separator())
         // Appearance (ADR-0030): one Light/Dark/System choice for the whole browser
-        // — native chrome and web content's prefers-color-scheme. Radio checkmarks
+        // - native chrome and web content's prefers-color-scheme. Radio checkmarks
         // via `AppDelegate.validateMenuItem`.
         menu.addItem(withTitle: "Appearance", action: nil, keyEquivalent: "")
             .submenu = appearanceMenu(actions: actions)
         menu.addItem(.separator())
         // Adblock (ADR-0020). The global toggle carries a checkmark for the on
         // state; the per-site toggle is checked when blocking is on for the active
-        // site and disabled off a web page / when blocking is globally off — see
+        // site and disabled off a web page / when blocking is globally off - see
         // `AppDelegate.validateMenuItem`.
         target(
             menu.addItem(
@@ -250,7 +270,7 @@ enum MainMenu {
                 action: #selector(AppDelegate.toggleCookieConsent), keyEquivalent: ""), actions)
         menu.addItem(.separator())
         // Toggles the DevTools window (separate window; inline docking isn't
-        // feasible under CEF 149 — ADR-0021). F12 does the same via the core's
+        // feasible under CEF 149 - ADR-0021). F12 does the same via the core's
         // keyboard handler; this owns the ⌘⌥I equivalent.
         let devtools = menu.addItem(
             withTitle: "Developer Tools",
@@ -260,7 +280,7 @@ enum MainMenu {
         return submenu(menu)
     }
 
-    /// The Appearance submenu (ADR-0030) — System / Light / Dark, shown as radio
+    /// The Appearance submenu (ADR-0030) - System / Light / Dark, shown as radio
     /// checkmarks reflecting the current preference (`AppDelegate.validateMenuItem`).
     private static func appearanceMenu(actions: AppDelegate) -> NSMenu {
         let menu = NSMenu(title: "Appearance")

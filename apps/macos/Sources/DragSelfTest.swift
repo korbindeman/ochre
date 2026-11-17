@@ -4,11 +4,11 @@ import AppKit
 ///
 /// Drives the drag pipeline at its gesture entry points (`TabDragModel
 /// .dragChanged` / `.dragEnded`) with pointer positions derived from the *live
-/// reported row frames* — the same geometry a real drag resolves against. That
+/// reported row frames* - the same geometry a real drag resolves against. That
 /// covers frame reporting, slot resolution (reorder, save, folder filing,
 /// favorite pin/reorder/unpin, no-op suppression, Esc cancel), and the single
 /// `move_tab` commit against the real core. The one layer it cannot drive is
-/// AppKit's delivery of `DragGesture` events (Apple's code) — that rides the
+/// AppKit's delivery of `DragGesture` events (Apple's code) - that rides the
 /// standing interactive pass, like the rest of the sidebar gestures.
 ///
 /// Headless like `FocusSelfTest` (no Accessibility grant, no frontmost
@@ -21,7 +21,7 @@ final class DragSelfTest {
     /// Network-free fixture pages so the harness never depends on connectivity.
     private let fixtureURL = "data:text/html,<h1>drag-selftest</h1>"
 
-    /// Time between steps — long enough for a structure change to round-trip the
+    /// Time between steps - long enough for a structure change to round-trip the
     /// core and for SwiftUI to republish row frames.
     private let stepDelay = 0.4
 
@@ -50,7 +50,7 @@ final class DragSelfTest {
         NSLog("[drag-selftest] starting")
         buildSteps()
         DispatchQueue.main.asyncAfter(deadline: .now() + 60) {
-            NSLog("[drag-selftest] SUMMARY: TIMEOUT — did not complete")
+            NSLog("[drag-selftest] SUMMARY: TIMEOUT - did not complete")
             fflush(stderr)
             exit(2)
         }
@@ -101,8 +101,12 @@ final class DragSelfTest {
     }
 
     private func newTabRect() -> CGRect? {
+        rect(.newTab)
+    }
+
+    private func openHeaderRect() -> CGRect? {
         drag?.geometry.frames.first {
-            if case .newTab = $0.kind { return true }
+            if case .openHeader = $0.kind { return true }
             return false
         }?.rect
     }
@@ -129,8 +133,18 @@ final class DragSelfTest {
         steps.append(("open-tab-1", { self.app.openTab(url: self.fixtureURL, windowId: 0) }))
         steps.append(("open-tab-2", { self.app.openTab(url: self.fixtureURL, windowId: 0) }))
         steps.append(("open-tab-3", { self.app.openTab(url: self.fixtureURL, windowId: 0) }))
+        steps.append(("assert-new-tab-layout", {
+            let openFrames = self.openIds().compactMap { self.rect(.tab($0)) }
+            let newTab = self.newTabRect()
+            self.check(
+                "new-tab-follows-open-tabs",
+                openFrames.count == 3 && newTab != nil
+                    && openFrames.allSatisfy { $0.maxY < newTab!.minY },
+                "openFrames=\(openFrames) newTab=\(String(describing: newTab))"
+            )
+        }))
 
-        // ── Case A: reorder within Open — drag the last open tab above the first.
+        // ── Case A: reorder within Open - drag the last open tab above the first.
         steps.append(("drag-reorder", {
             let open = self.openIds()
             guard open.count == 3, let dst = self.rect(.tab(open[0])) else {
@@ -166,11 +180,11 @@ final class DragSelfTest {
                 "open=\(self.openIds())")
         }))
 
-        // ── Case C: save — drag an open tab to the New Tab row's top half
+        // ── Case C: save - drag an open tab to the Open header's top half
         // (empty loose-saved section).
         steps.append(("drag-save", {
             let open = self.openIds()
-            guard open.count == 3, let newTab = self.newTabRect() else {
+            guard open.count == 3, let openHeader = self.openHeaderRect() else {
                 self.check("save-fixture", false)
                 return
             }
@@ -178,7 +192,7 @@ final class DragSelfTest {
             self.performDrag(
                 open[1],
                 from: self.rect(.tab(open[1])),
-                to: CGPoint(x: newTab.midX, y: newTab.minY + 3)
+                to: CGPoint(x: openHeader.midX, y: openHeader.minY + 3)
             )
         }))
         steps.append(("assert-C-save", {
@@ -188,7 +202,7 @@ final class DragSelfTest {
                 "loose=\(BrowserState.shared.looseSavedTabs.map(\.id))")
         }))
 
-        // ── Case D: file into a folder — drop the saved tab on the folder header.
+        // ── Case D: file into a folder - drop the saved tab on the folder header.
         steps.append(("create-folder", {
             self.folderId = "Drag Test".withCString { browser_create_folder($0) }
         }))
@@ -260,7 +274,7 @@ final class DragSelfTest {
                 "favorites=\(BrowserState.shared.favoriteTabs.map(\.id))")
         }))
 
-        // ── Case G: reorder within the strip — drag the second icon left of the
+        // ── Case G: reorder within the strip - drag the second icon left of the
         // first (pointer in the first icon's left half).
         steps.append(("drag-favorite-reorder", {
             guard let anchor = self.rect(.favorite(self.favorite1)) else {
@@ -280,7 +294,7 @@ final class DragSelfTest {
                 "favorites=\(BrowserState.shared.favoriteTabs.map(\.id))")
         }))
 
-        // ── Case H: Esc cancels — begin a drag aimed into the list, cancel,
+        // ── Case H: Esc cancels - begin a drag aimed into the list, cancel,
         // nothing moves.
         steps.append(("drag-cancel", {
             self.snapshot = BrowserState.shared.favoriteTabs.map(\.id)
@@ -296,7 +310,7 @@ final class DragSelfTest {
                 self.favorite2, location: CGPoint(x: viewport.midX, y: viewport.midY))
             drag.cancelDrag()
             // The real gesture still fires `onEnded` when the mouse is released
-            // after an Esc cancel — it must be swallowed, not committed.
+            // after an Esc cancel - it must be swallowed, not committed.
             drag.dragEnded(location: CGPoint(x: viewport.midX, y: viewport.midY))
         }))
         steps.append(("assert-H-cancel", {
@@ -307,7 +321,7 @@ final class DragSelfTest {
                 "favorites=\(favorites) dragging=\(String(describing: self.drag?.isDragging))")
         }))
 
-        // ── Case I: unpin — drag a favorite into the empty area below the rows
+        // ── Case I: unpin - drag a favorite into the empty area below the rows
         // (appends to Open).
         steps.append(("drag-unpin", {
             guard let viewport = self.rect(.viewport) else {

@@ -1,12 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// Which sidebar instance this is — the pinned column (always laid out) or the
+/// Which sidebar instance this is - the pinned column (always laid out) or the
 /// hover-revealed floating copy. Only the visible one hosts the live URL editor
 /// (see `URLBar.isVisible`).
 enum SidebarVariant { case pinned, floating }
 
-/// Sidebar chrome content (hosted in an `NSHostingView` island — see `RootView`
+/// Sidebar chrome content (hosted in an `NSHostingView` island - see `RootView`
 /// for placement). The top inset clears the traffic lights, which overlay this
 /// region (the window uses `.fullSizeContentView` with a hidden title).
 ///
@@ -29,28 +29,68 @@ struct Sidebar: View {
         }
     }
 
-    /// One space's scrolling tree, sized to a filmstrip cell. `interactive` is true
-    /// only for the active space's panel: the inert panels render their rows for the
-    /// slide but wire no drag, drop-frame reporting, or taps, so the sidebar keeps
-    /// exactly one live list (see `SpaceContents`). Empty scroll space taps dismiss
-    /// the inline URL editor and clear the selection (only the active panel resigns
-    /// focus; bare chrome otherwise never would).
+    /// One space's fixed title and scrolling tab tree, sized to a filmstrip cell.
+    /// `interactive` is true only for the active space's panel: the inert panels
+    /// render their rows for the slide but wire no drag, drop-frame reporting, or
+    /// taps, so the sidebar keeps exactly one live list (see `SpaceContents`).
+    /// Empty scroll space taps dismiss the inline URL editor and clear the selection
+    /// (only the active panel resigns focus; bare chrome otherwise never would).
     @ViewBuilder
     private func spacePanel(spaceId: Int32, interactive: Bool, width: CGFloat, height: CGFloat)
         -> some View
     {
-        ScrollView {
-            SpaceContents(spaceId: spaceId, interactive: interactive, drag: tabDrag)
-                .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
-                .contentShape(.rect)
-                .onTapGesture {
-                    guard interactive else { return }
-                    URLBarModel.shared.endEditing()
-                    BrowserState.shared.clearTabSelection()
+        VStack(alignment: .leading, spacing: 4) {
+            if let space = state.spaces.first(where: { $0.id == spaceId }) {
+                TabSectionHeader(title: space.name)
+            }
+            GeometryReader { scrollProxy in
+                ScrollView {
+                    SpaceContents(spaceId: spaceId, interactive: interactive, drag: tabDrag)
+                        .frame(
+                            maxWidth: .infinity,
+                            minHeight: scrollProxy.size.height,
+                            alignment: .topLeading
+                        )
+                        .contentShape(.rect)
+                        .onTapGesture {
+                            guard interactive else { return }
+                            URLBarModel.shared.endEditing()
+                            BrowserState.shared.clearTabSelection()
+                        }
                 }
+                .scrollIndicators(.never)
+                // Only the tab viewport autoscrolls during a drag. The space title
+                // above it is deliberately outside this scroll view.
+                .reportSidebarDropFrame(.viewport, active: interactive)
+            }
         }
-        .scrollIndicators(.never)
-        .frame(width: width)
+        .frame(width: width, height: height, alignment: .topLeading)
+    }
+
+    /// Fixed bottom chrome (style §3): update card (when present) above the space
+    /// switcher / private label. No solid fill - the AppKit sidebar material
+    /// shows through (a solid `windowBackgroundColor` bar read as a white slab).
+    @ViewBuilder
+    private var bottomChrome: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !isPrivate {
+                UpdateSidebarCard()
+            }
+            if isPrivate {
+                HStack(spacing: 6) {
+                    Image(systemName: "hand.raised.fill")
+                        .font(.system(size: 11))
+                    Text("Private")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
+            } else {
+                SpaceSwitcher()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     var body: some View {
@@ -91,27 +131,23 @@ struct Sidebar: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            // The spaces' trees as a horizontal filmstrip: every space is laid out
-            // side by side, one panel each, and the strip is offset to the active
-            // one. A switch animates that offset, so the outgoing and incoming lists
-            // always travel together in the switcher's left→right direction — a real
-            // slide, immune to the transition-capture quirks that made an `.id`-swap
-            // slide flip or cross-fade on reversals (ADR-0043). Only the active panel
-            // is interactive; the rest are inert display so they can't pollute the
-            // Y-based drop resolver. Private windows have no spaces — one static panel.
+            // Tab list is the only scrolling region; it takes remaining height
+            // *above* the fixed footer (style §3). Filmstrip layout (ADR-0043).
             GeometryReader { proxy in
                 let w = proxy.size.width
+                let h = proxy.size.height
                 if isPrivate {
-                    spacePanel(spaceId: 0, interactive: true, width: w, height: proxy.size.height)
+                    spacePanel(spaceId: 0, interactive: true, width: w, height: h)
                 } else {
-                    let activeIndex = state.spaces.firstIndex { $0.id == state.activeSpaceId } ?? 0
+                    let activeIndex =
+                        state.spaces.firstIndex { $0.id == state.activeSpaceId } ?? 0
                     HStack(spacing: 0) {
                         ForEach(state.spaces) { space in
                             spacePanel(
                                 spaceId: space.id,
                                 interactive: space.id == state.activeSpaceId,
                                 width: w,
-                                height: proxy.size.height
+                                height: h
                             )
                         }
                     }
@@ -120,29 +156,17 @@ struct Sidebar: View {
                     // (the same structural spring that springs every sidebar change):
                     // it snaps on first population and under Reduce Motion because that
                     // path applies the change bare, and slides on a real switch. No
-                    // separate `.animation(value:)` — that also fires on the launch
+                    // separate `.animation(value:)` - that also fires on the launch
                     // hydration, sliding the initial space into place (ADR-0043).
                     .offset(x: -CGFloat(activeIndex) * w)
                 }
             }
             .frame(maxHeight: .infinity)
             .clipped()
-            // The scroll viewport — the drag model autoscrolls at its edges.
-            .reportSidebarDropFrame(.viewport)
 
-            if isPrivate {
-                HStack(spacing: 6) {
-                    Image(systemName: "hand.raised.fill")
-                        .font(.system(size: 11))
-                    Text("Private")
-                        .font(.system(size: 12, weight: .semibold))
-                }
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 4)
-            } else {
-                SpaceSwitcher()
-            }
+            // Always last: space switcher (and update card above it). Transparent
+            // so the sidebar vibrancy shows through - same surface as the list.
+            bottomChrome
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 10)
@@ -164,7 +188,7 @@ struct Sidebar: View {
 struct NavButton: View {
     let symbol: String
     let help: String
-    /// Dims the glyph and blocks the action + hover/press highlight — used for the
+    /// Dims the glyph and blocks the action + hover/press highlight - used for the
     /// back/forward arrows when there's no history to move through.
     var disabled: Bool = false
     let action: () -> Void
@@ -179,7 +203,7 @@ struct NavButton: View {
                 .frame(width: 30, height: 26)
         }
         // Fill on hover, deeper on press; glyph secondary → primary, quaternary when
-        // disabled (dead control) with the fill suppressed — all via IconButtonStyle.
+        // disabled (dead control) with the fill suppressed - all via IconButtonStyle.
         .buttonStyle(IconButtonStyle(cornerRadius: 6))
         .disabled(disabled)
         .help(help)
@@ -187,7 +211,7 @@ struct NavButton: View {
 }
 
 /// Reload / stop toggle: while the active tab is loading it shows a ✕ that
-/// cancels the load, and a refresh glyph otherwise — the standard browser
+/// cancels the load, and a refresh glyph otherwise - the standard browser
 /// combined button. Observes state directly so it flips the moment loading does.
 struct ReloadButton: View {
     @ObservedObject private var state = BrowserState.shared

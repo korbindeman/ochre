@@ -1,12 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// The active space's tree, rendered in the sidebar's scroll region: the saved
-/// section (folders, then loose saved tabs) above open tabs, with the New Tab
-/// row between them. Membership + order come from the core-owned `BrowserState`
-/// (ADR-0006).
+/// The active space's scrollable tab tree: the collapsible Pinned section
+/// (folders, then loose pins) above the Open section.
+/// Membership + order come from the core-owned `BrowserState` (ADR-0006). The
+/// fixed space title is rendered by `Sidebar.spacePanel`, outside the scroll view.
 struct SpaceContents: View {
-    /// Which space this panel renders — the sidebar lays every space out in a
+    /// Which space this panel renders - the sidebar lays every space out in a
     /// filmstrip and slides to the active one (ADR-0043), so the panel is told its
     /// space rather than reading the active one.
     let spaceId: Int32
@@ -16,7 +16,7 @@ struct SpaceContents: View {
     var interactive: Bool = true
     @ObservedObject private var state = BrowserState.shared
     @ObservedObject var drag: TabDragModel
-    /// Namespace for the sliding active-tab highlight, shared across saved and
+    /// Namespace for the sliding active-tab highlight, shared across pinned and
     /// open rows so the selection can animate between any of them.
     @Namespace private var selection
 
@@ -24,32 +24,59 @@ struct SpaceContents: View {
         let folders = state.rootFolders(inSpace: spaceId)
         let loose = state.looseSavedTabs(inSpace: spaceId)
         let open = state.openTabs(inSpace: spaceId)
-        let hasSaved = !folders.isEmpty || !loose.isEmpty
+        let pinnedExpanded = state.spaces.first(where: { $0.id == spaceId })?.pinnedExpanded ?? true
+        let pinnedCount = state.tabs.filter {
+            $0.space == spaceId && $0.pinned && !$0.favorite
+        }.count
+        let hasPinned = !folders.isEmpty || pinnedCount > 0
+        let pinnedPeek = pinnedExpanded
+            ? nil
+            : state.tabs.first {
+                $0.id == state.activeTabId && $0.space == spaceId && $0.pinned && !$0.favorite
+            }
 
         VStack(alignment: .leading, spacing: 4) {
-            if let space = state.spaces.first(where: { $0.id == spaceId }) {
-                TabSectionHeader(title: space.name)
+            if hasPinned {
+                PinnedSectionHeader(
+                    expanded: pinnedExpanded,
+                    count: pinnedCount,
+                    isDropTarget: drag.slot == .endOf(.looseSaved),
+                    interactive: interactive,
+                    onToggle: {
+                        (NSApp.delegate as? AppDelegate)?.setPinnedSectionExpanded(
+                            spaceId, !pinnedExpanded)
+                    }
+                )
+                .reportSidebarDropFrame(.pinnedHeader, active: interactive)
+
+                if pinnedExpanded {
+                    ForEach(folders) { folder in
+                        FolderRow(
+                            folder: folder, drag: drag, selection: selection,
+                            interactive: interactive)
+                    }
+                    sectionRows(loose)
+                } else if let pinnedPeek {
+                    tabRow(pinnedPeek, draggable: false)
+                }
             }
-            ForEach(folders) { folder in
-                FolderRow(folder: folder, drag: drag, selection: selection, interactive: interactive)
-            }
-            sectionRows(loose)
-            if hasSaved {
-                Divider()
-                    .padding(.vertical, 4)
-            }
-            NewTabRow(
-                looseEmpty: loose.isEmpty, firstOpen: open.first?.id, interactive: interactive)
+            // Clear's header draws the only Pinned/Open rule. Hide it when the
+            // working set is empty so New Tab sits directly under Pinned.
             if !open.isEmpty {
                 TabSectionHeader(
-                    title: "Open",
+                    title: nil,
                     actionTitle: interactive ? "Clear" : nil,
                     actionHelp: "Close open tabs (selected tabs are kept)",
                     onAction: interactive
                         ? { (NSApp.delegate as? AppDelegate)?.clearOpenTabs() } : nil
                 )
+                .reportSidebarDropFrame(
+                    .openHeader(looseEmpty: loose.isEmpty, firstOpen: open.first?.id),
+                    active: interactive
+                )
             }
             sectionRows(open)
+            NewTabRow(interactive: interactive)
             // Arc-style: the unfilled scroll viewport below the last row drags the
             // window; tab rows above keep their own drag-reorder affordance.
             Spacer(minLength: 0)
@@ -80,34 +107,80 @@ struct SpaceContents: View {
     }
 
     @ViewBuilder
-    func tabRow(_ tab: TabItem) -> some View {
+    func tabRow(_ tab: TabItem, draggable: Bool = true) -> some View {
         let app = NSApp.delegate as? AppDelegate
         let isActive = interactive && tab.id == state.activeTabId && !state.isSurfaceOpen
         TabRow(
             tab: tab,
-            // A tab and a native surface are mutually exclusive — no tab reads as
+            // A tab and a native surface are mutually exclusive - no tab reads as
             // active while History/Passwords/Settings covers the canvas.
             isActive: isActive,
             isMultiSelected: interactive && state.selectedTabIds.contains(tab.id),
             selection: selection,
             onSelect: { if interactive { state.handleTabClick(tab.id) } },
             onClose: { app?.closeTab(tab.id) },
-            onHideSaved: tab.pinned && !tab.favorite && isActive
-                ? { app?.hideSavedTab(tab.id) } : nil
+            onClosePinned: tab.pinned && !tab.favorite
+                ? { app?.closePinnedTab(tab.id) } : nil
         )
         .contextMenu { TabMenu(tab: tab) }
-        .sidebarTabDrag(tab: tab, drag: drag, enabled: interactive)
-        .reportSidebarDropFrame(.tab(tab.id), active: interactive)
+        .sidebarTabDrag(tab: tab, drag: drag, enabled: interactive && draggable)
+        .reportSidebarDropFrame(.tab(tab.id), active: interactive && draggable)
         .transition(SidebarSelection.rowTransition)
     }
 }
 
-/// The New Tab row between saved and open — opens the command bar. Styled like a
-/// tab row so the list reads as one column. Its reported frame doubles as the
-/// drag boundary between saved and open (see `SidebarDropResolver`).
+/// Per-Space disclosure control for Pinned tabs. The full row is interactive,
+/// and the same geometry is a drop target so a collapsed section still accepts
+/// dragged tabs.
+private struct PinnedSectionHeader: View {
+    let expanded: Bool
+    let count: Int
+    let isDropTarget: Bool
+    let interactive: Bool
+    let onToggle: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            guard interactive else { return }
+            onToggle()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                Text("Pinned")
+                Spacer(minLength: 0)
+                Text("\(count)")
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, minHeight: 30)
+            .padding(.horizontal, 10)
+            .background {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(isDropTarget ? AnyShapeStyle(.tint.opacity(0.2)) : AnyShapeStyle(.clear))
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(.quaternary)
+                    .opacity(!isDropTarget && hovering ? 0.4 : 0)
+                    .hoverFade(hovering)
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .disabled(!interactive)
+        .onHover { hovering = $0 }
+        .help(expanded ? "Collapse Pinned" : "Expand Pinned")
+    }
+}
+
+/// The last row in the Open section - opens the command bar and accepts tabs at
+/// the end of the open working set.
 private struct NewTabRow: View {
-    let looseEmpty: Bool
-    let firstOpen: Int32?
     var interactive: Bool = true
 
     @State private var hovering = false
@@ -137,12 +210,11 @@ private struct NewTabRow: View {
             (NSApp.delegate as? AppDelegate)?.toggleCommandBar()
         }
         .onHover { hovering = $0 }
-        .reportSidebarDropFrame(
-            .newTab(looseEmpty: looseEmpty, firstOpen: firstOpen), active: interactive)
+        .reportSidebarDropFrame(.newTab, active: interactive)
     }
 }
 
-/// The right-click menu for a tab — save/move to open, folders, close.
+/// The right-click menu for a tab: Pin, Favorite, organize, close, or delete.
 private struct TabMenu: View {
     let tab: TabItem
     @ObservedObject private var state = BrowserState.shared
@@ -167,13 +239,13 @@ private struct TabMenu: View {
             Divider()
         }
         if tab.favorite {
-            Button("Unpin Tab") { app?.setTabFavorite(tab.id, false) }
+            Button("Remove from Favorites") { app?.setTabFavorite(tab.id, false) }
         } else {
-            Button("Pin Tab") { app?.setTabFavorite(tab.id, true) }
+            Button("Move to Favorites") { app?.setTabFavorite(tab.id, true) }
                 .disabled(!state.canPinMoreFavorites)
         }
         if tab.pinned {
-            Button("Move to Open") { app?.setTabSaved(tab.id, false) }
+            Button("Unpin Tab") { app?.setTabPinned(tab.id, false) }
             if !folders.isEmpty || tab.folder != nil {
                 Menu("Move to Folder") {
                     Button("None") { app?.moveTab(tab.id, toFolder: nil) }
@@ -182,42 +254,44 @@ private struct TabMenu: View {
                     }
                 }
             }
-        } else if !tab.favorite {
-            Button("Save Tab") { app?.setTabSaved(tab.id, true) }
+        } else {
+            Button("Pin Tab") { app?.setTabPinned(tab.id, true) }
+        }
+        if (tab.pinned || tab.favorite) && tab.hasTemporaryPinnedNavigation {
+            Button("Replace Pinned URL with Current") { app?.replacePinnedURL(tab.id) }
         }
         Divider()
         if tab.favorite {
-            if tab.id == state.activeTabId && !state.isSurfaceOpen {
-                Button("Close Pinned Tab") { app?.closeTab(tab.id) }
-            }
-            Button("Delete Pinned Tab") { app?.deleteTab(tab.id) }
+            Button("Close Tab") { app?.closeTab(tab.id) }
+            Button("Delete Favorite") { app?.deleteTab(tab.id) }
         } else if tab.pinned {
-            if tab.id == state.activeTabId && !state.isSurfaceOpen {
-                Button("Close Tab") { app?.hideSavedTab(tab.id) }
-            } else {
-                Button("Delete Saved Tab") { app?.closeTab(tab.id) }
-            }
+            Button("Close Tab") { app?.closePinnedTab(tab.id) }
+            Button("Delete Pinned Tab") { app?.deleteTab(tab.id) }
         } else {
             Button("Close Tab") { app?.closeTab(tab.id) }
         }
     }
 }
 
-/// Section label (optional) with an optional trailing action — e.g. Saved, or Clear alone.
-private struct TabSectionHeader: View {
+/// A space label, or a horizontal section divider with an optional trailing action.
+struct TabSectionHeader: View {
     var title: String?
     var actionTitle: String?
     var actionHelp: String?
     var onAction: (() -> Void)?
 
     var body: some View {
-        HStack {
+        HStack(spacing: 8) {
             if let title {
                 Text(title)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
+            } else {
+                Rectangle()
+                    .fill(Color(nsColor: .separatorColor))
+                    .frame(height: 1)
             }
-            Spacer(minLength: 0)
             if let actionTitle, let onAction {
                 Button(actionTitle, action: onAction)
                     .buttonStyle(IconButtonStyle(cornerRadius: 5, emphasizesLabel: false))
@@ -228,12 +302,13 @@ private struct TabSectionHeader: View {
                     .help(actionHelp ?? "")
             }
         }
+        .frame(minHeight: 17)
         .padding(.horizontal, 10)
         .padding(.top, 2)
     }
 }
 
-/// A collapsible folder in the saved section, with nested subfolders and saved
+/// A collapsible folder in the Pinned section, with nested subfolders and pinned
 /// tabs indented beneath. Expand/collapse state is core-owned so it persists
 /// across launches and space switches (ADR-0039); a collapsed folder still peeks
 /// the active tab if it lives inside, so the current tab is never hidden.
@@ -245,7 +320,7 @@ struct FolderRow: View {
     /// Shared with the rest of the sidebar so the active-tab highlight can slide
     /// between a folder tab and a loose/open tab.
     let selection: Namespace.ID
-    /// False for a non-active space's filmstrip panel — display only, no drag/taps.
+    /// False for a non-active space's filmstrip panel - display only, no drag/taps.
     var interactive: Bool = true
     @State private var hovering = false
 
@@ -324,8 +399,8 @@ struct FolderRow: View {
                         selection: selection,
                         onSelect: { if interactive { state.handleTabClick(tab.id) } },
                         onClose: { app?.closeTab(tab.id) },
-                        onHideSaved: tab.pinned && !tab.favorite && isActive
-                            ? { app?.hideSavedTab(tab.id) } : nil
+                        onClosePinned: tab.pinned && !tab.favorite
+                            ? { app?.closePinnedTab(tab.id) } : nil
                     )
                     .contextMenu { TabMenu(tab: tab) }
                     .sidebarTabDrag(tab: tab, drag: drag, enabled: interactive)
@@ -342,7 +417,7 @@ struct FolderRow: View {
     }
 
     /// The single active tab shown beneath a *collapsed* folder header so it is
-    /// never hidden (ADR-0039). Display + selection only — no drag source or drop
+    /// never hidden (ADR-0039). Display + selection only - no drag source or drop
     /// frame, so the collapsed folder stays one unit for drag purposes (dropping
     /// onto the header still files into it).
     @ViewBuilder
@@ -354,7 +429,7 @@ struct FolderRow: View {
             selection: selection,
             onSelect: { state.handleTabClick(tab.id) },
             onClose: { app?.closeTab(tab.id) },
-            onHideSaved: tab.pinned && !tab.favorite ? { app?.hideSavedTab(tab.id) } : nil
+            onClosePinned: tab.pinned && !tab.favorite ? { app?.closePinnedTab(tab.id) } : nil
         )
         .contextMenu { TabMenu(tab: tab) }
         .padding(.leading, indent)
@@ -372,7 +447,7 @@ struct SpaceSwitcher: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            // Passwords (vault) — the sidebar entry point to the manager (also in
+            // Passwords (vault) - the sidebar entry point to the manager (also in
             // the app menu). Leading utility button; spaces scroll to its right.
             Button {
                 app?.showVault()
@@ -415,7 +490,7 @@ struct SpaceSwitcher: View {
     }
 }
 
-/// One space in the switcher — its emoji icon, with the active space carried by
+/// One space in the switcher - its emoji icon, with the active space carried by
 /// a pill background. Click selects; right-click manages it (new folder,
 /// rename, icon, convert-to-folder, delete). The tooltip names the space.
 private struct SpacePill: View {

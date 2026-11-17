@@ -1,11 +1,12 @@
-//! Session persistence — the tab/space/folder tree across launches (ADR-0013).
+//! Session persistence - the tab/space/folder tree across launches (ADR-0013).
 //!
 //! One JSON document (`root_cache_dir()/session.json`) mirrors the structural
-//! state of the tab model: every space, folder, and tab (with its URL, title,
-//! pinned flag, and folder membership) plus the active pointers. The tab store
+//! state of the tab model: every space, folder, and tab (with an open tab's live
+//! URL/title or a saved/favorite tab's durable pinned URL/title, plus its pinned
+//! flag and folder membership) and the active pointers. The tab store
 //! writes it through on every structural / URL / title change via an atomic
 //! temp-file + rename, so the file is always a complete, current session and a
-//! crash never leaves a torn one — there is no fragile "save on quit" step.
+//! crash never leaves a torn one - there is no fragile "save on quit" step.
 //! Read once at startup ([`crate::tabs::init`]); all restored tabs come back
 //! *suspended* (no CEF browser) and hydrate lazily when first shown.
 //!
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::tabs::{FolderId, SpaceId, TabId};
 
-/// The persisted session — a plain mirror of the tab store's structure. Ids are
+/// The persisted session - a plain mirror of the tab store's structure. Ids are
 /// carried as-is (they are core-assigned, not CEF's), so the restored tree keeps
 /// stable identities and the counters resume past the highest saved id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,9 +33,17 @@ pub struct SavedSpace {
     pub id: SpaceId,
     pub name: String,
     pub icon: String,
+    /// Whether the Space's Pinned section is expanded. Old sessions predate
+    /// the control, so they restore expanded to preserve their visible layout.
+    #[serde(default = "default_true")]
+    pub pinned_expanded: bool,
     /// The space's remembered active tab, restored so switching back lands
     /// where the user left off.
     pub active: Option<TabId>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,7 +55,7 @@ pub struct SavedFolder {
     #[serde(default)]
     pub parent: Option<FolderId>,
     /// Sidebar expand/collapse state (ADR-0039). Defaults to collapsed so a
-    /// pre-ADR-0039 session (no field) restores the way it looked before —
+    /// pre-ADR-0039 session (no field) restores the way it looked before -
     /// folders were always collapsed at launch.
     #[serde(default)]
     pub expanded: bool,
@@ -61,13 +70,16 @@ pub struct SavedTab {
     /// Arc-style pinned icon strip (ADR-0032). Distinct from `pinned` (saved).
     #[serde(default)]
     pub favorite: bool,
+    /// Current URL for an open tab; durable pinned URL for a saved tab/favorite
+    /// (ADR-0056). Temporary navigation away from a pin is not session state.
     pub url: String,
-    /// Saved so the restored sidebar shows real titles before hydration.
+    /// Saved so the restored sidebar shows real titles before hydration. Empty
+    /// when a pin is temporarily away from home, avoiding stale page metadata.
     pub title: String,
 }
 
 /// Read the persisted session. `None` when the file is missing (first launch)
-/// or unparsable — a corrupt file is logged and treated as no session rather
+/// or unparsable - a corrupt file is logged and treated as no session rather
 /// than aborting; the tab store then starts fresh.
 pub fn load(path: &str) -> Option<SavedState> {
     let bytes = std::fs::read(path).ok()?;
@@ -81,7 +93,7 @@ pub fn load(path: &str) -> Option<SavedState> {
 }
 
 /// Write the session atomically (temp file + rename, so readers and crashes
-/// only ever see a complete document). Failures are logged, never fatal — the
+/// only ever see a complete document). Failures are logged, never fatal - the
 /// browser keeps running; only persistence degrades.
 pub fn save(path: &str, state: &SavedState) {
     let json = match serde_json::to_vec(state) {
@@ -108,6 +120,7 @@ mod tests {
                 id: 1,
                 name: "Home".into(),
                 icon: "🏠".into(),
+                pinned_expanded: true,
                 active: Some(7),
             }],
             folders: vec![SavedFolder {
@@ -144,7 +157,20 @@ mod tests {
         assert_eq!(loaded.tabs[0].url, "https://example.com/");
         assert_eq!(loaded.tabs[0].folder, Some(2));
         assert!(loaded.folders[0].expanded, "folder expansion persists");
+        assert!(
+            loaded.spaces[0].pinned_expanded,
+            "Pinned section state persists"
+        );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pinned_section_defaults_expanded_when_absent() {
+        let json = br#"{"active_space":1,
+            "spaces":[{"id":1,"name":"Home","icon":"H","active":null}],
+            "folders":[],"tabs":[]}"#;
+        let state: SavedState = serde_json::from_slice(json).expect("legacy session parses");
+        assert!(state.spaces[0].pinned_expanded);
     }
 
     #[test]

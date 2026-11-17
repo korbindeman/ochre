@@ -7,12 +7,15 @@ struct TabItem: Identifiable, Equatable {
     var space: Int32
     /// The folder this tab lives in (saved tabs only), or nil for a loose tab.
     var folder: Int32?
-    /// Saved (persistent in the sidebar tree) vs. open (working set). Core
-    /// field is `pinned` — distinct from `favorite` (the icon strip).
+    /// Pinned (persistent in this Space) vs. open (working set). Distinct from
+    /// `favorite`, which is global and rendered in the icon strip.
     var pinned: Bool
-    /// Arc-style pinned icon strip below the URL bar (ADR-0032). Permanent —
-    /// a close only deselects; the icon always stays (ADR-0038).
+    /// Arc-style Favorites icon strip below the URL bar (ADR-0032). Permanent -
+    /// close resets temporary navigation and deselects; the icon stays.
     var favorite: Bool
+    /// Durable identity of a pinned tab/favorite. `url` remains the live page
+    /// and may differ until close or an explicit replacement (ADR-0056).
+    var savedURL: String?
     var title: String = ""
     var url: String = ""
     var isLoading: Bool = false
@@ -26,6 +29,10 @@ struct TabItem: Identifiable, Equatable {
     var themeColor: String = ""
 
     var host: String { URLComponents(string: url)?.host ?? "" }
+    var hasTemporaryPinnedNavigation: Bool {
+        guard let savedURL else { return false }
+        return savedURL != url
+    }
 
     var displayTitle: String {
         if !title.isEmpty { return title }
@@ -34,15 +41,16 @@ struct TabItem: Identifiable, Equatable {
     }
 }
 
-/// A space — a switchable set of tabs (saved + open sections).
+/// A space - a switchable set of tabs (Pinned + Open sections).
 /// `icon` is the emoji shown in the space switcher.
 struct SpaceItem: Identifiable, Equatable {
     let id: Int32
     var name: String
     var icon: String
+    var pinnedExpanded: Bool
 }
 
-/// A folder inside a space's saved section; holds saved tabs and nested folders.
+/// A folder inside a Space's Pinned section; holds pinned tabs and subfolders.
 struct FolderItem: Identifiable, Equatable {
     let id: Int32
     var space: Int32
@@ -104,7 +112,7 @@ final class BrowserState: ObservableObject {
         UserDefaults.standard.object(forKey: BrowserState.sidebarPinnedKey) as? Bool ?? true
     /// Whether the collapsed sidebar is *hover-revealed*. Pointer-driven only
     /// (`revealSidebar` in, `RootView`'s dismissal monitor out). The empty-canvas
-    /// auto-float is a separate, derived cause — see `isFloatingSidebarShown`.
+    /// auto-float is a separate, derived cause - see `isFloatingSidebarShown`.
     @Published var isSidebarRevealed = false
 
     private static let sidebarPinnedKey = BrowserProfile.defaultsKey("sidebarPinned")
@@ -125,15 +133,21 @@ final class BrowserState: ObservableObject {
     }
 
     /// Mirrors the window's fullscreen state (set by `AppDelegate`) so the
-    /// custom traffic lights step aside — in fullscreen the OS auto-hiding
+    /// custom traffic lights step aside - in fullscreen the OS auto-hiding
     /// titlebar shows the real buttons (see `TrafficLights`).
     @Published var isFullscreen = false
 
+    /// HTML5 / browser content fullscreen (video element, Fullscreen API).
+    /// Distinct from `isFullscreen` (OS window). The window controller enters
+    /// real macOS fullscreen when this goes true; RootView hides chrome so
+    /// the page fills the screen.
+    @Published var isContentFullscreen = false
+
     /// Whether the History surface is shown over the content area (a native
-    /// app-UI page, not a tab — ADR-0010). `RootView` reveals/hides its host on
+    /// app-UI page, not a tab - ADR-0010). `RootView` reveals/hides its host on
     /// this; opening a tab or Escape closes it. It also counts as covering the
     /// canvas, so the empty-state floating sidebar tucks away while it's up and
-    /// returns when it closes (derived — see `isFloatingSidebarShown`).
+    /// returns when it closes (derived - see `isFloatingSidebarShown`).
     @Published var isHistoryOpen = false
 
     /// Whether the Passwords (vault) surface is showing (ADR-0010/0016). Same
@@ -188,7 +202,7 @@ final class BrowserState: ObservableObject {
         folders.filter { $0.parent == parent }
     }
 
-    // Per-space section accessors — the sidebar renders each space's tree in a
+    // Per-space section accessors - the sidebar renders each space's tree in a
     // side-by-side filmstrip (ADR-0043), so it asks for a specific space rather
     // than the active one. The `active…` / bare computed forms above are the
     // `inSpace: activeSpaceId` case, kept for drag, selection, and the self-tests.
@@ -201,24 +215,24 @@ final class BrowserState: ObservableObject {
     func openTabs(inSpace s: Int32) -> [TabItem] {
         tabs.filter { $0.space == s && !$0.pinned && !$0.favorite }
     }
-    /// Maximum visible favorites — 3×2 grid; matches core `MAX_VISIBLE_FAVORITES`.
+    /// Maximum visible favorites - 3×2 grid; matches core `MAX_VISIBLE_FAVORITES`.
     static let maxFavoriteTabs = 6
 
-    /// Arc-style pinned icons — global across spaces (ADR-0032 / P2-5).
+    /// Arc-style pinned icons - global across spaces (ADR-0032 / P2-5).
     var favoriteTabs: [TabItem] {
         tabs.filter { $0.favorite }
     }
     var canPinMoreFavorites: Bool { favoriteTabs.count < Self.maxFavoriteTabs }
     var looseSavedTabs: [TabItem] { looseSavedTabs(inSpace: activeSpaceId) }
     var openTabs: [TabItem] { openTabs(inSpace: activeSpaceId) }
-    /// Whether any ephemeral tab exists in any space — saved tabs alone don't
+    /// Whether any ephemeral tab exists in any space - saved tabs alone don't
     /// count as "open."
     var hasOpenTabs: Bool { tabs.contains { !$0.pinned && !$0.favorite } }
 
     func tabs(inFolder folder: Int32) -> [TabItem] { tabs.filter { $0.folder == folder } }
 
     /// The active tab, if it lives inside `folderId` or any of its nested
-    /// descendant folders — the tab a collapsed folder peeks out so the current
+    /// descendant folders - the tab a collapsed folder peeks out so the current
     /// tab is never hidden (ADR-0039). `nil` while a surface covers the canvas
     /// (no tab reads as active then) or when the active tab is elsewhere. Walks
     /// up the tab's folder-parent chain, so the *nearest* collapsed ancestor is
@@ -285,17 +299,21 @@ final class BrowserState: ObservableObject {
             FaviconLoader.shared.invalidate(host: payload ?? "")
             patch(id) { $0.faviconVersion += 1 }
         case 5: reloadStructure()  // StructureChanged
-        case 6:  // TabNavStateChanged — payload = "bf" back/forward flags
+        case 6:  // TabNavStateChanged - payload = "bf" back/forward flags
             let flags = payload ?? "00"
             patch(id) {
                 $0.canGoBack = flags.first == "1"
                 $0.canGoForward = flags.dropFirst().first == "1"
             }
-        case 7:  // OpenTabRequested — payload = url; id = 1 foreground / 0 background
+        case 7:  // OpenTabRequested - payload = url; id = 1 foreground / 0 background
             guard let url = payload else { return }
             (NSApp.delegate as? AppDelegate)?.openTab(url: url, windowId: windowId)
-        case 8:  // TabSuspended — background discard (ADR-0033)
+        case 8:  // TabSuspended - background discard (ADR-0033)
             suspendedTabId = id
+        case 10:  // FullscreenChanged - id = 1 enter / 0 exit (HTML5 content)
+            let want = id != 0
+            guard isContentFullscreen != want else { return }
+            isContentFullscreen = want
         default: break
         }
     }
@@ -326,6 +344,7 @@ final class BrowserState: ObservableObject {
                 folder: dto.folder,
                 pinned: dto.pinned,
                 favorite: dto.favorite,
+                savedURL: dto.savedUrl,
                 title: dto.title,
                 url: dto.url,
                 isLoading: dto.loading,
@@ -334,7 +353,11 @@ final class BrowserState: ObservableObject {
                 faviconVersion: priorFavicon[dto.id] ?? 0
             )
         }
-        let newSpaces = snap.spaces.map { SpaceItem(id: $0.id, name: $0.name, icon: $0.icon) }
+        let newSpaces = snap.spaces.map {
+            SpaceItem(
+                id: $0.id, name: $0.name, icon: $0.icon,
+                pinnedExpanded: $0.pinnedExpanded)
+        }
         let newFolders = snap.folders.map {
             FolderItem(
                 id: $0.id, space: $0.space, name: $0.name, parent: $0.parent,
@@ -342,8 +365,8 @@ final class BrowserState: ObservableObject {
         }
 
         // Spring the sidebar through structural changes (reorder / pin / create /
-        // close / select), but not the first population at launch — rows shouldn't
-        // fly in — and not under Reduce Motion (style §7). Only SwiftUI observers
+        // close / select), but not the first population at launch - rows shouldn't
+        // fly in - and not under Reduce Motion (style §7). Only SwiftUI observers
         // (the sidebar list) animate; the CEF view swap is AppKit-driven and
         // unaffected. This ambient spring also drives the rows' enter/exit
         // transitions and the sliding active-tab highlight (`SidebarSelection`).
@@ -402,6 +425,7 @@ final class BrowserState: ObservableObject {
                 folder: nil,
                 pinned: false,
                 favorite: false,
+                savedURL: nil,
                 title: dto.title,
                 url: dto.url,
                 isLoading: dto.loading,
@@ -440,7 +464,7 @@ final class BrowserState: ObservableObject {
         return (try? JSONDecoder().decode([VaultLogin].self, from: data)) ?? []
     }
 
-    /// Fill the active tab's login form from vault login `id` — the popover's Fill
+    /// Fill the active tab's login form from vault login `id` - the popover's Fill
     /// action. The secret crosses in the core on this gesture (ADR-0029); nothing
     /// comes back. The core records the use itself. Main thread only.
     func fillActiveTab(id: String) {
@@ -449,7 +473,7 @@ final class BrowserState: ObservableObject {
     }
 
     /// Record that login `id` was just used, for the gestures that live entirely
-    /// in the host — Copy username / Copy password (ADR-0048). Re-reads the
+    /// in the host - Copy username / Copy password (ADR-0048). Re-reads the
     /// matches so the popover reflects the new order without waiting for a
     /// navigation. Main thread only.
     func noteVaultUse(id: String) {
@@ -524,7 +548,7 @@ final class BrowserState: ObservableObject {
 
     // ─── App-UI surfaces (History / Passwords) ─────────────────────────────
     // A native content-area surface and a tab are mutually exclusive: opening one
-    // deselects the tab (visually — the core keeps its active tab, so dismissing
+    // deselects the tab (visually - the core keeps its active tab, so dismissing
     // returns to it, ADR-0010), and the two surfaces are exclusive with each
     // other (only one covers the canvas). `selectTab` is the reverse entry point:
     // a sidebar tab click dismisses the surface and returns to the page.
@@ -537,7 +561,7 @@ final class BrowserState: ObservableObject {
     func toggleVault() { isVaultOpen ? closeVault() : openVault() }
     func toggleSettings() { isSettingsOpen ? closeSettings() : openSettings() }
 
-    /// Show a surface, closing the other one first — only one covers the canvas.
+    /// Show a surface, closing the other one first - only one covers the canvas.
     /// Goes straight to the booleans (not through `close*`) so switching between
     /// surfaces never bounces focus down to the web view in between.
     func openHistory() {
@@ -579,7 +603,7 @@ final class BrowserState: ObservableObject {
         restoreWebFocus()
     }
 
-    /// Dismiss whichever surface is showing — used by ⌘W and by paths that need
+    /// Dismiss whichever surface is showing - used by ⌘W and by paths that need
     /// the canvas back (opening a new tab, reopening a closed one).
     func closeSurfaces() {
         closeHistory()
@@ -663,8 +687,8 @@ final class BrowserState: ObservableObject {
         if !isSurfaceOpen { browser_focus_active_tab() }
     }
 
-    /// Hover-reveal the collapsed sidebar. `RootView` owns the dismissal timing —
-    /// it has the (resizable) sidebar geometry — and flips `isSidebarRevealed`
+    /// Hover-reveal the collapsed sidebar. `RootView` owns the dismissal timing -
+    /// it has the (resizable) sidebar geometry - and flips `isSidebarRevealed`
     /// back off once the pointer leaves the sidebar's hover zone for a grace
     /// period.
     func revealSidebar() {
@@ -673,7 +697,7 @@ final class BrowserState: ObservableObject {
     }
 
     /// The canvas is empty: no active tab and nothing covering it. With nothing on
-    /// the canvas the collapsed sidebar auto-floats (Arc) — the only way to reach a
+    /// the canvas the collapsed sidebar auto-floats (Arc) - the only way to reach a
     /// saved tab. A History/Vault panel counts as covering it, so it isn't empty.
     var isEmptyCanvas: Bool {
         activeTabId == nil && !isHistoryOpen && !isVaultOpen && !isSettingsOpen
@@ -681,10 +705,11 @@ final class BrowserState: ObservableObject {
 
     /// Whether the floating (unpinned) sidebar is on-screen. The single rule:
     /// unpinned, and either hover-revealed or floating over an empty canvas. A pure
-    /// function of state — no stored copy to keep in sync, no override. `RootView`
-    /// animates the floating host to match this.
+    /// function of state - no stored copy to keep in sync, no override. `RootView`
+    /// animates the floating host to match this. Suppressed during content
+    /// fullscreen so video fills the whole screen.
     var isFloatingSidebarShown: Bool {
-        !isSidebarPinned && (isSidebarRevealed || isEmptyCanvas)
+        !isContentFullscreen && !isSidebarPinned && (isSidebarRevealed || isEmptyCanvas)
     }
 }
 
@@ -701,6 +726,7 @@ private struct Snapshot: Decodable {
         let id: Int32
         let name: String
         let icon: String
+        let pinnedExpanded: Bool
     }
     struct FolderDTO: Decodable {
         let id: Int32
@@ -715,6 +741,7 @@ private struct Snapshot: Decodable {
         let folder: Int32?
         let pinned: Bool
         let favorite: Bool
+        let savedUrl: String?
         let url: String
         let title: String
         let loading: Bool
@@ -759,7 +786,7 @@ func browserTabEventCallback(
 enum Navigation {
     enum Route { case newTab, currentTab }
 
-    /// Where the next commit lands — set by the command bar before it opens.
+    /// Where the next commit lands - set by the command bar before it opens.
     static var route: Route = .newTab
 
     static func open(_ input: String) {

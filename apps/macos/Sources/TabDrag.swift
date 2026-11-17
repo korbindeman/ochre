@@ -1,10 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// Drag-and-drop for the sidebar — custom gesture-driven, no system drag session
+/// Drag-and-drop for the sidebar - custom gesture-driven, no system drag session
 /// (ADR-0035; the order/commit model is ADR-0015).
 ///
-/// The core owns tab order (implicit in its `tabs` order — the sidebar sections
+/// The core owns tab order (implicit in its `tabs` order - the sidebar sections
 /// are filters over it, ADR-0006). A drag never mutates that live: rows feed a
 /// `DragGesture` into one shared `TabDragModel`, which resolves the pointer
 /// against row frames reported in a single sidebar-wide coordinate space and
@@ -18,7 +18,7 @@ import SwiftUI
 /// synchronously, and all drag visuals live in a non-hit-testable overlay so
 /// mid-drag layout never changes.
 
-/// Which sidebar section a tab lives in — the destination a drag resolves to.
+/// Which sidebar section a tab lives in - the destination a drag resolves to.
 /// `favorite` = the pinned icon strip, `looseSaved` = saved with no folder,
 /// `open` = the working-set tabs, `folder` = saved inside that folder.
 enum TabSection: Equatable {
@@ -40,14 +40,16 @@ enum DropSlot: Equatable {
 // ─── Reported geometry ───────────────────────────────────────────────────────
 
 /// Geometry reported by sidebar views so the resolver and the drag overlay share
-/// one picture of the tree. `tab`/`favorite`/`folder`/`newTab` are drop anchors;
+/// one picture of the tree. Rows and section headers are drop anchors;
 /// `favoriteStrip`, `viewport`, and `root` are regions (strip band for horizontal
 /// resolution, scroll viewport for edge autoscroll, root for cancel-outside).
 enum SidebarDropFrameKind: Equatable {
     case tab(Int32)
     case favorite(Int32)
     case favoriteStrip
-    case newTab(looseEmpty: Bool, firstOpen: Int32?)
+    case pinnedHeader
+    case openHeader(looseEmpty: Bool, firstOpen: Int32?)
+    case newTab
     case folder(Int32)
     case viewport
     case root
@@ -100,7 +102,7 @@ extension View {
 
 // ─── Drag state ──────────────────────────────────────────────────────────────
 
-/// High-frequency drag geometry — the live pointer and the reported frames.
+/// High-frequency drag geometry - the live pointer and the reported frames.
 /// Split from `TabDragModel` so only the overlay observes it: pointer moves at
 /// event rate and must not re-render every row.
 @MainActor
@@ -122,7 +124,7 @@ final class TabDragModel: ObservableObject {
     /// (grabbed by `ScrollViewProbe`).
     weak var scrollView: NSScrollView?
 
-    /// Live models, weakly held — `--drag-selftest` drives whichever sidebar is
+    /// Live models, weakly held - `--drag-selftest` drives whichever sidebar is
     /// actually laid out (the one with reported frames).
     static let liveModels = NSHashTable<TabDragModel>.weakObjects()
     /// The selftest paces synthetic drags across runloop turns with no physical
@@ -133,7 +135,7 @@ final class TabDragModel: ObservableObject {
     private var watchdog: Timer?
     private var autoscrollTimer: Timer?
     private var autoscrollStep: CGFloat = 0
-    /// Esc cancelled mid-gesture — swallow the rest of that gesture's events.
+    /// Esc cancelled mid-gesture - swallow the rest of that gesture's events.
     private var sessionCancelled = false
 
     init() {
@@ -165,7 +167,7 @@ final class TabDragModel: ObservableObject {
         defer { sessionCancelled = false }
         guard !sessionCancelled, draggingId != nil else { return }
         geometry.pointer = location
-        // Released outside the sidebar entirely — cancel. (The hook a future
+        // Released outside the sidebar entirely - cancel. (The hook a future
         // tear-off-to-window builds on.)
         if let root = geometry.frames.first(where: { $0.kind == .root })?.rect,
             !root.contains(location)
@@ -185,7 +187,7 @@ final class TabDragModel: ObservableObject {
         end()
     }
 
-    /// New frames from the preference pass. Mid-drag this re-aims the slot —
+    /// New frames from the preference pass. Mid-drag this re-aims the slot -
     /// content moves under a stationary pointer during autoscroll.
     func framesChanged(_ frames: [SidebarDropFrame]) {
         geometry.frames = frames
@@ -218,7 +220,7 @@ final class TabDragModel: ObservableObject {
     }
 
     /// Adopt a candidate slot, suppressing illegal targets (a full strip) and
-    /// slots that would leave the tab exactly where it already is — so the
+    /// slots that would leave the tab exactly where it already is - so the
     /// indicator never lies and a drop there is a clean no-op.
     private func updateSlot(_ candidate: DropSlot?) {
         guard let id = draggingId, let candidate else {
@@ -315,7 +317,7 @@ final class TabDragModel: ObservableObject {
 
     // ─── Watchdog ────────────────────────────────────────────────────────────
 
-    /// Leak guard only — `DragGesture.onEnded` is the real end-of-drag and
+    /// Leak guard only - `DragGesture.onEnded` is the real end-of-drag and
     /// commits synchronously (no race, unlike the old mouse-up poller). This
     /// fires solely when AppKit tears the gesture down without an `onEnded`
     /// (view removed mid-drag) so a phantom drag never stays armed.
@@ -386,7 +388,7 @@ final class TabDragModel: ObservableObject {
 enum SidebarDropResolver {
     /// Resolve a pointer (sidebar space) to a drop slot. The strip band resolves
     /// horizontally among favorite icons; everything below resolves vertically
-    /// among rows, nearest-row fallback in the gaps — every point in the sidebar
+    /// among rows, nearest-row fallback in the gaps - every point in the sidebar
     /// yields *some* slot, so a drop can never silently vanish.
     static func slot(
         at location: CGPoint,
@@ -397,7 +399,7 @@ enum SidebarDropResolver {
             location.y <= strip.maxY + 4
         {
             // At or above the strip band: favorites territory (above it entirely
-            // is nav chrome — no target).
+            // is nav chrome - no target).
             guard location.y >= strip.minY - 4 else { return nil }
             return stripSlot(at: location, in: frames)
         }
@@ -437,7 +439,8 @@ enum SidebarDropResolver {
 
     /// Vertical resolution over the tab tree: a row's top half inserts before it,
     /// its bottom half before its successor (or appends to its section); folder
-    /// headers file into the folder; the New Tab row is the saved/open boundary.
+    /// headers file into the folder; the Open header is the saved/open boundary,
+    /// while New Tab is the end of the open section.
     private static func listSlot(
         at location: CGPoint,
         in frames: [SidebarDropFrame]
@@ -448,7 +451,7 @@ enum SidebarDropResolver {
             return lhs.rect.minY < rhs.rect.minY
         }
         guard let first = ordered.first, let last = ordered.last else { return .endOf(.open) }
-        // Below the last row — the empty scroll area appends to Open.
+        // Below the last row - the empty scroll area appends to Open.
         if location.y > last.rect.maxY { return .endOf(.open) }
         let hit =
             ordered.first(where: { location.y >= $0.rect.minY && location.y <= $0.rect.maxY })
@@ -467,13 +470,17 @@ enum SidebarDropResolver {
                 return .before(next)
             }
             return .endOf(section(of: id, state: state))
-        case .newTab(let looseEmpty, let firstOpen):
+        case .pinnedHeader:
+            return .endOf(.looseSaved)
+        case .openHeader(_, let firstOpen):
             if location.y < hit.rect.midY {
-                return looseEmpty ? .endOf(.looseSaved) : nil
+                return .endOf(.looseSaved)
             }
             if let firstOpen {
                 return .before(firstOpen)
             }
+            return .endOf(.open)
+        case .newTab:
             return .endOf(.open)
         case .folder(let folderId):
             return .ontoFolder(folderId)
@@ -484,7 +491,7 @@ enum SidebarDropResolver {
 
     private static func isListAnchor(_ kind: SidebarDropFrameKind) -> Bool {
         switch kind {
-        case .tab, .newTab, .folder: return true
+        case .tab, .pinnedHeader, .openHeader, .newTab, .folder: return true
         case .favorite, .favoriteStrip, .viewport, .root: return false
         }
     }
@@ -551,7 +558,7 @@ extension View {
     }
 }
 
-// ─── Drag visuals (overlay — never in the layout or hit-test tree) ───────────
+// ─── Drag visuals (overlay - never in the layout or hit-test tree) ───────────
 
 /// The insertion indicator's geometry, derived from the slot + reported frames.
 struct DropIndicatorLine: Equatable {
@@ -591,22 +598,26 @@ enum DropIndicator {
         if let last = members.last, let (rect, favorite) = anchorRect(of: last.id, in: frames) {
             return favorite ? verticalLine(atX: rect.maxX + 3, beside: rect) : horizontalLine(atY: rect.maxY + 2, over: rect)
         }
-        // Empty section: anchor on the New Tab row (saved lands above it, open
-        // below). An empty strip highlights its own pin zone — no line.
-        guard
-            let newTab = frames.first(where: {
-                if case .newTab = $0.kind { return true }
-                return false
-            })?.rect
-        else { return nil }
+        // Empty sections use their visible boundary: saved ends above the Open
+        // header, while open ends immediately above New Tab. An empty favorite
+        // strip highlights its own pin zone instead of drawing a line.
         switch section {
-        case .looseSaved: return horizontalLine(atY: newTab.minY - 2, over: newTab)
-        case .open: return horizontalLine(atY: newTab.maxY + 2, over: newTab)
+        case .looseSaved:
+            guard let header = frames.first(where: {
+                if case .openHeader = $0.kind { return true }
+                return false
+            })?.rect else { return nil }
+            return horizontalLine(atY: header.minY - 2, over: header)
+        case .open:
+            guard let newTab = frames.first(where: { $0.kind == .newTab })?.rect else {
+                return nil
+            }
+            return horizontalLine(atY: newTab.minY - 2, over: newTab)
         case .favorite, .folder: return nil
         }
     }
 
-    /// The dropped-anchor's frame — a strip icon (vertical indicator) or a list
+    /// The dropped-anchor's frame - a strip icon (vertical indicator) or a list
     /// row (horizontal indicator).
     private static func anchorRect(
         of id: Int32,
@@ -709,7 +720,7 @@ private struct TabDragGhost: View {
     }
 }
 
-/// Floating ghost for a pinned favorite mid-drag — full 40×40 icon chrome.
+/// Floating ghost for a pinned favorite mid-drag - full 40×40 icon chrome.
 private struct FavoriteDragGhost: View {
     let tab: TabItem
 
@@ -722,7 +733,7 @@ private struct FavoriteDragGhost: View {
 }
 
 /// Ghost icon marking the pinned strip's pin zone while the strip is empty and a
-/// pinnable tab is mid-drag — lit when the drag is aimed at it.
+/// pinnable tab is mid-drag - lit when the drag is aimed at it.
 struct FavoriteDropPlaceholder: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 10)
@@ -769,7 +780,7 @@ struct ScrollViewProbe: NSViewRepresentable {
 
         /// Spans the whole scroll content as a SwiftUI background; a raw NSView
         /// here would win AppKit hit-testing over the hosting view and swallow
-        /// every click and gesture on the tab list. Probe only — never a target.
+        /// every click and gesture on the tab list. Probe only - never a target.
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
         override func viewDidMoveToWindow() {

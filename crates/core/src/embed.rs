@@ -1,18 +1,18 @@
-//! Embedded mode — host CEF inside a native app that owns the window & run loop.
+//! Embedded mode - host CEF inside a native app that owns the window & run loop.
 //!
 //! Where [`crate::run`] creates its own CEF Views window, embedded mode lets a
 //! native UI (the macOS SwiftUI app) own the `NSWindow` and hand CEF a child
 //! `NSView` to render into (the "Option B" hosting model from the architecture
 //! spike). The browser is a *windowed* Alloy (chromeless) browser: CEF inserts
 //! its own GPU-accelerated `NSView` as a subview of the host-provided parent
-//! view, so Chromium's compositor presents directly — no off-screen rendering,
+//! view, so Chromium's compositor presents directly - no off-screen rendering,
 //! no frame copies. The host drives the lifecycle across the FFI boundary:
 //!
-//!   1. [`initialize`] — load CEF, run the subprocess check, init CEF.
-//!   2. [`create_browser`] — create an Alloy browser parented to a
+//!   1. [`initialize`] - load CEF, run the subprocess check, init CEF.
+//!   2. [`create_browser`] - create an Alloy browser parented to a
 //!      host-provided `NSView`.
-//!   3. [`run_message_loop`] — hand the run loop to CEF.
-//!   4. [`shutdown`] — tear down CEF.
+//!   3. [`run_message_loop`] - hand the run loop to CEF.
+//!   4. [`shutdown`] - tear down CEF.
 //!
 //! Helper (renderer/GPU/utility) subprocesses are unchanged: they are the
 //! separate `browser_helper` executable, which routes through [`crate::run`]'s
@@ -101,15 +101,24 @@ wrap_app! {
                 return;
             };
 
-            // Unsigned dev/dogfood builds use the mock keychain — see
+            // Unsigned dev/dogfood builds use the mock keychain - see
             // `app::append_mock_keychain_switch` for the rationale.
             crate::app::append_mock_keychain_switch(command_line);
 
-            // CDP automation surface (P0-4): browser process only (helpers ignore
-            // `--remote-debugging-port`), only when the user opted in, loopback-bound.
+            // CDP and the WebAuthn guard are browser-process only. Helpers
+            // inherit the browser command line; they must not re-decide
+            // WebAuthn from their own helper signature (ADR-0061).
             let is_browser_process = process_type
                 .map(|t| t.to_string().is_empty())
                 .unwrap_or(true);
+            crate::app::append_webauthn_guard_switch(command_line, is_browser_process);
+
+            // No Cast UI yet, so keep Chromium's media router off - see
+            // `app::append_disable_cast_discovery_switch` and ADR-0050.
+            crate::app::append_disable_cast_discovery_switch(command_line);
+
+            // CDP automation surface (P0-4): browser process only (helpers ignore
+            // `--remote-debugging-port`), only when the user opted in, loopback-bound.
             if is_browser_process {
                 for (name, value) in crate::cdp::switches(&crate::cdp::config()) {
                     command_line.append_switch_with_value(
@@ -141,7 +150,7 @@ pub fn initialize() -> bool {
         return false;
     }
 
-    // Read the persisted CDP consent before init — the switch is applied during
+    // Read the persisted CDP consent before init - the switch is applied during
     // `cef_initialize` (in `on_before_command_line_processing`).
     crate::cdp::load_persisted();
 
@@ -173,8 +182,12 @@ pub fn initialize() -> bool {
         std::ptr::null_mut(),
     ) == 1;
 
+    // CEF/Chromium installs its own fatal-signal handlers during initialize.
+    // Reclaim SIGSEGV (etc.) so in-process faults still write a local dump.
+    crate::crash_report::reinstall_after_cef();
+
     // Open the history/favicon store next to the CEF cache. A failure here is
-    // non-fatal — the browser just runs without autocomplete suggestions.
+    // non-fatal - the browser just runs without autocomplete suggestions.
     crate::history::init(&format!("{}/history.sqlite", root_cache_dir()));
 
     // Auto-initialize the vault from its persisted config (if set up before), so
@@ -191,7 +204,7 @@ pub fn initialize() -> bool {
     crate::adblock::cosmetic::register();
 
     // Register cookie-consent (P2-22/P2-25, ADR-0026): detect known CMPs and click
-    // "reject all", plus hide the long-tail banners — gated on its own toggle,
+    // "reject all", plus hide the long-tail banners - gated on its own toggle,
     // whose persisted state loads here before the first browser.
     crate::consent::load_persisted();
     crate::consent::init_lists();
@@ -223,7 +236,7 @@ pub fn initialize() -> bool {
     }
 
     // Create the tab/space model, restoring the persisted session (ADR-0013).
-    // Restored tabs are suspended — the host hydrates each one (creating its
+    // Restored tabs are suspended - the host hydrates each one (creating its
     // CEF browser via `restore_tab`) the first time it is shown. With no saved
     // session the app launches to the empty state.
     tabs::init(&format!("{}/session.json", root_cache_dir()));
@@ -235,13 +248,13 @@ pub fn initialize() -> bool {
 /// Absolute path to the helper-subprocess executable inside the host app bundle.
 ///
 /// With an empty `browser_subprocess_path`, CEF derives the helper location on
-/// macOS from the main bundle name — `Contents/Frameworks/<App> Helper.app`.
-/// The embedded host bundle is `Browser.app`, but the bundled helper (reused
-/// from the standalone layout) is `browser Helper.app`; that case difference
+/// macOS from the main bundle name - `Contents/Frameworks/<App> Helper.app`.
+/// The host bundle is `{name}.app` from `product.toml`, but the bundled helper
+/// (reused from the standalone layout) is `browser Helper.app`; that mismatch
 /// resolves only on case-insensitive volumes, so we pin the path explicitly:
 ///
-///   `Browser.app/Contents/MacOS/Browser`
-///     → `Browser.app/Contents/Frameworks/browser Helper.app/Contents/MacOS/browser Helper`
+///   `{name}.app/Contents/MacOS/{name}`
+///     → `{name}.app/Contents/Frameworks/browser Helper.app/Contents/MacOS/browser Helper`
 ///
 /// The single generic helper serves every subprocess role (the sandbox is off in
 /// dev, so no role-specific entitlement separation is needed yet).
@@ -318,7 +331,7 @@ pub fn set_focused_window(window_id: WindowId) {
 /// browser identifier), or a negative value on failure.
 ///
 /// Unlike [`create_browser`], this uses CEF's **synchronous** creation path, so
-/// the tab id is known before returning — no async create→event correlation to
+/// the tab id is known before returning - no async create→event correlation to
 /// get wrong, and popups / DevTools (which are never registered here) can't be
 /// mistaken for tabs. Safe with launch-to-empty: the first tab is created while
 /// the message loop is already pumping and the window is visible. Main thread
@@ -390,7 +403,7 @@ unsafe fn create_tab_browser(
         None,
         None,
     );
-    // Tab browsers live inside the host's window — suppress CEF's default
+    // Tab browsers live inside the host's window - suppress CEF's default
     // close-the-parent-window for them (ADR-0037).
     if let Some(browser) = &browser {
         crate::client::note_embedded_tab(browser);
@@ -404,11 +417,34 @@ pub fn select_tab(id: TabId) {
     tabs::select_tab(id);
 }
 
+/// Exit HTML5 / browser content fullscreen on the active tab, if any.
+///
+/// Alloy style: call this when the *window* leaves OS fullscreen while content
+/// is still in browser fullscreen (green traffic light, or a host-driven exit).
+/// `will_cause_resize` is true because exiting window fullscreen resizes the
+/// view. Main thread only.
+pub fn exit_fullscreen() {
+    let Some(browser) = main_browser() else {
+        return;
+    };
+    let Some(host) = browser.host() else {
+        return;
+    };
+    if host.is_fullscreen() == 0 {
+        return;
+    }
+    eprintln!(
+        "[fullscreen] host exit_fullscreen tab={}",
+        browser.identifier()
+    );
+    host.exit_fullscreen(1);
+}
+
 /// Give keyboard focus to the active tab's web view, if any.
 ///
 /// Used by the host to deterministically return focus to the page after a
 /// transient chrome overlay (the command bar) closes. Without this, focus-return
-/// depends on AppKit restoring the right first responder — which fails when the
+/// depends on AppKit restoring the right first responder - which fails when the
 /// pre-overlay responder was something else (e.g. a click into the sidebar left
 /// the bare `NSWindow` as responder), silently dropping keystrokes. Mirrors the
 /// tab-switch focus path (`tabs::set_visible`). No-op in the empty state (no
@@ -427,7 +463,7 @@ pub fn focus_active_tab() {
     host.set_focus(1);
 }
 
-/// Fill the active tab's login form from vault login `id` — the button-driven
+/// Fill the active tab's login form from vault login `id` - the button-driven
 /// autofill path (P2-34, ADR-0029). The credential crosses into the page on this
 /// **explicit gesture** (the user picked the entry in the URL-bar popover), so we
 /// fetch it here and evaluate a self-contained, lenient fill into the main frame's
@@ -455,7 +491,7 @@ pub fn vault_fill_active_tab(id: &str) {
     };
     let expr = crate::vault::autofill::fill_expression(detail.username.as_deref(), &password);
     crate::inject::evaluate_main_world(&host, &expr);
-    // The credential is now in the page — that's a use, so it rides to the top of
+    // The credential is now in the page - that's a use, so it rides to the top of
     // this site's list next time (the service applies the private-window rule).
     crate::vault::service::note_used(id);
 }
@@ -486,7 +522,7 @@ pub fn reopen_closed_tab() -> TabId {
     tabs::reopen_closed_tab()
 }
 
-/// Whether there is a closed tab to reopen — backs the menu item's enabled
+/// Whether there is a closed tab to reopen - backs the menu item's enabled
 /// state. Main thread only.
 pub fn can_reopen_closed_tab() -> bool {
     tabs::can_reopen_closed()
@@ -502,15 +538,25 @@ pub fn set_tab_favorite(id: TabId, favorite: bool) {
     tabs::set_favorite(id, favorite);
 }
 
+/// Expand or collapse a Space's Pinned section. Main thread only.
+pub fn set_space_pinned_expanded(id: i32, expanded: bool) {
+    tabs::set_space_pinned_expanded(id, expanded);
+}
+
+/// Replace a saved tab/favorite's pinned URL with its current live URL.
+pub fn replace_tab_pinned_url(id: TabId) {
+    tabs::replace_pinned_url(id);
+}
+
 /// Move tab `id` into folder `folder` (negative ⇒ out of any folder). Moving
 /// into a folder auto-pins the tab.
 pub fn move_tab_to_folder(id: TabId, folder: i32) {
     tabs::move_to_folder(id, (folder >= 0).then_some(folder));
 }
 
-/// Drag-and-drop relocation: move tab `id` into a destination section — the
+/// Drag-and-drop relocation: move tab `id` into a destination section - the
 /// favorite strip (`favorite`), pinned/loose (`pinned`), or a folder (`folder`,
-/// negative ⇒ no folder) — positioned just before tab `before` (negative ⇒ the
+/// negative ⇒ no folder) - positioned just before tab `before` (negative ⇒ the
 /// section's end). A folder destination auto-pins. One structural change; main
 /// thread only.
 pub fn move_tab(id: TabId, favorite: bool, pinned: bool, folder: i32, before: i32) {
@@ -735,7 +781,7 @@ pub fn reload_ignore_cache() {
     }
 }
 
-/// Stop the primary browser's in-flight load — the reload button's cancel state.
+/// Stop the primary browser's in-flight load - the reload button's cancel state.
 /// Main thread only.
 pub fn stop_load() {
     if let Some(browser) = main_browser() {
@@ -763,8 +809,8 @@ pub fn current_url() -> Option<String> {
 
 // ─── Adblock, targeting the active tab (ADR-0020) ────────────────────────────
 //
-// The sidebar shield and the "this site" toggle act on the active tab — the one
-// whose URL the sidebar chip already shows — so these resolve the tab here
+// The sidebar shield and the "this site" toggle act on the active tab - the one
+// whose URL the sidebar chip already shows - so these resolve the tab here
 // rather than translating core tab ids to CEF ids across the FFI. Main thread.
 
 /// The active tab's host, for per-site allowlist matching (registrable-domain
@@ -773,7 +819,7 @@ fn active_host() -> Option<String> {
     crate::vault::lookup::host_from_uri(&current_url()?)
 }
 
-/// Requests blocked on the active tab since its last navigation — the shield count.
+/// Requests blocked on the active tab since its last navigation - the shield count.
 pub fn adblock_active_blocked_count() -> u64 {
     main_browser().map_or(0, |browser| {
         crate::adblock::blocked_count(browser.identifier())
@@ -807,7 +853,7 @@ pub fn consent_set_enabled(enabled: bool) {
     reload();
 }
 
-/// Consent banners auto-rejected on the active tab since its last navigation —
+/// Consent banners auto-rejected on the active tab since its last navigation -
 /// the shield popover's transparency line (ADR-0026).
 pub fn consent_active_rejected_count() -> u64 {
     main_browser().map_or(0, |browser| {
@@ -838,7 +884,7 @@ fn zoom(command: ZoomCommand) {
 /// Toggle DevTools for the active tab: open it in its own window, or close it if
 /// already open. Backs the ⌘⌥I menu item; F12 is handled engine-side in the
 /// keyboard handler. Both funnel through [`crate::client::toggle_dev_tools`] so
-/// the shortcuts behave identically. DevTools opens as a separate window — inline
+/// the shortcuts behave identically. DevTools opens as a separate window - inline
 /// docking isn't feasible under CEF 149's Chrome bootstrap (ADR-0021). Main thread only.
 pub fn toggle_dev_tools() {
     if let Some(browser) = main_browser() {
@@ -871,11 +917,11 @@ pub fn stop_finding(clear_selection: bool) {
 
 /// Route a host window close through CEF's browser-close flow.
 ///
-/// Returns `true` if a close was initiated — the host must veto its window
+/// Returns `true` if a close was initiated - the host must veto its window
 /// close and wait: CEF re-requests the window close once the browser allows
 /// it, and `BrowserHandler::on_before_close` quits the message loop when the
 /// last browser is gone. Returns `false` if closing is already underway (or
-/// there are no browsers) — the host should let the window close.
+/// there are no browsers) - the host should let the window close.
 ///
 /// On that final close the host must also release the `NSView` it handed to
 /// [`create_browser`]: CEF completes browser destruction (and thus

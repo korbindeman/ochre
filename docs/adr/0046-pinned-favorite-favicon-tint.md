@@ -1,38 +1,38 @@
 # ADR-0046: Pinned favorites get a persistent chip tinted from the favicon's dominant color
 
-- **Status:** Accepted
+- **Status:** Accepted - active-ring treatment superseded by [ADR-0053](0053-pinned-favorite-local-selection-indicator.md); rest-state tinted chip refined by [ADR-0059](0059-pinned-favorite-glass-means-selected.md) (presence is a neutral fill; site tint lives on the selected glass)
 - **Date:** 2026-07-13
 
 ## Context
 
 The pinned-favorites strip (ADR-0032/0038) renders each favorite as a favicon in a
-spacious slot below the URL bar. At **rest** — not hovering, not active — the tile
+spacious slot below the URL bar. At **rest** - not hovering, not active - the tile
 painted *nothing*: the background chip was `.quaternary` at `opacity 0`, lit only on
 hover or when active. So a 16px favicon floated in a ~34×40px slot with no container,
 and monochrome/light favicons (e.g. a black app-icon glyph) dissolved into the
-sidebar. The strip read as weak and "invisible" at rest — the state you see 95% of
+sidebar. The strip read as weak and "invisible" at rest - the state you see 95% of
 the time.
 
 The fix has to give every tile a body at rest *and* add per-site identity, while
 surviving the two cases that break naive color-matching: **multi-color** favicons
 (Google's four-color G averages to gray) and **monochrome** ones (a black glyph has
-no hue — a dominant-color tint would just be a muddy gray, no better than nothing).
+no hue - a dominant-color tint would just be a muddy gray, no better than nothing).
 
 ## Decision
 
 Every pinned tile gets a **persistent presence ladder**: a neutral floor always on,
 a favicon-tinted wash where a real hue exists, and a matched ring on the active tile.
 
-- **Neutral floor** — `.primary` at low opacity behind every tile, always visible;
+- **Neutral floor** - `.primary` at low opacity behind every tile, always visible;
   stronger when active, stronger still for monochrome tiles that have no wash to lean
   on. This alone fixes the "invisible" problem, unconditionally.
-- **Favicon wash** — the favicon's dominant hue at low opacity, layered over the
+- **Favicon wash** - the favicon's dominant hue at low opacity, layered over the
   floor. Extracted in Swift (`FaviconLoader.dominantColor`) from the *same cached
   favicon image*, saturation-gated: pixels are binned into hue buckets weighted by
   saturation, transparent/near-black/near-white/low-saturation pixels are dropped,
   and a favicon that's <15% colored resolves to `nil` → neutral fallback. Dark
   sidebars use a heavier wash to read at the same presence.
-- **Active ring** — a stroked border tinted to the hue (neutral for monochrome),
+- **Active ring** - a stroked border tinted to the hue (neutral for monochrome),
   carrying `matchedGeometryEffect(SidebarSelection.pill)` so it slides between tiles
   as before. The favicon glyph itself is bumped 16→18px to fill the slot better.
 
@@ -50,10 +50,10 @@ Extraction lives in the Swift view layer (macOS-only, MVP1), not the Rust core.
   gray mud. The saturation-weighted hue histogram picks the most vivid *family*
   instead, and its <15%-colored gate is what distinguishes "monochrome" from "vivid".
 - **Extract the dominant color in the Rust core** (it already holds the favicon PNG
-  bytes in `client/favicon.rs`, could expose packed RGB over FFI — the
+  bytes in `client/favicon.rs`, could expose packed RGB over FFI - the
   frontend-agnostic path per CLAUDE.md). Deferred, not rejected: MVP1 is macOS-only,
   the Swift path is cheap (reuses the decoded `NSImage`) and fully reversible.
-  **Promote to core when a second frontend (Windows) needs the same tint** — the
+  **Promote to core when a second frontend (Windows) needs the same tint** - the
   extraction is pure and portable.
 
 ## Consequences

@@ -1,13 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// Arc-style pinned tabs: spacious favicon icons below the URL bar, always
-/// resident in memory (ADR-0032). Icons are permanent (ADR-0038) — clicking
-/// focuses, ⌘W just deselects; only Unpin/Delete remove one.
+/// Arc-style Favorites: spacious favicon icons below the URL bar, always
+/// resident in memory (ADR-0032). Icons are permanent (ADR-0038) - clicking
+/// focuses, ⌘W returns home and deselects; explicit management removes one.
 struct PinnedTabStrip: View {
     @ObservedObject private var state = BrowserState.shared
     @ObservedObject var drag: TabDragModel
-    @Namespace private var selection
 
     private let rowHeight: CGFloat = 40
     private let spacing: CGFloat = 6
@@ -59,7 +58,6 @@ struct PinnedTabStrip: View {
         PinnedTabButton(
             tab: tab,
             isActive: isActive,
-            selection: selection,
             onSelect: { state.handleTabClick(tab.id) }
         )
         .contextMenu { PinnedTabMenu(tab: tab, isActive: isActive) }
@@ -68,7 +66,7 @@ struct PinnedTabStrip: View {
     }
 
     /// Pin-zone affordance when the strip is empty but a pinnable tab is
-    /// mid-drag — lit while the drag is aimed at it. Purely visual; the reported
+    /// mid-drag - lit while the drag is aimed at it. Purely visual; the reported
     /// strip frame is what the resolver targets.
     @ViewBuilder
     private var emptyPinDropZone: some View {
@@ -93,13 +91,13 @@ struct PinnedTabStrip: View {
 }
 
 extension View {
-    /// Equal share of the row — 1 tab fills the strip, 2 ⇒ 50%, 3 ⇒ 33%, etc.
+    /// Equal share of the row - 1 tab fills the strip, 2 ⇒ 50%, 3 ⇒ 33%, etc.
     fileprivate func slotFrame(height: CGFloat) -> some View {
         frame(maxWidth: .infinity).frame(height: height)
     }
 }
 
-/// Per-row layout for the pinned strip — driven by tab count, not sidebar width.
+/// Per-row layout for the pinned strip - driven by tab count, not sidebar width.
 private struct PinnedGridLayout {
     /// Slot count per row, e.g. five tabs ⇒ `[2, 3]`.
     let slotsPerRow: [Int]
@@ -132,17 +130,19 @@ private struct PinnedGridLayout {
     }
 }
 
-/// One pinned-tab icon — favicon-centered, active pill. The icon is permanent
-/// (ADR-0038): click to focus, ⌘W to deselect; unpin/delete via the context menu.
+/// One pinned-tab icon - favicon-centered. Glass is the selected state
+/// (ADR-0059), matching the tab list; idle tiles are a quiet fill. The icon is
+/// permanent (ADR-0038/0056): click to focus, ⌘W to reset and deselect;
+/// unpin/delete via the context menu.
 private struct PinnedTabButton: View {
     let tab: TabItem
     let isActive: Bool
-    let selection: Namespace.ID
     let onSelect: () -> Void
 
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovering = false
-    /// Dominant favicon hue, `nil` for monochrome icons (then the neutral floor
+    /// Dominant favicon hue, `nil` for monochrome icons (then the untinted glass
     /// carries presence on its own). Resolved from the same cached favicon image.
     @State private var tint: Color?
 
@@ -155,61 +155,58 @@ private struct PinnedTabButton: View {
             .onTapGesture(perform: onSelect)
             .onHover { hovering = $0 }
             .help(tab.displayTitle)
+            .accessibilityAddTraits(isActive ? .isSelected : [])
             .task(id: "\(tab.host)#\(tab.faviconVersion)") {
                 let ns = tab.host.isEmpty ? nil : await FaviconLoader.shared.dominantColor(for: tab.host)
                 tint = ns.map(Color.init(nsColor:))
             }
     }
 
-    /// Rest → hover → active as a presence ladder: a persistent neutral floor gives
-    /// every tile a body even at rest (fixing the "invisible favicon" problem), a
-    /// favicon-tinted wash layers identity where the icon has a real hue, and the
-    /// active tile gains a matched ring that slides between tiles.
-    @ViewBuilder private var chip: some View {
+    /// Idle: quaternary floor that deepens on hover. Active: Liquid Glass with
+    /// the site-color tint, so selection is the material rather than a drawing
+    /// on it. Glass is not mounted while idle (a zero-opacity glass still lenses).
+    private var chip: some View {
         let dark = scheme == .dark
-        RoundedRectangle(cornerRadius: 10)
-            .fill(.primary.opacity(floorOpacity))
-            .hoverFade(hovering)
-        if let tint {
+        return ZStack {
             RoundedRectangle(cornerRadius: 10)
-                .fill(tint.opacity(washOpacity(dark: dark)))
+                .fill(.quaternary)
+                .opacity(isActive ? 0 : (hovering ? 0.85 : 0.5))
                 .hoverFade(hovering)
-        }
-        if isActive {
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder((tint ?? .primary).opacity(tint == nil ? 0.25 : 0.55), lineWidth: 1.5)
-                .matchedGeometryEffect(id: SidebarSelection.pill, in: selection)
-        }
-    }
 
-    /// Neutral floor: always present; a touch stronger when active, and stronger
-    /// still for monochrome tiles (no wash to lean on).
-    private var floorOpacity: Double {
-        if isActive { return tint == nil ? 0.16 : 0.10 }
-        return hovering ? 0.10 : 0.06
-    }
-
-    /// Favicon wash: dark sidebars need more of it to read at the same presence.
-    private func washOpacity(dark: Bool) -> Double {
-        if isActive { return dark ? 0.42 : 0.28 }
-        let base = dark ? 0.30 : 0.16
-        return hovering ? base + 0.06 : base
+            if isActive {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(.clear)
+                    .glassEffect(
+                        .regular
+                            .tint(tint?.opacity(dark ? 0.30 : 0.16))
+                            .interactive(),
+                        in: .rect(cornerRadius: 10)
+                    )
+            }
+        }
+        .animation(
+            reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.9),
+            value: isActive
+        )
     }
 }
 
-/// Context menu for a pinned-tab icon.
+/// Context menu for a Favorite icon.
 private struct PinnedTabMenu: View {
     let tab: TabItem
     let isActive: Bool
     private var app: AppDelegate? { NSApp.delegate as? AppDelegate }
 
     var body: some View {
-        Button("Unpin Tab") { app?.setTabFavorite(tab.id, false) }
+        if tab.hasTemporaryPinnedNavigation {
+            Button("Replace Pinned URL with Current") { app?.replacePinnedURL(tab.id) }
+            Divider()
+        }
+        Button("Remove from Favorites") { app?.setTabFavorite(tab.id, false) }
         Divider()
         if isActive {
-            Button("Close Pinned Tab") { app?.closeTab(tab.id) }
+            Button("Close Tab") { app?.closeTab(tab.id) }
         }
-        Button("Delete Pinned Tab") { app?.deleteTab(tab.id) }
+        Button("Delete Favorite") { app?.deleteTab(tab.id) }
     }
 }
-
