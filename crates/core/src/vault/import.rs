@@ -4,13 +4,13 @@
 //! the user key and bulk-create them via `POST {api}/ciphers/import`. Two formats
 //! to start (file-based; direct browser extraction is P2-18):
 //!
-//! - **Generic CSV** — header-driven, so it accepts Chrome/Edge, Firefox, Safari,
+//! - **Generic CSV** - header-driven, so it accepts Chrome/Edge, Firefox, Safari,
 //!   and Bitwarden CSV exports by recognizing their column names.
-//! - **Bitwarden JSON** — an unencrypted `.json` export.
+//! - **Bitwarden JSON** - an unencrypted `.json` export.
 //!
 //! Parsing + request-building are pure (unit-tested with fixtures + a mock
 //! transport); only [`VaultClient::import`] touches the network. **Folders are
-//! not preserved yet** — every item imports to the root (filed as a follow-up,
+//! not preserved yet** - every item imports to the root (filed as a follow-up,
 //! not silent); the value here is getting the credentials in.
 
 use crate::vault::auth::{Session, VaultClient};
@@ -54,7 +54,7 @@ impl std::error::Error for ImportError {}
 
 // --- Merge (de-duplication against the existing vault) ----------------------
 
-/// The records from `records` that are **not** already in `existing` — the merge
+/// The records from `records` that are **not** already in `existing` - the merge
 /// filter. A record duplicates a login when they share a username **and** a URI
 /// host (or, when the record has no URI, the same name). Add-only: it never
 /// overwrites an existing login, so re-importing the same file is idempotent and
@@ -90,7 +90,7 @@ pub fn filter_new(existing: &[Login], records: &[ImportRecord]) -> Vec<ImportRec
         .collect()
 }
 
-/// Normalized `(host-or-name, username)` identity keys — one per URI host, or a
+/// Normalized `(host-or-name, username)` identity keys - one per URI host, or a
 /// single name-based key when there is no URI. Lower-cased so matching ignores case.
 fn identity_keys(name: &str, username: Option<&str>, hosts: &[String]) -> Vec<(String, String)> {
     let user = username.unwrap_or("").trim().to_lowercase();
@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn parse_csv_preserves_specials_via_quoting() {
-        // A password containing a comma, a quote, and a newline — the exact case a
+        // A password containing a comma, a quote, and a newline - the exact case a
         // naive split would corrupt.
         let csv = "url,username,password\nhttps://x.com,bob,\"p,a\"\"ss\nword\"\n";
         let records = parse_csv(csv).unwrap();

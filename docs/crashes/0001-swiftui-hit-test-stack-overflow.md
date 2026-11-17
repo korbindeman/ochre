@@ -19,8 +19,8 @@ hit-testing on invisible drag-indicator overlays.
 
 ## Symptoms
 
-- Browser quits instantly with no dialog — typical of SIGSEGV.
-- Repro: interact with the sidebar after pinned tabs + tab drag/reorder work landed — pointer
+- Browser quits instantly with no dialog - typical of SIGSEGV.
+- Repro: interact with the sidebar after pinned tabs + tab drag/reorder work landed - pointer
   moves over the tab list or pinned strip while SwiftUI evaluates hit targets.
 - Observed around command-bar open/close in adjacent sessions; fault itself is in the main
   window sidebar, not the command-bar panel.
@@ -31,7 +31,7 @@ hit-testing on invisible drag-indicator overlays.
 |--------|----------------|
 | macOS report | `~/Library/Logs/DiagnosticReports/Browser-2026-07-08-034115.ips` |
 | Diagnostics log | `~/Library/Application Support/Browser Dev/diagnostics.log` (next launch) |
-| Local payload | **none** — stack overflow left no room for `crash_report.rs` to write JSON |
+| Local payload | **none** - stack overflow left no room for `crash_report.rs` to write JSON |
 
 ### Key stack / backtrace
 
@@ -77,21 +77,21 @@ SwiftUI walked the overlay and the gesture tree together; `MultiViewResponder` /
 A duplicate sidebar background `onTapGesture` and zero-opacity insertion overlays still
 participating in hit-testing made the tree worse.
 
-Window-background drag suppression did **not** need a SwiftUI overlay — `RootView` already
+Window-background drag suppression did **not** need a SwiftUI overlay - `RootView` already
 had `installSidebarTabDragWindowGuard` (AppKit `NSEvent` local monitor on `mouseDown` in
 the tab region).
 
 ## Fix
 
 - **Deleted** `apps/macos/Sources/WindowDragPassthrough.swift` and all `blocksWindowDragPassthrough()` calls.
-- **`RootView.swift`** — tab-region hit test now includes the pinned-strip top edge (`y <= top`).
-- **`TabRow.swift`**, **`PinnedTabStrip.swift`**, **`Spaces.swift`** — `.contentShape(.rect)` instead of `.rect(cornerRadius:)` for hit targets (visuals unchanged; axis-aligned hit box).
-- **`TabDrag.swift`**, **`PinnedTabStrip.swift`**, **`Spaces.swift`** — `.allowsHitTesting(false)` on insertion-indicator overlays when hidden.
-- **`Sidebar.swift`** — removed redundant outer `.background { onTapGesture }` (scroll content keeps dismiss-on-empty-tap).
+- **`RootView.swift`** - tab-region hit test now includes the pinned-strip top edge (`y <= top`).
+- **`TabRow.swift`**, **`PinnedTabStrip.swift`**, **`Spaces.swift`** - `.contentShape(.rect)` instead of `.rect(cornerRadius:)` for hit targets (visuals unchanged; axis-aligned hit box).
+- **`TabDrag.swift`**, **`PinnedTabStrip.swift`**, **`Spaces.swift`** - `.allowsHitTesting(false)` on insertion-indicator overlays when hidden.
+- **`Sidebar.swift`** - removed redundant outer `.background { onTapGesture }` (scroll content keeps dismiss-on-empty-tap).
 
 ## Prevention
 
-Documented in `CLAUDE.md` gotcha **SwiftUI hit-testing — no full-size overlays on gesture trees**:
+Documented in `CLAUDE.md` gotcha **SwiftUI hit-testing - no full-size overlays on gesture trees**:
 
 - Never stack full-bleed SwiftUI overlays (`NSViewRepresentable` or otherwise) on `ScrollView` /
   tab lists that already carry `contentShape` + gestures + drag/drop.
@@ -111,4 +111,4 @@ Documented in `CLAUDE.md` gotcha **SwiftUI hit-testing — no full-size overlays
 - Code: `apps/macos/Sources/RootView.swift` (`installSidebarTabDragWindowGuard`)
 - Code: `apps/macos/Sources/Sidebar.swift`, `PinnedTabStrip.swift`, `TabDrag.swift`
 - Local dumps: `crates/core/src/crash_report.rs`, `just crash-latest`
-- ADR-0015 (tab drag reorder — commit-on-drop, implicit order)
+- ADR-0015 (tab drag reorder - commit-on-drop, implicit order)

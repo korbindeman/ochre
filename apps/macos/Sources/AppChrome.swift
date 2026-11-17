@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 /// Dismiss transient native chrome so a click into the web viewport returns
-/// focus to the page — URL-bar editing, tab multi-select, and similar.
+/// focus to the page - URL-bar editing, tab multi-select, and similar.
 @MainActor
 enum TransientChrome {
     static func dismiss(focusPage: Bool = true) {
@@ -27,7 +27,7 @@ final class PassthroughHostingView: NSHostingView<AnyView> {
 }
 
 /// The in-page address bar overlay. CEF draws behind the strip with
-/// `clipsToBounds` off, so transparent margins must pass clicks through — but
+/// `clipsToBounds` off, so transparent margins must pass clicks through - but
 /// SwiftUI often resolves the pill and its flanking controls to the hosting view
 /// itself (no AppKit child), which `PassthroughHostingView` would treat as empty
 /// chrome. Claim hits inside the centered control cluster so taps reach SwiftUI.

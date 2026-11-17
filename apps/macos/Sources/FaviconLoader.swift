@@ -1,12 +1,12 @@
 import AppKit
 
 /// Resolves a host's favicon, trying sources in order:
-///   1. **Captured** — PNG/ICO bytes the engine fetched from the page's declared
+///   1. **Captured** - PNG/ICO bytes the engine fetched from the page's declared
 ///      icon URLs (via CEF's `on_favicon_urlchange` + direct HTTP fetch).
-///   2. **Web fallback** (optional) — `https://<host>/favicon.ico`, then
+///   2. **Web fallback** (optional) - `https://<host>/favicon.ico`, then
 ///      DuckDuckGo's transparent proxy. Offline surfaces only (history, vault,
 ///      autocomplete).
-///   3. **None** — globe glyph.
+///   3. **None** - globe glyph.
 ///
 /// Tab rows prefer captured icons; web fallback covers sites the engine has not
 /// cached yet (or SVG-only hosts where capture is still in flight).
@@ -28,7 +28,7 @@ final class FaviconLoader: ObservableObject {
     }
 
     /// The favicon's dominant hue, or `nil` when it's essentially monochrome
-    /// (black glyph, gray mark, mostly-white) — the caller falls back to a neutral
+    /// (black glyph, gray mark, mostly-white) - the caller falls back to a neutral
     /// chip. Extraction is saturation-gated so multi-color marks don't average to
     /// mud and near-neutral marks don't yield a muddy gray tint.
     func dominantColor(for host: String) async -> NSColor? {

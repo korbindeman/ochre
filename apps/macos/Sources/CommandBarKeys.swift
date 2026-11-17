@@ -4,7 +4,7 @@ extension CommandBarController {
     /// Route arrow/return/escape to the suggestion list with an AppKit key
     /// monitor. A monitor intercepts arrow keys before the focused `TextField`
     /// reliably (unlike SwiftUI `onKeyPress`, which the field can swallow first);
-    /// everything else — typing, editing keys — passes straight through.
+    /// everything else - typing, editing keys - passes straight through.
     func installKeyMonitor() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }

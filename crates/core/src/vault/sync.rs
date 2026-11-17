@@ -2,18 +2,18 @@
 //!
 //! `GET {api}/sync` returns the whole vault with every field still an
 //! [`EncString`]; this module decrypts the **login** ciphers into a plain
-//! [`Login`] model the rest of the browser can use — `vault_lookup` (P2-11),
+//! [`Login`] model the rest of the browser can use - `vault_lookup` (P2-11),
 //! autofill (P2-15), the UI (P2-13).
 //!
 //! ## Which key decrypts a cipher
 //!
 //! Not always the user key. Modern Bitwarden clients use **cipher key
-//! encryption**: a cipher may carry its own `key` — a fresh symmetric key,
-//! itself an [`EncString`] wrapped by the user key — and *that* key, not the
+//! encryption**: a cipher may carry its own `key` - a fresh symmetric key,
+//! itself an [`EncString`] wrapped by the user key - and *that* key, not the
 //! user key, encrypts the cipher's fields. So per cipher we unwrap `key` (if
 //! present) and decrypt the fields with it, else fall back to the user key.
 //! Folder names are always under the user key. Without this, any cipher saved by
-//! a recent client fails MAC verification — the whole reason a live sync would
+//! a recent client fails MAC verification - the whole reason a live sync would
 //! error with `crypto error: MAC verification failed`.
 //!
 //! **Organization** ciphers are encrypted under the org's key (RSA-wrapped in
@@ -30,7 +30,7 @@ use crate::vault::http::{HttpRequest, HttpTransport};
 use serde::Deserialize;
 use std::collections::HashMap;
 
-/// A decrypted vault — the login items, ready to use.
+/// A decrypted vault - the login items, ready to use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Vault {
     pub logins: Vec<Login>,
@@ -91,7 +91,7 @@ impl UriMatch {
 pub enum SyncError {
     /// Network / TLS / connection failure.
     Transport(String),
-    /// The access token was rejected (expired — refresh and retry).
+    /// The access token was rejected (expired - refresh and retry).
     Unauthorized,
     /// An HTTP error the flow doesn't model specifically.
     Server { status: u16, message: String },
@@ -118,7 +118,7 @@ impl std::error::Error for SyncError {}
 impl<T: HttpTransport> VaultClient<T> {
     /// Fetch the raw (still-encrypted) `/sync` body for an unlocked session. The
     /// caller decrypts it with [`parse_sync`]; the manager also caches this blob
-    /// verbatim (it is encrypted at rest — every field is an `EncString`).
+    /// verbatim (it is encrypted at rest - every field is an `EncString`).
     pub fn sync_raw(&self, session: &Session) -> Result<Vec<u8>, SyncError> {
         let mut headers = vec![
             (
@@ -188,7 +188,7 @@ struct RawCipher {
     #[serde(rename = "folderId", alias = "FolderId", default)]
     folder_id: Option<String>,
     /// Per-cipher key (cipher key encryption), an `EncString` wrapped by the user
-    /// key. When present, it — not the user key — decrypts this cipher's fields.
+    /// key. When present, it - not the user key - decrypts this cipher's fields.
     #[serde(rename = "key", alias = "Key", default)]
     key: Option<String>,
     /// Set when the cipher belongs to an organization (org-key path, not the user
@@ -238,7 +238,7 @@ pub fn parse_sync(body: &[u8], key: &SymmetricKey) -> Result<Vault, SyncError> {
         if cipher.ty != CIPHER_TYPE_LOGIN {
             continue;
         }
-        // Org ciphers ride the organization key (not the user key) — unsupported
+        // Org ciphers ride the organization key (not the user key) - unsupported
         // for now (P2-27). Skip rather than fail the whole sync on one of them.
         if cipher.organization_id.is_some() {
             continue;
@@ -449,7 +449,7 @@ mod tests {
         let body = format!(
             r#"{{"ciphers":[{{"id":"c1","type":1,"key":"{wrapped}","name":"{name}","login":{{"username":"{user_f}","password":"{pass}"}}}}]}}"#
         );
-        // Given only the user key, decryption still succeeds — the cipher key is
+        // Given only the user key, decryption still succeeds - the cipher key is
         // unwrapped from `key` first. This is the path a live modern vault needs.
         let vault = parse_sync(body.as_bytes(), &user).unwrap();
         assert_eq!(vault.logins.len(), 1);
@@ -462,7 +462,7 @@ mod tests {
     #[test]
     fn parse_sync_skips_organization_ciphers() {
         let user = key();
-        // A cipher under an org key — a different key the user key can't unwrap.
+        // A cipher under an org key - a different key the user key can't unwrap.
         let mut other = [0u8; 64];
         other.fill(0x22);
         let org_key = SymmetricKey::from_bytes(&other).unwrap();

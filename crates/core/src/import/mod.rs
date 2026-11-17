@@ -1,4 +1,4 @@
-//! Browser data import — parse foreign browser stores and merge into the tab model.
+//! Browser data import - parse foreign browser stores and merge into the tab model.
 //!
 //! Today: Arc for macOS via `StorableSidebar.json` (spaces, folders, pinned tabs,
 //! favorites). The parser is frontend-agnostic; native hosts only supply a path and

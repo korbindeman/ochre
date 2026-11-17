@@ -1,9 +1,9 @@
-//! Appearance — forward the light/dark color scheme to web content, with a
+//! Appearance - forward the light/dark color scheme to web content, with a
 //! Light / Dark / System preference (ADR-0030).
 //!
 //! CEF's ALLOY runtime does not propagate the OS appearance to web content, so
 //! `prefers-color-scheme` is stuck at `light` regardless of the Mac's setting.
-//! We drive it explicitly through the **global request context** — every browser
+//! We drive it explicitly through the **global request context** - every browser
 //! is created with no request context of its own ([`crate::embed::create_browser`]
 //! passes `None`), so they all share the global one, and a single
 //! `set_chrome_color_scheme` call themes every tab, live.
@@ -11,8 +11,8 @@
 //! The core owns the *preference* (persisted) and resolves it to a concrete
 //! light/dark scheme. It does **not** detect the OS appearance itself: the host
 //! forwards it via [`set_system_dark`] (on launch and on every OS theme change),
-//! because that detection is platform-specific and the ALLOY runtime — the very
-//! place the propagation is broken — can't be trusted to track the OS for us
+//! because that detection is platform-specific and the ALLOY runtime - the very
+//! place the propagation is broken - can't be trusted to track the OS for us
 //! (ADR-0030). In `System` mode the resolved scheme follows the last forwarded
 //! value; in `Light`/`Dark` it is fixed and the OS value is ignored.
 
@@ -59,7 +59,7 @@ struct ThemeState {
 
 impl Default for ThemeState {
     fn default() -> Self {
-        // Track the OS out of the box — the fix's whole point.
+        // Track the OS out of the box - the fix's whole point.
         Self {
             preference: ThemePreference::System,
         }
@@ -85,7 +85,7 @@ pub fn set_preference(preference: ThemePreference) {
     {
         let mut state = STATE.lock().unwrap_or_else(|p| p.into_inner());
         if state.preference == preference {
-            // No change — still re-apply (harmless) so a redundant menu click
+            // No change - still re-apply (harmless) so a redundant menu click
             // is idempotent, but skip the disk write.
             apply();
             return;
@@ -106,7 +106,7 @@ pub fn set_system_dark(is_dark: bool) {
 
 /// Load the persisted preference into the global. Absent/corrupt ⇒ default
 /// (System). Call once at startup, after `cef_initialize`, before the first
-/// browser. Does not apply — the host drives the first apply via
+/// browser. Does not apply - the host drives the first apply via
 /// [`set_system_dark`] once it knows the OS appearance.
 pub fn load_persisted() {
     if let Some(state) = load_from(&state_path()) {
@@ -125,7 +125,7 @@ fn resolved_dark() -> bool {
 }
 
 /// Push the resolved scheme onto the global request context. All browsers share
-/// it, so this themes every tab live (no reload). Main thread / UI thread only —
+/// it, so this themes every tab live (no reload). Main thread / UI thread only -
 /// request-context operations must run there.
 fn apply() {
     let variant = if resolved_dark() {

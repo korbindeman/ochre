@@ -1,14 +1,14 @@
 import AppKit
 import SwiftUI
 
-/// The ⌘F find-in-page bar — a small glass panel pinned to the top-right of the
+/// The ⌘F find-in-page bar - a small glass panel pinned to the top-right of the
 /// window, over the web content.
 ///
 /// Like the command bar (`CommandBarController`) it lives in its own borderless
 /// `KeyablePanel` child window rather than a SwiftUI overlay: a separate window
 /// composites above CEF's GPU-rendered view and can take key focus for its text
 /// field without fighting the web view for first responder. Unlike the command
-/// bar it is *not* transient — it stays up (Safari/Chrome behaviour) until
+/// bar it is *not* transient - it stays up (Safari/Chrome behaviour) until
 /// Escape or the close button, so clicking into the page keeps it open.
 ///
 /// Search runs through the core's find plumbing (`browser_find` /
@@ -207,7 +207,7 @@ final class FindBarController {
     }
 }
 
-/// Observable state for the find bar — just the "n of m" match text.
+/// Observable state for the find bar - just the "n of m" match text.
 @MainActor
 final class FindBarModel: ObservableObject {
     @Published var matchText: String = ""

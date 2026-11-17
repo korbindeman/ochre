@@ -1,4 +1,4 @@
-//! Runtime tab suspension policy — when to discard a background tab's CEF browser.
+//! Runtime tab suspension policy - when to discard a background tab's CEF browser.
 //!
 //! ADR-0013's lazy hydration handles *restore-at-launch*; this module handles
 //! *discard-while-running*: free renderer memory for tabs the user is not on,

@@ -10,7 +10,7 @@ enum CEFSidebarLayout {
 
 /// The `NSView` handed to CEF for a single tab. CEF inserts its GPU-hosted web
 /// content as a subview; keep it filling the container on resize. Creation is
-/// driven explicitly by `RootView.openNewTab` (via `browser_tab_create`) — the
+/// driven explicitly by `RootView.openNewTab` (via `browser_tab_create`) - the
 /// container never creates a browser on its own.
 ///
 /// When the viewport URL bar is on, the container is shorter than the CEF browser
@@ -37,7 +37,7 @@ final class CEFContainerView: NSView {
         applySubviewFrames(browserSize: nil)
     }
 
-    /// Resize CEF subviews — called from the sidebar transition sync loop so
+    /// Resize CEF subviews - called from the sidebar transition sync loop so
     /// Chromium tracks the animated content bounds without a settle jerk.
     /// `size` is the full browser size (including the scroll-behind region).
     func applyCEFSize(_ size: NSSize) {

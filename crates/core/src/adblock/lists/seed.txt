@@ -8,7 +8,7 @@
 ! unambiguous ad-serving and analytics/tracking hosts in EasyList network-rule
 ! syntax (`||host^`). The full lists (fetched at runtime) supersede this.
 !
-! Not user-editable. Keep additions high-confidence — a false positive here
+! Not user-editable. Keep additions high-confidence - a false positive here
 ! ships in the binary and breaks a site until the full list is fetched.
 
 ! ── Google ad / analytics / tag infrastructure ──

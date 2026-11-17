@@ -8,7 +8,7 @@
 //!
 //! **Threading.** [`check`] runs on the CEF **IO thread** (the resource-request
 //! handler, [`crate::client`]), and [`lists`] swaps a freshly-fetched engine in
-//! from a background thread — so the engine lives behind `RwLock<Arc<Engine>>`
+//! from a background thread - so the engine lives behind `RwLock<Arc<Engine>>`
 //! (`Engine: Send + Sync`, which is why the crate's `single-thread` feature is
 //! off) and the counters are behind a `Mutex`. `check` clones the `Arc` and
 //! releases the read lock before matching, so a hot-swap never waits on a match.
@@ -32,7 +32,7 @@ static STATE: Mutex<AdblockState> = Mutex::new(AdblockState::new());
 /// navigation, keyed by CEF browser identifier. Feeds the sidebar shield.
 static COUNTS: OnceLock<Mutex<HashMap<i32, u64>>> = OnceLock::new();
 
-/// Persisted `adblock.json` — the global switch and the allowlist of
+/// Persisted `adblock.json` - the global switch and the allowlist of
 /// registrable domains the user has turned blocking **off** for.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct AdblockState {
@@ -70,7 +70,7 @@ impl AdblockState {
     }
 }
 
-/// The registrable domain (eTLD+1) the allowlist keys on — lowercased so "turn
+/// The registrable domain (eTLD+1) the allowlist keys on - lowercased so "turn
 /// off for this site" covers every subdomain. Falls back to the raw host when
 /// there's no registrable domain (IP literals, single-label intranet hosts).
 fn allowlist_key(host: &str) -> String {
@@ -118,7 +118,7 @@ pub fn init_demo(extra_rules: &str) {
     eprintln!("[adblock] demo engine installed (seed + test rules, no refresh)");
 }
 
-/// Build an engine from filter-list text and install it — setting it on first
+/// Build an engine from filter-list text and install it - setting it on first
 /// call (startup) or hot-swapping it (a background list refresh) thereafter.
 fn install_engine(rules: &str) {
     let engine = Arc::new(engine::build(rules));
@@ -137,7 +137,7 @@ fn install_engine(rules: &str) {
 ///
 /// `first_party_host` is the top-level page's host (what "turn off for this
 /// site" allowlists); `request_type` is the lowercase adblock resource kind
-/// (`"script"`, `"image"`, `"sub_frame"`, …) — the CEF mapping lives in the
+/// (`"script"`, `"image"`, `"sub_frame"`, …) - the CEF mapping lives in the
 /// resource-request handler. Runs on the CEF IO thread.
 pub fn check(
     url: &str,
@@ -171,7 +171,7 @@ pub fn check(
 /// The cosmetic-filter stylesheet for page `url`, or `None` when blocking is off,
 /// the site is allowlisted, or there are no rules. The document-start injection
 /// substrate ([`crate::adblock::cosmetic`]) injects the returned CSS as a
-/// `<style>` — element-hiding without a flash (ADR-0020, P2-21).
+/// `<style>` - element-hiding without a flash (ADR-0020, P2-21).
 ///
 /// Runs on the CEF UI thread (the substrate handler), not the IO thread, but
 /// shares the same gate as [`check`]: global switch, then the first-party site's
@@ -217,7 +217,7 @@ pub fn blocked_count(tab_id: i32) -> u64 {
         .unwrap_or(0)
 }
 
-/// Reset a tab's count — call on a main-frame navigation start (new page).
+/// Reset a tab's count - call on a main-frame navigation start (new page).
 pub fn reset_count(tab_id: i32) {
     counts()
         .lock()

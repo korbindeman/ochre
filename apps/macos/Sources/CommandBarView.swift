@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Presentation state for the command bar's glass morph — owned by
+/// Presentation state for the command bar's glass morph - owned by
 /// `CommandBarController` so AppKit dismiss can drive the morph-out before the
 /// panel tears down.
 @MainActor
@@ -9,7 +9,7 @@ final class CommandBarPresentation: ObservableObject {
 }
 
 /// The Liquid Glass search field plus its favicon autocomplete, drawn as one
-/// continuous surface — the field flows straight into the results (with a
+/// continuous surface - the field flows straight into the results (with a
 /// hairline divider between them) like Spotlight, rather than floating as two
 /// detached bubbles.
 ///
@@ -20,7 +20,7 @@ final class CommandBarPresentation: ObservableObject {
 struct CommandBarView: View {
     @ObservedObject var presentation: CommandBarPresentation
     @ObservedObject var controller: SuggestionController
-    /// Called when a row is clicked — the host runs the suggestion and dismisses.
+    /// Called when a row is clicked - the host runs the suggestion and dismisses.
     var onChoose: (Suggestion) -> Void
     /// Transparent margin the host reserves around the panel. Padding the content
     /// by the same amount keeps the glass's own soft drop shadow *inside* the
@@ -44,7 +44,7 @@ struct CommandBarView: View {
                     expandedSurface
                         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius))
                 } else {
-                    // Collapsed morph origin — a compact capsule the glass expands
+                    // Collapsed morph origin - a compact capsule the glass expands
                     // from on present (Spotlight-style).
                     Color.clear
                         .frame(height: 28)

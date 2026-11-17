@@ -9,8 +9,8 @@
 # metadata after '+', e.g. 148.4.0+148.0.10 -> 148.0.10), which is the ochre_cef
 # release tag. Override with CEF_VERSION=... if needed.
 #
-# Fallback (ADR-0042's contributor path): if the repo isn't reachable — gh not
-# installed, not authenticated, or no read access — this prints nothing and exits
+# Fallback (ADR-0042's contributor path): if the repo isn't reachable - gh not
+# installed, not authenticated, or no read access - this prints nothing and exits
 # 0. With CEF_PATH unset, cef-dll-sys downloads the stock (codec-less) prebuilt,
 # so the browser still builds, just without proprietary-codec playback.
 set -euo pipefail
@@ -26,14 +26,14 @@ fi
 
 DEST="$CACHE/$VERSION"
 
-# Already extracted? Print and done (idempotent — cheap to call every build).
+# Already extracted? Print and done (idempotent - cheap to call every build).
 # (find exits non-zero when DEST doesn't exist yet; tolerate that under set -e.)
 existing="$(find "$DEST" -maxdepth 1 -type d -name 'cef_binary_*_minimal' 2>/dev/null | head -1 || true)"
 if [ -n "$existing" ]; then echo "$existing"; exit 0; fi
 
 # Need gh + read access to the private repo; otherwise fall back to stock prebuilt.
 if ! command -v gh >/dev/null 2>&1 || ! gh release view "$VERSION" -R "$REPO" >/dev/null 2>&1; then
-  echo "fetch-cef: ochre_cef release '$VERSION' not reachable — using stock codec-less CEF" >&2
+  echo "fetch-cef: ochre_cef release '$VERSION' not reachable - using stock codec-less CEF" >&2
   exit 0
 fi
 

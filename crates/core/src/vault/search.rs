@@ -1,19 +1,19 @@
-//! `vault_search(query)` — rank the whole vault against a free-text query.
+//! `vault_search(query)` - rank the whole vault against a free-text query.
 //!
 //! [`lookup`](crate::vault::lookup) answers "what fits *this page*". This answers
 //! the other question a user has: "where is the login I saved under some other
-//! host?" — the entry an exact-host/domain match can never reach (a shared SSO
+//! host?" - the entry an exact-host/domain match can never reach (a shared SSO
 //! account, a renamed site, credentials filed under a bare app name).
 //!
 //! **One implementation, both surfaces** (ADR-0049): the URL-bar popover's search
-//! field and the Passwords page's list call this. The frontend does not filter —
+//! field and the Passwords page's list call this. The frontend does not filter -
 //! otherwise every new frontend would reinvent the semantics and drift.
 //!
 //! Ranking reuses the omnibox scorer ([`crate::fuzzy`]), so searching a vault
 //! feels like searching history or a URL: a subsequence match, biased toward
 //! word-boundary and consecutive hits. A login matches if the query matches its
 //! **name**, its **username**, or any of its **URI hosts**, and scores as its best
-//! field. Ties break by recency then vault order — the same chain [`lookup`] uses
+//! field. Ties break by recency then vault order - the same chain [`lookup`] uses
 //! (ADR-0048), so a login you actually use leads an otherwise-equal field.
 
 use crate::fuzzy::fuzzy_match;
@@ -23,7 +23,7 @@ use crate::vault::usage::UsageMap;
 use std::cmp::Reverse;
 
 /// Logins matching `query`, best-first. An **empty query lists the whole vault**
-/// in vault order — the Passwords page's unfiltered state. `usage` breaks score
+/// in vault order - the Passwords page's unfiltered state. `usage` breaks score
 /// ties (see [`crate::vault::usage::snapshot`]).
 pub fn search_logins<'a>(vault: &'a Vault, query: &str, usage: &UsageMap) -> Vec<&'a Login> {
     let query = query.trim();
@@ -46,7 +46,7 @@ pub fn search_logins<'a>(vault: &'a Vault, query: &str, usage: &UsageMap) -> Vec
     scored.into_iter().map(|(login, _)| login).collect()
 }
 
-/// The best score across a login's searchable fields — `None` when the query
+/// The best score across a login's searchable fields - `None` when the query
 /// matches none of them (so the login is not offered at all).
 fn login_score(login: &Login, query: &str) -> Option<i32> {
     let name = fuzzy_match(query, &login.name).map(|m| m.score);
@@ -134,12 +134,12 @@ mod tests {
             ids(search_logins(&v, "github", &UsageMap::new())),
             vec!["gh"]
         );
-        // By username — "octocat" appears in no name or host.
+        // By username - "octocat" appears in no name or host.
         assert_eq!(
             ids(search_logins(&v, "octocat", &UsageMap::new())),
             vec!["gh"]
         );
-        // By URI host — "examplebank" is not in the name "My Bank".
+        // By URI host - "examplebank" is not in the name "My Bank".
         assert_eq!(
             ids(search_logins(&v, "examplebank", &UsageMap::new())),
             vec!["bank"]
@@ -163,14 +163,14 @@ mod tests {
 
     #[test]
     fn fuzzy_subsequence_matches_like_the_omnibox() {
-        // "gh" is a subsequence of "GitHub" — the omnibox scorer's behavior,
+        // "gh" is a subsequence of "GitHub" - the omnibox scorer's behavior,
         // inherited rather than reimplemented.
         assert!(ids(search_logins(&vault(), "gh", &UsageMap::new())).contains(&"gh".to_string()));
     }
 
     #[test]
     fn recency_breaks_score_ties() {
-        // Two logins that score identically on name — only recency separates them.
+        // Two logins that score identically on name - only recency separates them.
         let v = Vault {
             logins: vec![
                 login("a", "Shared", Some("a@x.com"), "https://a.example"),

@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Shown in the content region when there are no tabs — the launch state and
+/// Shown in the content region when there are no tabs - the launch state and
 /// the state after the last tab closes. Fully clean by design: a single, quiet
 /// New-Tab hint on an otherwise empty canvas (a new-tab *page* with suggestions
 /// is Phase 2).

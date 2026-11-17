@@ -3,7 +3,7 @@ import SwiftUI
 
 /// The sidebar's current-tab address bar. Where the original chip was a pure
 /// *display* that routed clicks into the center command bar (ADR-0004), this one
-/// edits **inline** in the sidebar (ADR-0014): clicking it — or ⌘L — turns the
+/// edits **inline** in the sidebar (ADR-0014): clicking it - or ⌘L - turns the
 /// chip into a live search/URL field whose autocomplete drops down within the
 /// sidebar column, matching Arc. The command bar stays the ⌘T new-tab surface.
 ///
@@ -33,7 +33,7 @@ final class URLBarModel: ObservableObject {
     private(set) var initialQuery = ""
 
     /// Begin editing the active tab's address in place. Routes commits (the typed
-    /// query and any chosen suggestion) to the current tab. No-op without a tab —
+    /// query and any chosen suggestion) to the current tab. No-op without a tab -
     /// the empty chip is a new-tab launcher instead.
     func beginEditing() {
         let state = BrowserState.shared
@@ -75,7 +75,7 @@ final class URLBarModel: ObservableObject {
 enum ViewportURLBarMetrics {
     /// Top chrome reserved above the web viewport (bar + breathing room).
     static let chromeInset: CGFloat = 64
-    /// The floating address pill — large, capsule-shaped (Safari-style).
+    /// The floating address pill - large, capsule-shaped (Safari-style).
     static let pillHeight: CGFloat = 40
     static let pillMaxWidth: CGFloat = 560
     /// Alias for layout code that sizes the overlay host.
@@ -83,7 +83,7 @@ enum ViewportURLBarMetrics {
 }
 
 /// Shared Liquid Glass capsule for the in-page address pill and its flanking
-/// controls — one material path so they read as the same height and weight.
+/// controls - one material path so they read as the same height and weight.
 struct ViewportGlassCapsule: View {
     var body: some View {
         if #available(macOS 26.0, *) {
@@ -136,7 +136,7 @@ struct URLBar: View {
         }
     }
     private var isEmpty: Bool { tab?.url.isEmpty ?? true }
-    /// An app-UI surface covers the canvas — the chip reads as inert, not the
+    /// An app-UI surface covers the canvas - the chip reads as inert, not the
     /// active tab's address (ADR-0022 follow-up, P1-21).
     private var isNeutralized: Bool { state.isSurfaceOpen }
     private var neutralIcon: String {
@@ -192,7 +192,7 @@ struct URLBar: View {
     }
 
     @ViewBuilder private var viewportBody: some View {
-        // Transparent chrome — only the pill draws; the page viewport sits below
+        // Transparent chrome - only the pill draws; the page viewport sits below
         // and can scroll up behind this strip (see `CEFContainerView`).
         HStack(spacing: 0) {
             Spacer(minLength: 0)
@@ -256,12 +256,12 @@ struct URLBar: View {
 
     private var chip: some View {
         // The whole chip taps to edit (⌘L); the hover-revealed copy button is a
-        // nested action, so — like TabRow's ✕ — the row uses `onTapGesture`
+        // nested action, so - like TabRow's ✕ - the row uses `onTapGesture`
         // rather than a Button to keep the inner button's tap unambiguous.
         HStack(spacing: 6) {
-            // Only the empty chip leads with an icon — the magnifying glass is a
+            // Only the empty chip leads with an icon - the magnifying glass is a
             // search affordance ("type here"). A loaded URL shows the domain only
-            // until focused (⌘L reveals the full address); no leading globe — the
+            // until focused (⌘L reveals the full address); no leading globe - the
             // tab carries the favicon, and site status lives in the shield.
             if isEmpty {
                 Image(systemName: "magnifyingglass")
@@ -377,7 +377,7 @@ struct URLBar: View {
         .popover(isPresented: $showShield, arrowEdge: .bottom) { shieldPopover }
     }
 
-    /// The in-page shield control — its own Liquid Glass capsule beside the
+    /// The in-page shield control - its own Liquid Glass capsule beside the
     /// address pill. `onTapGesture` matches the pill's hit-test path under
     /// `PassthroughHostingView` (a `Button` does not register there).
     private var viewportShield: some View {
@@ -408,7 +408,7 @@ struct URLBar: View {
     }
 
     /// Cookie-consent is reject-first with no per-site override (ADR-0026), so
-    /// this is a transparency line only — shown when there's something to
+    /// this is a transparency line only - shown when there's something to
     /// report, not paired with a toggle.
     private var consentCountText: String? {
         guard state.consentEnabled, state.consentRejectedCount > 0 else { return nil }
@@ -462,7 +462,7 @@ struct URLBar: View {
     // ─── Inline editor ─────────────────────────────────────────────────────────
 
     private var editor: some View {
-        // No leading icon — same as the loaded-URL chip. The magnifying glass is
+        // No leading icon - same as the loaded-URL chip. The magnifying glass is
         // only for the empty new-tab chip; inline edit-in-place (⌘L) is address
         // entry, not search.
         AutocompleteField(
@@ -470,7 +470,7 @@ struct URLBar: View {
             initialQuery: model.initialQuery,
             font: .system(size: 13),
             onFocusChange: { focused in
-                // Clicking into the page (or elsewhere) resigns the field —
+                // Clicking into the page (or elsewhere) resigns the field -
                 // dismiss, matching the command bar losing key. Suggestion
                 // taps don't take first responder, so they never trip this.
                 if !focused { model.endEditing() }

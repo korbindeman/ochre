@@ -4,7 +4,7 @@ import SwiftUI
 /// Explicit window-drag surface for chrome that must not compete with tab reorder.
 ///
 /// Arc-style chrome used `isMovableByWindowBackground`, but AppKit decides that at
-/// `mouseDown` on the hit view's `mouseDownCanMoveWindow` — toggling the window
+/// `mouseDown` on the hit view's `mouseDownCanMoveWindow` - toggling the window
 /// property in an event monitor, or a full-bleed SwiftUI overlay on a gesture tree,
 /// does not reliably keep tab drags in place. The sidebar tab list instead disables
 /// background drag globally and hosts explicit handles in the top chrome (nav row,

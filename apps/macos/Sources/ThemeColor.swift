@@ -8,7 +8,7 @@ enum ThemeColor {
         let b: Double
         let a: Double
 
-        /// WCAG relative luminance — drives light vs. dark sidebar chrome.
+        /// WCAG relative luminance - drives light vs. dark sidebar chrome.
         var relativeLuminance: Double {
             func linearize(_ channel: Double) -> Double {
                 channel <= 0.03928 ? channel / 12.92 : pow((channel + 0.055) / 1.055, 2.4)

@@ -2,7 +2,7 @@
 //!
 //! One JSON document (`root_cache_dir()/vault.json`) lets the browser unlock and
 //! read the vault **offline** and without a network round-trip at launch. It is
-//! safe at rest **by construction** — it holds only:
+//! safe at rest **by construction** - it holds only:
 //!
 //! - the account email + [`Kdf`] (public parameters),
 //! - the **protected** user key (an `EncString`, decryptable only with the master
@@ -11,7 +11,7 @@
 //!   user key.
 //!
 //! So nothing here is readable without the master password. **Tokens are
-//! deliberately not cached** — a bearer/refresh token is a plaintext secret and
+//! deliberately not cached** - a bearer/refresh token is a plaintext secret and
 //! belongs in OS secure storage (macOS Keychain), wired in the platform/FFI slice
 //! (P2-12); until then a relaunch unlocks from cache (offline) and re-authenticates
 //! to sync. Writes are atomic (temp file + rename), mirroring [`crate::session`].
@@ -44,7 +44,7 @@ pub fn load(path: &str) -> Option<VaultCache> {
 }
 
 /// Write the cache atomically (temp file + rename). Failures are logged, never
-/// fatal — only offline availability degrades.
+/// fatal - only offline availability degrades.
 pub fn save(path: &str, cache: &VaultCache) {
     let json = match serde_json::to_vec(cache) {
         Ok(json) => json,

@@ -1,24 +1,24 @@
-//! `vault_lookup(host)` — match a page host to stored logins (ADR-0016, spec §9/§10).
+//! `vault_lookup(host)` - match a page host to stored logins (ADR-0016, spec §9/§10).
 //!
 //! Given a page host, return the logins whose URIs match, **best-first** (an
 //! exact-host match ranks above a registrable-domain match). Matching honors
 //! Bitwarden's per-URI [`UriMatch`] rule:
 //!
-//! - **Domain** (the default) — same registrable domain via the Public Suffix
+//! - **Domain** (the default) - same registrable domain via the Public Suffix
 //!   List, so `google.com` creds match `accounts.google.com` but nothing leaks
 //!   across a public suffix (`a.co.uk` never matches `b.co.uk`).
-//! - **Host** — exact host equality.
-//! - **Never** — never offered (a deliberate user override).
+//! - **Host** - exact host equality.
+//! - **Never** - never offered (a deliberate user override).
 //!
 //! The lookup input is a **host**, so the full-URL rules degrade safely: **Exact**
-//! and **StartsWith** fall back to exact-host equality (a subset — we never
+//! and **StartsWith** fall back to exact-host equality (a subset - we never
 //! over-offer beyond the host), and **RegEx** is treated as no-match (no regex
 //! engine yet; failing closed is the safe choice). Path-precise Exact/StartsWith
-//! and RegEx arrive if/when lookup grows to take a full URL — filed, not silent.
+//! and RegEx arrive if/when lookup grows to take a full URL - filed, not silent.
 //!
 //! ## Ordering
 //!
-//! Match strength ranks first — an exact-host match is *more relevant to this
+//! Match strength ranks first - an exact-host match is *more relevant to this
 //! page* than a domain-wide one, and that stays true however long ago it was
 //! used. Recency ([`usage`](crate::vault::usage)) breaks the tie **within** a
 //! tier, which is where the order was previously arbitrary-but-frozen (the
@@ -57,7 +57,7 @@ pub fn matching_logins<'a>(vault: &'a Vault, host: &str, usage: &UsageMap) -> Ve
     scored.into_iter().map(|(login, _)| login).collect()
 }
 
-/// How strongly a login matched — `Host` beats `Domain`.
+/// How strongly a login matched - `Host` beats `Domain`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum MatchQuality {
     Host,
@@ -78,7 +78,7 @@ fn uri_quality(
     host: &str,
     host_domain: Option<&str>,
 ) -> Option<MatchQuality> {
-    // RegEx: no engine yet — fail closed. Never: explicit user opt-out.
+    // RegEx: no engine yet - fail closed. Never: explicit user opt-out.
     if matches!(login_uri.match_type, UriMatch::Never | UriMatch::RegEx) {
         return None;
     }
@@ -89,7 +89,7 @@ fn uri_quality(
     }
     match login_uri.match_type {
         // Host/Exact/StartsWith need an exact host (their full-URL fidelity needs
-        // a full-URL input, not just a host) — already handled by the check above.
+        // a full-URL input, not just a host) - already handled by the check above.
         UriMatch::Host | UriMatch::Exact | UriMatch::StartsWith => None,
         // Domain: same registrable domain counts.
         UriMatch::Domain => match (registrable_domain(&uri_host), host_domain) {
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn recency_orders_within_a_tier() {
-        // Three equally-relevant (domain-tier) logins for the same site — the case
+        // Three equally-relevant (domain-tier) logins for the same site - the case
         // the frozen sync order used to pin forever.
         let vault = Vault {
             logins: vec![

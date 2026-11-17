@@ -1,15 +1,15 @@
-//! Autofill — fill login forms from the unlocked vault (P2-15/P2-16, ADR-0017).
+//! Autofill - fill login forms from the unlocked vault (P2-15/P2-16, ADR-0017).
 //!
 //! Autofill is a **consumer of the injection substrate** ([`crate::inject`]): a
 //! generic content script runs at document-start in the isolated world, detects
 //! the login form once the DOM is ready, and *asks the core* what to do. The
-//! script never carries a credential — it carries only detection + UI logic — and
+//! script never carries a credential - it carries only detection + UI logic - and
 //! the core answers over the substrate's message channel:
 //!
-//! - `{type:"lookup", host}` → `{matches:[{id, username, name}]}` —
+//! - `{type:"lookup", host}` → `{matches:[{id, username, name}]}` -
 //!   [`crate::vault::service::lookup`] metadata **only, never a password**.
-//! - `{type:"password", id}` → `{password}` — the single seam a secret crosses,
-//!   requested **only when the user picks an entry** in the inline menu — an
+//! - `{type:"password", id}` → `{password}` - the single seam a secret crosses,
+//!   requested **only when the user picks an entry** in the inline menu - an
 //!   explicit gesture, so a page's autofocus can't silently pull a password out.
 //!
 //! ## The picker (P2-16)
@@ -22,7 +22,7 @@
 //! the entry the user selects. This supersedes P2-15's interim focus-auto-fill:
 //! the password now crosses on the *selection* gesture, not on focus.
 //!
-//! The **save-password banner** is native (Safari-style) and split to P2-23 — it
+//! The **save-password banner** is native (Safari-style) and split to P2-23 - it
 //! needs the M2 chrome. Detection is continuous (P2-28/29): a debounced
 //! `MutationObserver` + SPA-navigation hooks re-scan for fields injected after
 //! load, pierce open shadow roots, and offer on username-only steps (Google's
@@ -53,12 +53,12 @@ pub fn handle(msg: &Message) -> Option<serde_json::Value> {
             let host = msg.data.get("host").and_then(|v| v.as_str()).unwrap_or("");
             Some(lookup_reply(service::lookup(host)))
         }
-        // The one path a secret crosses — gated on the page's explicit gesture
+        // The one path a secret crosses - gated on the page's explicit gesture
         // (the script only sends this when the user selects a picker entry).
         "password" => {
             let id = msg.data.get("id").and_then(|v| v.as_str()).unwrap_or("");
             let password = service::password_for(id);
-            // Selecting an entry in the picker is a use — record it so it leads
+            // Selecting an entry in the picker is a use - record it so it leads
             // this site's list next time. Only on a real hit: an unknown id or a
             // locked vault filled nothing.
             if password.is_some() {
@@ -159,7 +159,7 @@ const DETECT_SCRIPT: &str = r##"(function () {
     }
     return best;
   }
-  // Classify login fields — username-only, password-only, or both (P2-29).
+  // Classify login fields - username-only, password-only, or both (P2-29).
   function findFields() {
     var inputs = allInputs().filter(visible).filter(loginCandidate);
     var users = [], pws = [];
@@ -390,11 +390,11 @@ const DETECT_SCRIPT: &str = r##"(function () {
 // ─── Button-driven fill (P2-34, ADR-0029) ────────────────────────────────
 //
 // The URL-bar vault button (native) fills the active tab by picking a login and
-// having the core *push* this snippet into the page — the core-initiated path
+// having the core *push* this snippet into the page - the core-initiated path
 // ([`crate::inject::evaluate_main_world`]), vs. the focus-driven picker above
 // which the page pulls. It is deliberately **lenient**: unlike [`DETECT_SCRIPT`]
 // (which needs a password field before it offers anything), it fills whatever
-// login fields are present — so it works on a two-step form's **email-only first
+// login fields are present - so it works on a two-step form's **email-only first
 // step** (Google) as well as a full user+password form. It runs in the main world
 // (a fill exposes the value to the page regardless), so it carries its own tiny
 // `setVal` rather than reaching the isolated world.
@@ -445,7 +445,7 @@ const FILL_FN: &str = r##"(function (u, p) {
   if (p && pw) setVal(pw, p);
 })"##;
 
-/// Build the main-world fill expression for a credential — [`FILL_FN`] invoked
+/// Build the main-world fill expression for a credential - [`FILL_FN`] invoked
 /// with the username (or `null`) and password as **safe JS string literals**
 /// (JSON is valid JS; the same escaping the substrate's reply path uses, so a
 /// quote/backslash in a password can't break out of the literal).

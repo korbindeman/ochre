@@ -2,7 +2,7 @@
 //!
 //! Hermetic loopback server serves a page whose declared icons mirror GitHub
 //! (SVG first, ICO second). The engine must capture a transparent raster favicon
-//! into the history store — not a white-plated SVG rasterization. Re-run after
+//! into the history store - not a white-plated SVG rasterization. Re-run after
 //! any favicon-pipeline or CEF change.
 
 use std::ffi::c_void;
@@ -25,7 +25,7 @@ const W: f64 = 640.0;
 const H: f64 = 480.0;
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-/// 1×1 transparent PNG — decodable raster with alpha.
+/// 1×1 transparent PNG - decodable raster with alpha.
 const PNG_B64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 
@@ -124,7 +124,7 @@ fn watchdog(verdict: Verdict) -> ! {
         thread::sleep(Duration::from_millis(100));
     }
     fail(&format!(
-        "timeout — no favicon stored for {host} within {}s",
+        "timeout - no favicon stored for {host} within {}s",
         TIMEOUT.as_secs()
     ));
 }

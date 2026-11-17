@@ -1,4 +1,4 @@
-//! Bitwarden vault crypto — the key hierarchy and `EncString` (ADR-0016, spec §10).
+//! Bitwarden vault crypto - the key hierarchy and `EncString` (ADR-0016, spec §10).
 //!
 //! This is the correctness-critical, fully-isolable core of the vault: no
 //! network, no UI, no I/O. It reproduces Bitwarden's client-side crypto per the
@@ -20,7 +20,7 @@
 //!
 //! Every secret is a Bitwarden [`EncString`]: `2.<iv>|<ciphertext>|<mac>`,
 //! AES-256-CBC with an encrypt-then-MAC HMAC-SHA256 (type 2,
-//! `AesCbc256_HmacSha256_B64`). We support type 2 only — the modern default;
+//! `AesCbc256_HmacSha256_B64`). We support type 2 only - the modern default;
 //! the MAC-less type 0 and RSA type 4 are out of scope until a cipher needs them.
 //!
 //! ## What the tests here prove (and don't)
@@ -28,7 +28,7 @@
 //! The unit tests prove **self-consistency** (encrypt→decrypt round-trips),
 //! **tamper detection** (a flipped MAC/ciphertext byte fails), and the
 //! **hierarchy wiring** (derive → stretch → wrap → unwrap → decrypt). They do
-//! **not** prove byte-exact wire compatibility with a real Bitwarden server —
+//! **not** prove byte-exact wire compatibility with a real Bitwarden server -
 //! that (are the salts / HKDF info strings / framing what the server expects?)
 //! is validated against a live Vaultwarden in the auth/sync slice (P2-9). This
 //! boundary is deliberate, per ADR-0016.
@@ -57,7 +57,7 @@ pub enum CryptoError {
     MalformedEncString,
     /// An `EncString` type we do not implement (only type 2 is supported).
     UnsupportedEncType(u8),
-    /// The HMAC over `iv || ciphertext` did not match — tampered or wrong key.
+    /// The HMAC over `iv || ciphertext` did not match - tampered or wrong key.
     MacMismatch,
     /// AES-CBC / PKCS7 unpadding failed (wrong key, or corrupt ciphertext).
     Decrypt,
@@ -107,7 +107,7 @@ fn normalize_email(email: &str) -> String {
 }
 
 /// The 256-bit master key derived from the master password + email. Not a
-/// cipher key itself — it authenticates (via [`MasterKey::password_hash`]) and
+/// cipher key itself - it authenticates (via [`MasterKey::password_hash`]) and
 /// stretches (via [`MasterKey::stretch`]) into the actual keys.
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct MasterKey([u8; 32]);
@@ -116,7 +116,7 @@ impl MasterKey {
     /// Derive the master key from the master password + email under `kdf`.
     ///
     /// PBKDF2 salts with the normalized email directly; Argon2id salts with its
-    /// SHA-256 (a Bitwarden-specific detail — Argon2 requires ≥8-byte salt).
+    /// SHA-256 (a Bitwarden-specific detail - Argon2 requires ≥8-byte salt).
     pub fn derive(password: &str, email: &str, kdf: Kdf) -> Result<Self> {
         let email = normalize_email(email);
         let mut key = [0u8; 32];
@@ -164,7 +164,7 @@ impl MasterKey {
 
     /// Stretch the master key into a symmetric key (32 B enc + 32 B mac) via
     /// HKDF-Expand with info `"enc"` / `"mac"`. This key decrypts the server's
-    /// *protected* user key — see [`SymmetricKey::unwrap_key`].
+    /// *protected* user key - see [`SymmetricKey::unwrap_key`].
     pub fn stretch(&self) -> Result<SymmetricKey> {
         // The master key is already 32 B of KDF output, so it is used directly
         // as the HKDF pseudo-random key (Expand only, no Extract).
@@ -190,7 +190,7 @@ pub struct SymmetricKey {
 }
 
 impl SymmetricKey {
-    /// Build a symmetric key from 64 raw bytes (32 enc ‖ 32 mac) — the plaintext
+    /// Build a symmetric key from 64 raw bytes (32 enc ‖ 32 mac) - the plaintext
     /// of a decrypted protected key.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != 64 {
@@ -391,7 +391,7 @@ mod tests {
         let key = test_key();
         let mut enc = key.encrypt(b"secret").unwrap();
         enc.ciphertext[0] ^= 0x01;
-        // Fails at the MAC, before decryption — never surfaces as a padding error.
+        // Fails at the MAC, before decryption - never surfaces as a padding error.
         assert_eq!(key.decrypt(&enc), Err(CryptoError::MacMismatch));
     }
 
@@ -536,7 +536,7 @@ mod tests {
         let h2 = mk.password_hash("pass");
         assert_eq!(h1, h2);
         assert_eq!(h1.len(), 44, "32 bytes → 44 base64 chars with padding");
-        // The auth hash is not the login *unlock* — a different password hashes differently.
+        // The auth hash is not the login *unlock* - a different password hashes differently.
         assert_ne!(mk.password_hash("pass"), mk.password_hash("other"));
     }
 

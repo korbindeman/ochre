@@ -1,34 +1,34 @@
-//! Content-script injection substrate — document-start, isolated world (P2-14, ADR-0017).
+//! Content-script injection substrate - document-start, isolated world (P2-14, ADR-0017).
 //!
 //! This is the *one hard thing built once* that autofill (P2-15/16), cosmetic
 //! ad-block (P2-21), cookie-consent (P2-22), and userscripts / Tweaks (spec §20)
 //! all ride. It gives the core two capabilities against any page:
 //!
-//! 1. **Run a content script at document-start in an isolated world** — a
+//! 1. **Run a content script at document-start in an isolated world** - a
 //!    JavaScript execution context that shares the page's DOM but *not* its
 //!    global scope, so page JS can't reach (or forge) our bridge, and our script
 //!    runs before the page's own scripts.
-//! 2. **A bidirectional page↔core message channel** — the script asks the core
+//! 2. **A bidirectional page↔core message channel** - the script asks the core
 //!    for data and the core answers; the credential/rule never lives in the
 //!    injected source (the fix for the autofill v0's main-world, password-baked-in
 //!    approach).
 //!
-//! ## How it works (all internal — no external CDP port)
+//! ## How it works (all internal - no external CDP port)
 //!
 //! CEF exposes the Chrome DevTools Protocol *in-process* via
 //! [`ImplBrowserHost::send_dev_tools_message`] + an observer registered with
 //! [`ImplBrowserHost::add_dev_tools_message_observer`]. Per browser we:
 //!
-//! - `Page.enable` + `Runtime.enable` — turn on the two domains we drive.
-//! - `Runtime.addBinding{name, executionContextName}` — expose a function
+//! - `Page.enable` + `Runtime.enable` - turn on the two domains we drive.
+//! - `Runtime.addBinding{name, executionContextName}` - expose a function
 //!   `window.__browser_core_send(json)` **only in the isolated world**; calling it
 //!   fires a `Runtime.bindingCalled` event back to us (the page→core edge).
-//! - `Page.addScriptToEvaluateOnNewDocument{source, worldName, runImmediately}` —
+//! - `Page.addScriptToEvaluateOnNewDocument{source, worldName, runImmediately}` -
 //!   register the bootstrap + each consumer's script to run at document-start in
 //!   that same named world, for every future navigation.
 //!
 //! When the page calls the binding, `Runtime.bindingCalled` carries the payload
-//! **and the originating `executionContextId`** — so the core→page reply is a
+//! **and the originating `executionContextId`** - so the core→page reply is a
 //! `Runtime.evaluate{expression, contextId}` targeting that exact isolated
 //! context. Request/response needs no separate context tracking; the incoming
 //! event tells us where to answer.
@@ -38,7 +38,7 @@
 //! `Page.addScriptToEvaluateOnNewDocument` + `Runtime.addBinding` apply per-frame,
 //! so the substrate reaches the **main frame and every same-origin (same-process)
 //! iframe** automatically (verified). **Cross-origin iframes (OOPIFs)** are not
-//! covered — see [ADR-0027]: CEF 149's DevTools observer delivers *results* but
+//! covered - see [ADR-0027]: CEF 149's DevTools observer delivers *results* but
 //! not *events* from auto-attached child sessions, so their `bindingCalled` never
 //! arrives; the real fix is a render-process-handler path (P2-24).
 //!
@@ -46,7 +46,7 @@
 //!
 //! Consumers [`register`] a `{channel, script, handler}` at startup (before any
 //! browser exists). The substrate installs itself on a browser only if at least
-//! one consumer is registered — so a release build in which nothing yet uses the
+//! one consumer is registered - so a release build in which nothing yet uses the
 //! substrate pays zero per-page cost.
 //!
 //! Everything here runs on the CEF UI thread (the app's main thread in embedded
@@ -79,7 +79,7 @@ pub struct Message<'a> {
     pub channel: &'a str,
     /// The `data` payload the script sent (arbitrary JSON; `Null` if omitted).
     pub data: &'a serde_json::Value,
-    /// The CEF browser identifier of the tab the message came from — for
+    /// The CEF browser identifier of the tab the message came from - for
     /// consumers that key per-tab state (e.g. consent's rejected-banner count).
     pub tab_id: i32,
 }
@@ -93,7 +93,7 @@ pub type Handler = fn(&Message) -> Option<serde_json::Value>;
 /// world) plus the `handler` for the messages it sends on `channel`.
 ///
 /// The script is `&'static str` on purpose: the injected source is *generic*
-/// (form detection, element matching, …) and must never carry per-page secrets —
+/// (form detection, element matching, …) and must never carry per-page secrets -
 /// those cross only via the message channel, on demand (ADR-0017).
 pub struct Consumer {
     pub channel: &'static str,
@@ -112,13 +112,13 @@ static CONSUMERS: Mutex<Vec<Consumer>> = Mutex::new(Vec::new());
 static NEXT_MSG_ID: AtomicI32 = AtomicI32::new(1);
 
 /// Tabs whose first real document may have raced `addScriptToEvaluateOnNewDocument`
-/// registration — [`bootstrap_on_load_end`] runs the scripts explicitly once.
+/// registration - [`bootstrap_on_load_end`] runs the scripts explicitly once.
 static NEEDS_FIRST_BOOTSTRAP: OnceLock<Mutex<HashMap<i32, bool>>> = OnceLock::new();
 
 /// In-flight CDP calls for the load-end bootstrap state machine (UI thread only).
 static PENDING_CDP: OnceLock<Mutex<HashMap<i32, PendingCdp>>> = OnceLock::new();
 
-/// First navigations deferred until the injection substrate is registered — see
+/// First navigations deferred until the injection substrate is registered - see
 /// [`defer_first_navigation`] / [`dispatch_pending_navigation`].
 static PENDING_NAV: OnceLock<Mutex<HashMap<i32, String>>> = OnceLock::new();
 
@@ -352,7 +352,7 @@ impl PendingCdp {
 /// observer, enable the domains, expose the binding, and register the bootstrap
 /// + every consumer script to run at document-start in the isolated world.
 ///
-/// A no-op when no consumer is registered — the substrate costs nothing until
+/// A no-op when no consumer is registered - the substrate costs nothing until
 /// something rides it. UI thread only (called from `on_after_created`).
 pub fn install_for_browser(browser: &mut Browser) {
     let scripts: Vec<&'static str> = {
@@ -403,13 +403,13 @@ pub fn uninstall_for_browser(id: i32) {
     clear_bootstrap_state(id);
 }
 
-/// Evaluate `expression` in the **main world of a browser's main frame** — the
+/// Evaluate `expression` in the **main world of a browser's main frame** - the
 /// *core-initiated* injection path, distinct from the reply-only page→core
 /// substrate above (which only ever answers a `bindingCalled`).
 ///
 /// Used by button-driven vault autofill (ADR-0029): the fill snippet is
 /// self-contained and the credential it carries is exposed to the page anyway
-/// (that is the whole point of a fill), so it runs in the **main world** — which
+/// (that is the whole point of a fill), so it runs in the **main world** - which
 /// means no isolated-world `executionContextId` to track, and a `Runtime.evaluate`
 /// with no `contextId` targets the browser's default context (the main frame's
 /// main world). Reaches only the **main frame**, not sub-frames. UI thread only.
@@ -460,7 +460,7 @@ wrap_dev_tools_message_observer! {
 }
 
 /// Handle a `Runtime.bindingCalled` event: parse it, route the payload to the
-/// consumer that owns its channel, and — if the consumer replied — evaluate the
+/// consumer that owns its channel, and - if the consumer replied - evaluate the
 /// reply back into the *same* isolated-world context that sent it.
 fn handle_binding_called(browser: &mut Browser, params: &[u8]) {
     let Some(call) = parse_binding_called(params) else {
@@ -724,7 +724,7 @@ fn msg_evaluate_bootstrap(id: i32, context_id: i64, source: &str) -> Vec<u8> {
     msg_evaluate(id, context_id, &wrap_load_end_script(source))
 }
 
-/// A `Runtime.evaluate` with **no `contextId`** — the browser's default context
+/// A `Runtime.evaluate` with **no `contextId`** - the browser's default context
 /// (the main frame's main world). The core-initiated counterpart to
 /// [`msg_evaluate`], which targets a specific isolated-world context for a reply.
 fn msg_evaluate_default(id: i32, expression: &str) -> Vec<u8> {
@@ -780,7 +780,7 @@ const BOOTSTRAP_JS: &str = r#"(function () {
 /// Register a demo consumer that exercises the full round-trip against a real
 /// page, so the substrate is verifiable end-to-end without a production rider
 /// (autofill migrates onto the substrate in P2-15). Debug builds only, gated on
-/// `BROWSER_INJECT_DEMO` — see [`crate::embed::initialize`].
+/// `BROWSER_INJECT_DEMO` - see [`crate::embed::initialize`].
 #[cfg(debug_assertions)]
 pub fn register_demo_consumer() {
     register(Consumer {
@@ -799,7 +799,7 @@ fn demo_handler(msg: &Message) -> Option<serde_json::Value> {
 }
 
 /// The demo content script (isolated world). On load it sends a ping to the core
-/// and, on the reply, writes the result to a **DOM attribute** — the DOM is shared
+/// and, on the reply, writes the result to a **DOM attribute** - the DOM is shared
 /// with the page's main world, so an external CDP client (which evaluates in the
 /// main world) can read the marker to confirm the round-trip, while
 /// `window.__browserCore` stays invisible there, proving isolation.
@@ -934,7 +934,7 @@ mod tests {
 
     #[test]
     fn evaluate_default_omits_context_for_the_main_world() {
-        // The core-initiated fill path targets the main frame's default context —
+        // The core-initiated fill path targets the main frame's default context -
         // no contextId, so CEF runs it in the main world (ADR-0029).
         let v: serde_json::Value = serde_json::from_slice(&msg_evaluate_default(3, "1+1")).unwrap();
         assert_eq!(v["method"], "Runtime.evaluate");

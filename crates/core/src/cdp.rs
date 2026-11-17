@@ -1,13 +1,13 @@
-//! CDP automation surface — loopback-bound, consent-gated (P0-4, spec §13/§3.5).
+//! CDP automation surface - loopback-bound, consent-gated (P0-4, spec §13/§3.5).
 //!
 //! Chromium exposes the full Chrome DevTools Protocol when launched with
 //! `--remote-debugging-port`. That is a remote-control surface (anyone who can
 //! reach the port drives the browser), so here it is:
 //!
-//! - **Off by default** — the user must opt in ([`set_enabled`]); the choice is
+//! - **Off by default** - the user must opt in ([`set_enabled`]); the choice is
 //!   persisted (`root_cache_dir()/cdp.json`) and read once at startup.
-//! - **Loopback only** — bound to `127.0.0.1`, never a routable interface.
-//! - **Launch-time** — the port is a Chromium *startup* switch, not runtime
+//! - **Loopback only** - bound to `127.0.0.1`, never a routable interface.
+//! - **Launch-time** - the port is a Chromium *startup* switch, not runtime
 //!   togglable, so a change takes effect on the **next launch**. [`is_enabled`]
 //!   reports the persisted choice (what the next launch will do).
 //!
@@ -71,7 +71,7 @@ pub fn set_enabled(enabled: bool) {
 }
 
 /// The Chromium switches for `config` (empty when disabled). Loopback-bound.
-/// Pure — the CEF command-line handler just applies whatever this returns.
+/// Pure - the CEF command-line handler just applies whatever this returns.
 pub fn switches(config: &CdpConfig) -> Vec<(&'static str, String)> {
     if !config.enabled {
         return Vec::new();

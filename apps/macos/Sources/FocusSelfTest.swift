@@ -5,13 +5,13 @@ import AppKit
 /// The one seam a screenshot can't prove is whether keyboard focus routes
 /// correctly between CEF's web view and the native chrome. This harness drives a
 /// scripted sequence of focus transitions with **synthesized input at the app's
-/// own dispatch entry points** — `NSMenu.performKeyEquivalent` for shortcuts,
-/// `NSApp.sendEvent` for clicks — and asserts, after each, that the main window's
+/// own dispatch entry points** - `NSMenu.performKeyEquivalent` for shortcuts,
+/// `NSApp.sendEvent` for clicks - and asserts, after each, that the main window's
 /// `firstResponder` is the active tab's CEF web view. That is the in-process
 /// ground truth for "keys will land in the page"; the core's `[focus] cef
 /// on_got_focus` stderr is the corroborating second channel.
 ///
-/// It runs headlessly (no Accessibility grant, no frontmost requirement — the
+/// It runs headlessly (no Accessibility grant, no frontmost requirement - the
 /// whole reason for staying in-process rather than posting `CGEvent`s; see
 /// ADR-0018), prints one `[focus-selftest] …` line per case, and exits non-zero
 /// on any failure so `just focus-selftest` is a green/red gate.
@@ -24,7 +24,7 @@ final class FocusSelfTest {
     /// test, never by the page grabbing it on load.
     private let fixtureURL = "data:text/html,<h1>focus-selftest</h1>"
 
-    /// Time between steps — long enough for CEF to settle a focus change and fire
+    /// Time between steps - long enough for CEF to settle a focus change and fire
     /// `on_got_focus`, and for the command bar's dismiss animation to complete.
     private let stepDelay = 0.4
 
@@ -49,9 +49,9 @@ final class FocusSelfTest {
         // Watchdog: a regression harness must never hang a build. If the step
         // chain hasn't exited within the budget (e.g. the main queue stopped
         // being pumped), fail loudly instead of blocking forever. Never fires on
-        // the normal path — finish() calls exit() first.
+        // the normal path - finish() calls exit() first.
         DispatchQueue.main.asyncAfter(deadline: .now() + 60) {
-            NSLog("[focus-selftest] SUMMARY: TIMEOUT — did not complete")
+            NSLog("[focus-selftest] SUMMARY: TIMEOUT - did not complete")
             fflush(stderr)
             exit(2)
         }
@@ -115,11 +115,11 @@ final class FocusSelfTest {
 
     private func buildSteps() {
         // Ambient-prefs guard: the throwaway $HOME does NOT isolate NSUserDefaults
-        // — cfprefsd serves the logged-in user's preference domain regardless of
+        // - cfprefsd serves the logged-in user's preference domain regardless of
         // the process environment, so the harness inherits whatever chrome layout
         // the developer last dogfooded with (unpinned sidebar, viewport URL bar).
         // Every case below assumes the canonical layout: a pinned sidebar hosting
-        // the URL bar. Establish it in-state — plain assignments are never
+        // the URL bar. Establish it in-state - plain assignments are never
         // persisted (only the user toggles write defaults), so the developer's
         // real preferences stay untouched.
         steps.append(("normalize-chrome-state", {
@@ -150,7 +150,7 @@ final class FocusSelfTest {
 
         // ── Case B: a click into the page takes keyboard focus ──
         // Drop focus to the bare window first, then synthesize a click in the CEF
-        // view — proving click-to-focus routes into CEF's first-responder path.
+        // view - proving click-to-focus routes into CEF's first-responder path.
         steps.append(("click-defocus-then-click-page", {
             self.app.focusTestWindow?.makeFirstResponder(nil)
             if let window = self.app.focusTestWindow,
@@ -214,7 +214,7 @@ final class FocusSelfTest {
         steps.append(("urlbar-sidebar-empty-click", {
             if let window = self.app.focusTestWindow,
                let sidebar = self.app.focusTestRootView?.focusTestSidebarHost {
-                // Lower tab-list chrome — below the URL field, clear of tab rows.
+                // Lower tab-list chrome - below the URL field, clear of tab rows.
                 let point = NSPoint(x: sidebar.bounds.midX, y: sidebar.bounds.height * 0.35)
                 self.click(at: point, in: sidebar, window: window)
             }
@@ -231,7 +231,7 @@ final class FocusSelfTest {
 
     // ─── Synthesized input ───────────────────────────────────────────────────
 
-    /// Offer a shortcut to the main menu exactly as the OS does on a key press —
+    /// Offer a shortcut to the main menu exactly as the OS does on a key press -
     /// this is the `performKeyEquivalent:` path the whole design leans on to
     /// intercept app shortcuts before CEF's web view sees them. Returns whether a
     /// menu item claimed it.
@@ -253,7 +253,7 @@ final class FocusSelfTest {
 
     /// Synthesize a left click at the center of `view`, dispatched through
     /// `NSApp.sendEvent` so it runs real hit-testing and first-responder handling
-    /// — into CEF's view for the click-to-focus case.
+    /// - into CEF's view for the click-to-focus case.
     private func click(in view: NSView, window: NSWindow) {
         click(at: NSPoint(x: view.bounds.midX, y: view.bounds.midY), in: view, window: window)
     }

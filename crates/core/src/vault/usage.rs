@@ -1,7 +1,7 @@
-//! Per-login last-used timestamps — the recency signal behind [`lookup`].
+//! Per-login last-used timestamps - the recency signal behind [`lookup`].
 //!
 //! [`lookup`](crate::vault::lookup) ranks by how strongly a login matched the
-//! page, but within a tier the order was the vault's own sync order — fixed
+//! page, but within a tier the order was the vault's own sync order - fixed
 //! forever, so the entry you actually use never rose to the top. This module is
 //! the missing signal: a login id → "when did the user last sign in with this"
 //! map, updated on the explicit fill/copy gestures and consulted when ordering.
@@ -12,10 +12,10 @@
 //!
 //! **Plaintext at rest, deliberately** (`root_cache_dir()/vault-usage.json`, next
 //! to the equally-plaintext `vault-device`). It holds only opaque cipher UUIDs and
-//! unix timestamps — no secret, no site, no username. The strongest inference it
+//! unix timestamps - no secret, no site, no username. The strongest inference it
 //! supports is "some vault item was used at time T". Encrypting it would mean
 //! folding it into [`cache`](crate::vault::cache), whose blob is the verbatim
-//! server `/sync` response — rewriting that on every keystroke-cheap fill buys
+//! server `/sync` response - rewriting that on every keystroke-cheap fill buys
 //! nothing over what it would cost.
 //!
 //! Private-window use is **not** recorded; that guard lives at the one choke
@@ -28,7 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Login id → unix seconds of last use.
 pub type UsageMap = HashMap<String, u64>;
 
-/// The loaded map — `None` until first touched (lazy: a locked vault never reads).
+/// The loaded map - `None` until first touched (lazy: a locked vault never reads).
 static USAGE: Mutex<Option<UsageMap>> = Mutex::new(None);
 
 fn path() -> String {
@@ -66,7 +66,7 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Read the map. `None` if missing (never used here) or unparsable — logged and
+/// Read the map. `None` if missing (never used here) or unparsable - logged and
 /// treated as absent, never fatal: the list just falls back to vault order.
 fn load(path: &str) -> Option<UsageMap> {
     let bytes = std::fs::read(path).ok()?;
@@ -80,7 +80,7 @@ fn load(path: &str) -> Option<UsageMap> {
 }
 
 /// Write atomically (temp file + rename), mirroring [`crate::vault::cache`].
-/// Failures are logged, never fatal — only the ordering degrades.
+/// Failures are logged, never fatal - only the ordering degrades.
 fn save(path: &str, map: &UsageMap) {
     let json = match serde_json::to_vec(map) {
         Ok(json) => json,

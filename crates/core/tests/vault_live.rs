@@ -3,7 +3,7 @@
 //! This is the wire-compat validation the in-crate unit tests deliberately can't
 //! do: it talks to a **real** server. It self-registers a fresh account, then
 //! runs login → import → sync → lookup end-to-end through the crate's *public*
-//! API — the same surface a frontend uses.
+//! API - the same surface a frontend uses.
 //!
 //! It is `#[ignore]`d, gated on `VAULT_TEST_URL`, and behind the `live-tests`
 //! feature (which pulls the RSA dep used only for registration), so `just verify`
@@ -53,7 +53,7 @@ fn post_json(url: String, body: serde_json::Value) -> HttpResponse {
 
 /// Register a fresh account via Bitwarden's two-step flow (as Vaultwarden 1.36+
 /// implements it). Prints the server's response on failure so wire mismatches
-/// are visible — this is the wire-compat validation.
+/// are visible - this is the wire-compat validation.
 fn register(config: &ServerConfig, email: &str) {
     // Step 1: request a verification token. With no SMTP configured, Vaultwarden
     // returns the JWT directly in the 200 body instead of emailing it.
@@ -66,7 +66,7 @@ fn register(config: &ServerConfig, email: &str) {
     );
     assert!(
         (200..300).contains(&resp.status),
-        "send-verification-email failed: HTTP {} — {}",
+        "send-verification-email failed: HTTP {} - {}",
         resp.status,
         String::from_utf8_lossy(&resp.body)
     );
@@ -117,7 +117,7 @@ fn register(config: &ServerConfig, email: &str) {
     );
     assert!(
         (200..300).contains(&resp.status),
-        "register/finish failed: HTTP {} — {}",
+        "register/finish failed: HTTP {} - {}",
         resp.status,
         String::from_utf8_lossy(&resp.body)
     );
@@ -128,7 +128,7 @@ fn register(config: &ServerConfig, email: &str) {
 #[ignore = "requires a live server via VAULT_TEST_URL"]
 fn live_register_login_import_sync_lookup() {
     let Ok(url) = std::env::var("VAULT_TEST_URL") else {
-        println!("[live] VAULT_TEST_URL unset — skipping");
+        println!("[live] VAULT_TEST_URL unset - skipping");
         return;
     };
     let config = ServerConfig::self_hosted(&url);
@@ -138,7 +138,7 @@ fn live_register_login_import_sync_lookup() {
     // 1. Register.
     register(&config, &email);
 
-    // 2. Log in — the full prelogin → token → decrypt-vault-key chain.
+    // 2. Log in - the full prelogin → token → decrypt-vault-key chain.
     let client = VaultClient::new(UreqTransport::new(), config.clone());
     let creds = Credentials {
         email: email.clone(),
@@ -150,7 +150,7 @@ fn live_register_login_import_sync_lookup() {
         .login(&creds, &device, None)
         .unwrap_or_else(|e| panic!("login failed: {e}"));
     println!(
-        "[live] login ok — access token {} chars",
+        "[live] login ok - access token {} chars",
         session.tokens.access_token.len()
     );
 
@@ -182,7 +182,7 @@ fn live_register_login_import_sync_lookup() {
     let vault = client
         .sync(&session)
         .unwrap_or_else(|e| panic!("sync failed: {e}"));
-    println!("[live] sync ok — {} logins", vault.logins.len());
+    println!("[live] sync ok - {} logins", vault.logins.len());
     assert!(
         vault.logins.len() >= 2,
         "expected the 2 imported logins, got {}",

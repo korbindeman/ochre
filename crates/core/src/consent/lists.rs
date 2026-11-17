@@ -2,15 +2,15 @@
 //!
 //! Bundles a snapshot of Fanboy/EasyList Cookie cosmetic hide rules so Tier-A
 //! coverage works offline from first launch, then background-refreshes from
-//! upstream and hot-swaps the engine — same pattern as [`crate::adblock::lists`].
+//! upstream and hot-swaps the engine - same pattern as [`crate::adblock::lists`].
 
 use std::time::Duration;
 
-/// Compiled-in seed — cosmetic `##` / `###` rules extracted from Fanboy's
+/// Compiled-in seed - cosmetic `##` / `###` rules extracted from Fanboy's
 /// EasyList Cookie List. See `lists/seed.txt`.
 pub const SEED: &str = include_str!("lists/seed.txt");
 
-/// Fanboy/EasyList Cookie List — cosmetic hide rules only (no network rules).
+/// Fanboy/EasyList Cookie List - cosmetic hide rules only (no network rules).
 const SOURCE: &str = "https://secure.fanboy.co.nz/fanboy-cookiemonster.txt";
 
 const MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24 * 7); // 7 days
@@ -22,7 +22,7 @@ fn cache_path() -> String {
 
 /// Keep only plain element-hiding cosmetic rules from the upstream list text.
 /// Scriptlets, `:style()`, `:remove()`, and `:has()` need operators we don't
-/// run yet — including them would bloat the engine without helping.
+/// run yet - including them would bloat the engine without helping.
 fn extract_cosmetic_rules(text: &str) -> String {
     let mut out = String::new();
     for line in text.lines() {

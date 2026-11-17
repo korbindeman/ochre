@@ -1,13 +1,13 @@
 import AppKit
 import SwiftUI
 
-/// The History page — the first native app-UI surface, and the reference the
+/// The History page - the first native app-UI surface, and the reference the
 /// other internal pages (settings, bookmarks, downloads) follow (ADR-0010,
 /// style §15).
 ///
 /// It is a *content-area surface*, not a tab: `RootView` hosts it in an
 /// `NSHostingView` shown over the web content and dismissed back to the active
-/// tab (like the empty state). Glass lives on the functional top bar only — the
+/// tab (like the empty state). Glass lives on the functional top bar only - the
 /// content list uses native materials and rows (style §3, §13). All data comes
 /// from the core over the history FFI; this view owns none of it.
 struct HistoryView: View {
@@ -26,7 +26,7 @@ struct HistoryView: View {
         if model.entries.isEmpty {
             EmptyState(query: model.query)
         } else {
-            // Day titles are plain rows, not `Section` headers — pinned headers
+            // Day titles are plain rows, not `Section` headers - pinned headers
             // draw a system hairline under themselves in the plain style, which
             // reads as a heavy border against this airy layout.
             List {
@@ -53,7 +53,7 @@ struct HistoryView: View {
             // behind it by design (style §247), so content is fed to the scroll
             // edge effect to fade it out under the title instead of letting rows
             // read through the header. The bottom inset lets the last row scroll
-            // clear of the window edge instead of hugging it — note
+            // clear of the window edge instead of hugging it - note
             // `contentMargins(.scrollContent)` is a no-op on `List`, so this uses
             // `safeAreaPadding`, which reserves the bottom scroll inset.
             .scrollEdgeEffectStyle(.soft, for: .top)
@@ -71,8 +71,8 @@ struct HistoryView: View {
 
 /// Title + live Liquid Glass search + a Clear menu, floating over the content
 /// as a `safeAreaBar` (the list scrolls under it with the system's scroll
-/// edge effect). Glass sits on the capsule controls themselves — the macOS 26
-/// toolbar idiom (Notes, Safari) — not on a stacked bar material (style §3,
+/// edge effect). Glass sits on the capsule controls themselves - the macOS 26
+/// toolbar idiom (Notes, Safari) - not on a stacked bar material (style §3,
 /// §13); everything below is native content.
 private struct Toolbar: View {
     @ObservedObject var model: HistoryModel
@@ -82,7 +82,7 @@ private struct Toolbar: View {
         // region and blend as a single material (never stack glass on glass).
         GlassEffectContainer {
             HStack(spacing: 12) {
-                // Leading dismiss — a surface is exclusive with the tabs (ADR-0010),
+                // Leading dismiss - a surface is exclusive with the tabs (ADR-0010),
                 // so ✕ returns to the page (Escape also works). Kept clear of the
                 // trailing Clear control so it isn't fired by accident.
                 Button { BrowserState.shared.closeHistory() } label: {
@@ -205,7 +205,7 @@ private struct HistoryRow: View {
     }
 }
 
-/// Empty state — distinct copy for "no history at all" vs. "search found
+/// Empty state - distinct copy for "no history at all" vs. "search found
 /// nothing" (style §10).
 private struct EmptyState: View {
     let query: String
@@ -268,7 +268,7 @@ struct HistorySection: Identifiable {
     }
 }
 
-/// Observable state for the History surface — a thin projection of the core's
+/// Observable state for the History surface - a thin projection of the core's
 /// store. Reloaded when the surface opens (`RootView`) and on every query change.
 @MainActor
 final class HistoryModel: ObservableObject {
@@ -277,7 +277,7 @@ final class HistoryModel: ObservableObject {
     @Published var query = ""
     @Published private(set) var entries: [HistoryEntry] = []
 
-    /// Cap the page — a first cut lists the most recent `pageLimit` visits;
+    /// Cap the page - a first cut lists the most recent `pageLimit` visits;
     /// infinite scroll (offset paging) is a follow-up if it's ever needed.
     private static let pageLimit: UInt32 = 500
 
@@ -288,7 +288,7 @@ final class HistoryModel: ObservableObject {
         entries = Self.fetch(query: query, limit: Self.pageLimit, offset: 0)
     }
 
-    /// Remove one entry — optimistically drop it locally, then tell the core.
+    /// Remove one entry - optimistically drop it locally, then tell the core.
     func delete(_ entry: HistoryEntry) {
         _ = entry.url.withCString { browser_history_delete($0) }
         entries.removeAll { $0.url == entry.url }

@@ -1,17 +1,17 @@
-//! Cosmetic ad-block — element-hiding via the injection substrate (P2-21, ADR-0020).
+//! Cosmetic ad-block - element-hiding via the injection substrate (P2-21, ADR-0020).
 //!
 //! Network blocking ([`super::check`]) cancels ad *requests*; cosmetic filtering
 //! hides the ad *elements* the network layer can't catch (first-party markup,
 //! layout placeholders). It's a [`crate::inject`] consumer: a document-start
 //! content script (isolated world) reports its page URL, the core returns the
 //! site's element-hiding CSS ([`super::cosmetic_css`]), and the script injects it
-//! as a `<style>` — **before the page renders**, so there's no flash (the reason
+//! as a `<style>` - **before the page renders**, so there's no flash (the reason
 //! ADR-0020 deferred cosmetic filtering until the substrate existed).
 //!
 //! **Scope (first cut):** site-specific hide rules (`example.com##.ad`). Generic
 //! class/id cosmetics (which need the page's observed class/id names), scriptlets
 //! (which need main-world execution), and sub-frame hiding (which needs the
-//! all-frames substrate, P2-24) are follow-ups — filed, not silent.
+//! all-frames substrate, P2-24) are follow-ups - filed, not silent.
 
 use crate::inject::{register as register_consumer, Consumer, Message};
 
@@ -35,7 +35,7 @@ pub fn handle(msg: &Message) -> Option<serde_json::Value> {
         "rules" => {
             let url = msg.data.get("url").and_then(|v| v.as_str()).unwrap_or("");
             // Empty string (blocking off / allowlisted / no rules) is a valid,
-            // resolving reply — the script just injects nothing.
+            // resolving reply - the script just injects nothing.
             Some(serde_json::json!({ "css": super::cosmetic_css(url).unwrap_or_default() }))
         }
         _ => None,

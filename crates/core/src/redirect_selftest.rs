@@ -1,12 +1,12 @@
 //! Subresource-redirect regression self-test (ADR-0028 guard).
 //!
-//! CEF/Chromium **149** stopped following HTTP redirects for subresources — the
+//! CEF/Chromium **149** stopped following HTTP redirects for subresources - the
 //! request issued after a 3xx died with `net::ERR_INVALID_ARGUMENT` (it broke the
 //! signed-in Google avatar, served via a `rd-ogw` redirect). We pinned CEF to the
 //! 148 line to dodge it. Nothing in the unit suite exercises a real redirect
 //! through CEF's network stack, so `just verify` passed on *both* the broken and
 //! the fixed engine. This is the standing guard that fails loudly if a future CEF
-//! bump reintroduces the regression — the network analogue of the focus self-test
+//! bump reintroduces the regression - the network analogue of the focus self-test
 //! (ADR-0018). **Re-run `just redirect-selftest` after any CEF version change.**
 //!
 //! Hermetic: an in-process HTTP server (loopback, ephemeral port) serves a page
@@ -43,7 +43,7 @@ const PAGE: &str = "<!doctype html><meta charset=utf-8><title>redirect-selftest<
 <body><img src=\"/redirect\" \
 onload=\"fetch('/result?ok')\" onerror=\"fetch('/result?fail')\"></body>";
 
-/// A 1×1 transparent PNG — a *decodable* image, so `onload` fires on a good
+/// A 1×1 transparent PNG - a *decodable* image, so `onload` fires on a good
 /// engine (garbage bytes would fail to decode and fire `onerror`, a false FAIL).
 const PNG_B64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
@@ -122,7 +122,7 @@ pub fn run() -> ! {
 
     embed::run_message_loop();
     // The watchdog exits the process on a verdict/timeout; reaching here means the
-    // loop ended first (e.g. the window was closed) — treat as a failure.
+    // loop ended first (e.g. the window was closed) - treat as a failure.
     fail("message loop ended before a verdict");
 }
 
@@ -146,13 +146,13 @@ fn watchdog(verdict: Verdict) -> ! {
         }
         Some(false) => {
             println!(
-                "[redirect-selftest] result=FAIL (redirected <img> errored — this CEF build drops \
+                "[redirect-selftest] result=FAIL (redirected <img> errored - this CEF build drops \
                  subresource redirects; see ADR-0028)"
             );
             std::process::exit(1);
         }
         None => {
-            println!("[redirect-selftest] result=FAIL (timeout — no load outcome within 15s)");
+            println!("[redirect-selftest] result=FAIL (timeout - no load outcome within 15s)");
             std::process::exit(1);
         }
     }

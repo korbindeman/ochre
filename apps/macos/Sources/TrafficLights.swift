@@ -7,7 +7,7 @@ import SwiftUI
 ///
 /// Why we draw our own instead of placing the system buttons: those buttons are
 /// AppKit-owned titlebar chrome, and AppKit re-lays them out (position *and*
-/// visibility) on its own schedule — focus changes, resize, miniaturize,
+/// visibility) on its own schedule - focus changes, resize, miniaturize,
 /// fullscreen, internal titlebar rebuilds. On a beta OS that churn left the real
 /// buttons stranded and mispositioned no matter how we chased it. Drawing the
 /// lights as SwiftUI views sidesteps the whole problem: they live in the
@@ -27,7 +27,7 @@ struct TrafficLights: View {
     /// hits `AppDelegate.windowShouldClose` (the graceful CEF teardown).
     private var window: NSWindow? { NSApp.mainWindow ?? NSApp.windows.first }
 
-    /// A background window shows gray lights until hovered — matching native,
+    /// A background window shows gray lights until hovered - matching native,
     /// where you can still reveal and click a background window's buttons.
     private var windowActive: Bool { activeState != .inactive }
 
@@ -63,7 +63,7 @@ private struct Light: View {
     enum Kind { case close, minimize, zoom }
 
     let kind: Kind
-    /// Hover is a property of the *cluster*, not the button — native reveals all
+    /// Hover is a property of the *cluster*, not the button - native reveals all
     /// three glyphs together whenever the pointer is over any of them.
     let hovering: Bool
     let windowActive: Bool
@@ -76,7 +76,7 @@ private struct Light: View {
     var body: some View {
         Button(action: action) {
             ZStack {
-                // Flat fill, no border — native (Tahoe) draws the circles borderless.
+                // Flat fill, no border - native (Tahoe) draws the circles borderless.
                 Circle().fill(lit ? fill : Self.inactiveFill)
                 if hovering { glyph }
             }
@@ -98,7 +98,7 @@ private struct Light: View {
                 .font(.system(size: 10, weight: .heavy))
                 .foregroundStyle(glyphColor)
         case .zoom:
-            // Two triangles pointing to opposite corners — the native green
+            // Two triangles pointing to opposite corners - the native green
             // "enter fullscreen" glyph (green click toggles fullscreen).
             FullscreenGlyph()
                 .fill(glyphColor)
@@ -138,7 +138,7 @@ private struct Light: View {
 }
 
 /// The green button's hover glyph: filled triangles in the top-left and
-/// bottom-right corners, with a diagonal channel between — the native "enter
+/// bottom-right corners, with a diagonal channel between - the native "enter
 /// full screen" mark.
 private struct FullscreenGlyph: Shape {
     func path(in rect: CGRect) -> Path {

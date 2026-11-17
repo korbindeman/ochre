@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Work leases — defer compile/test until no agent is actively editing.
+"""Work leases - defer compile/test until no agent is actively editing.
 
 Each session claims a lease at slice start and releases before verify. Build and
 test recipes wait until every lease is gone (or stale). Cargo's own file lock
@@ -179,7 +179,7 @@ def cmd_begin(task: str) -> int:
         return 0
 
     lease = write_lease(root, sid, task)
-    label = f" — {task}" if task else ""
+    label = f" - {task}" if task else ""
     print(f"[work-lease] claimed {lease.session_id}{label}")
     return 0
 
@@ -231,7 +231,7 @@ def cmd_status() -> int:
     root = repo_root()
     leases = active_leases(root)
     if not leases:
-        print("[work-lease] idle — no active sessions")
+        print("[work-lease] idle - no active sessions")
         return 0
     print(f"[work-lease] {len(leases)} active session(s):")
     for lease in leases:
@@ -246,7 +246,7 @@ def wait_for_idle(root: Path) -> int:
     own = own_lease(root)
     if own is not None:
         print(
-            "[work-lease] this session still holds a lease — run `just work-end` before building",
+            "[work-lease] this session still holds a lease - run `just work-end` before building",
             file=sys.stderr,
         )
         return 1
@@ -269,7 +269,7 @@ def wait_for_idle(root: Path) -> int:
 
         lines = ", ".join(lease.summary() for lease in leases)
         print(
-            f"[work-lease] waiting — {len(leases)} session(s) still editing: {lines}",
+            f"[work-lease] waiting - {len(leases)} session(s) still editing: {lines}",
             file=sys.stderr,
         )
         time.sleep(poll_s)

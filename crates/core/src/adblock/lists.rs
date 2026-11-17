@@ -1,15 +1,15 @@
 //! Filter-list sourcing: the compiled-in seed, the on-disk cache of the full
 //! upstream lists, and the background task that upgrades the seed to the cached
-//! lists and refreshes them from upstream — hot-swapping the engine each time.
+//! lists and refreshes them from upstream - hot-swapping the engine each time.
 //!
 //! Startup builds from [`SEED`] synchronously (instant, offline). Everything
-//! heavier — parsing the multi-MB cached lists, and the network fetch — runs on
+//! heavier - parsing the multi-MB cached lists, and the network fetch - runs on
 //! a background thread via [`load_and_refresh`], so it never delays launch or
 //! the IO thread.
 
 use std::time::Duration;
 
-/// Compiled-in seed list — effective on the first launch, offline, until the
+/// Compiled-in seed list - effective on the first launch, offline, until the
 /// full lists are fetched and hot-swapped in. See `lists/seed.txt`.
 pub const SEED: &str = include_str!("lists/seed.txt");
 
@@ -31,7 +31,7 @@ fn cache_path() -> String {
 }
 
 /// The cached combined list text from a prior fetch, if present. Returned
-/// regardless of age — a stale full list still beats the seed; freshness only
+/// regardless of age - a stale full list still beats the seed; freshness only
 /// decides whether to refresh (see [`load_and_refresh`]).
 pub fn load_cached() -> Option<String> {
     std::fs::read_to_string(cache_path())
@@ -49,7 +49,7 @@ fn is_stale() -> bool {
     }
 }
 
-/// Fetch every source and concatenate. Returns `None` if any fetch fails — a
+/// Fetch every source and concatenate. Returns `None` if any fetch fails - a
 /// partial merge would silently weaken blocking, so we keep the current engine
 /// and retry on the next launch.
 fn fetch_all() -> Option<String> {
@@ -81,7 +81,7 @@ fn save_cache(text: &str) {
 /// On a background thread: upgrade the seed engine to the cached full lists (if
 /// any), then fetch fresh lists from upstream when the cache is missing or
 /// stale, caching and hot-swapping the engine. A fetch failure is logged and
-/// left for the next launch — the seed / cached engine keeps working.
+/// left for the next launch - the seed / cached engine keeps working.
 pub fn load_and_refresh() {
     let spawned = std::thread::Builder::new()
         .name("adblock-lists".into())

@@ -1,7 +1,7 @@
 //! `browser_vault_search` across the real FFI boundary (P2-42, ADR-0049).
 //!
 //! The unit tests in `vault::search` prove the ranking; this proves the layer the
-//! native popover actually consumes — the C ABI and the JSON it returns — against
+//! native popover actually consumes - the C ABI and the JSON it returns - against
 //! the process-global vault, which a unit test inside `core` cannot do without
 //! clobbering the shared test process's `VAULT` for every other test.
 //!
@@ -36,7 +36,7 @@ fn search_reaches_the_whole_vault_over_the_ffi() {
     std::fs::create_dir_all(&home).unwrap();
     std::env::set_var("HOME", &home);
 
-    // A locked / never-initialized vault must not panic across the boundary —
+    // A locked / never-initialized vault must not panic across the boundary -
     // it yields an empty array, which the popover renders as "no results".
     assert_eq!(ids(&search("anything")), Vec::<String>::new());
 
@@ -50,7 +50,7 @@ fn search_reaches_the_whole_vault_over_the_ffi() {
     // By name: "work" hits "Work Account", not "Demo Login".
     assert_eq!(ids(&search("work")), vec!["demo-work"]);
 
-    // By username: "octocat" appears only in demo's username — the field the
+    // By username: "octocat" appears only in demo's username - the field the
     // host-based lookup could never reach.
     assert_eq!(ids(&search("octocat")), vec!["demo"]);
 
@@ -58,7 +58,7 @@ fn search_reaches_the_whole_vault_over_the_ffi() {
     assert_eq!(ids(&search("zzzznope")), Vec::<String>::new());
 
     // The boundary's standing guarantee (ADR-0017): metadata only, never a
-    // secret — `seed_demo_vault`'s passwords must not appear in the payload.
+    // secret - `seed_demo_vault`'s passwords must not appear in the payload.
     let json = search("").to_string();
     assert!(!json.contains("password"), "password key leaked: {json}");
     assert!(

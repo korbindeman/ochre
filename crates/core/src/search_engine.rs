@@ -1,4 +1,4 @@
-//! Default web search engine — persisted preference and query URL templates.
+//! Default web search engine - persisted preference and query URL templates.
 //!
 //! The core owns which engine is selected (ADR-0010); native hosts render the
 //! settings picker and suggestion fetches, keyed off the FFI wire value.
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
 /// A curated set of common search engines, including privacy-oriented options.
-/// Kept sparse — no custom engines or instance URLs in this slice.
+/// Kept sparse - no custom engines or instance URLs in this slice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchEngine {

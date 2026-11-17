@@ -4,7 +4,7 @@
 //! Smith-Waterman-style dynamic program: every query character must appear in
 //! order (a subsequence match), and among all valid alignments the one with the
 //! highest score wins. The scoring rewards the things that make a match feel
-//! "right" in a URL bar — a run of adjacent characters, and matches that land on
+//! "right" in a URL bar - a run of adjacent characters, and matches that land on
 //! a word boundary (the string start, or just after a `.`/`/`/`-`/`_`… or a
 //! camelCase hump). So `gh` prefers `**g**it**h**ub` over a scattered hit, and
 //! typing the start of a host it recognises ranks that host first.
@@ -121,16 +121,16 @@ pub fn fuzzy_match(query: &str, text: &str) -> Option<Match> {
 
     // Two DP grids over the n×m space, the standard formulation for a fuzzy
     // matcher with a consecutive-run bonus. The streak bonus makes the problem
-    // non-local — a fresh match can beat a gap here because it unlocks a longer
-    // adjacent run *later* — so a single "best score" per cell is not enough.
+    // non-local - a fresh match can beat a gap here because it unlocks a longer
+    // adjacent run *later* - so a single "best score" per cell is not enough.
     //
-    //   `mscore[i][j]` — best score for query[0..=i] with query[i] matched
+    //   `mscore[i][j]` - best score for query[0..=i] with query[i] matched
     //                    *exactly at* text[j] (or NEG if impossible).
-    //   `mprev[i][j]`  — where query[i-1] matched in that alignment (backtrack).
-    //   `hscore[i][j]` — best score for query[0..=i] over text[0..=j], whether
+    //   `mprev[i][j]`  - where query[i-1] matched in that alignment (backtrack).
+    //   `hscore[i][j]` - best score for query[0..=i] over text[0..=j], whether
     //                    the alignment ends in a match or a trailing gap.
-    //   `harg[i][j]`   — where query[i] matched in that best-so-far alignment.
-    //   `hgap[i][j]`   — whether hscore[i][j] came from a gap (to charge the
+    //   `harg[i][j]`   - where query[i] matched in that best-so-far alignment.
+    //   `hgap[i][j]`   - whether hscore[i][j] came from a gap (to charge the
     //                    cheaper gap-extend penalty on the next skip).
     //
     // Consecutive runs are rewarded by letting `mscore[i][j]` extend from the
@@ -199,7 +199,7 @@ pub fn fuzzy_match(query: &str, text: &str) -> Option<Match> {
         }
     }
 
-    // The best full-query alignment is the maximum over the last row — trailing
+    // The best full-query alignment is the maximum over the last row - trailing
     // gaps after the final match only subtract, so the peak sits exactly at the
     // column where the last query char matched.
     let last = (n - 1) * m;

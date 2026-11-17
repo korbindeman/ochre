@@ -12,8 +12,8 @@
 //! (ADR-0028); the process exits 0 (PASS) or 1 (FAIL).
 
 fn main() {
-    // Helper subprocesses never pass these flags — they run the separate
-    // `browser_helper` binary — so these branches only affect the main process.
+    // Helper subprocesses never pass these flags - they run the separate
+    // `browser_helper` binary - so these branches only affect the main process.
     if std::env::args().any(|arg| arg == "--redirect-selftest") {
         browser_core::redirect_selftest::run(); // never returns; exits with the verdict
     }

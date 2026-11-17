@@ -1,4 +1,4 @@
-//! The adblock-rust engine wrapper — domain resolver, engine construction, and
+//! The adblock-rust engine wrapper - domain resolver, engine construction, and
 //! the block decision. Pure over the `adblock` crate: no global state and no
 //! I/O (those live in [`super`] and [`super::lists`]), so it is unit-testable in
 //! isolation.
@@ -10,14 +10,14 @@ use adblock::Engine;
 use std::sync::Once;
 
 /// A `psl`-backed domain resolver. adblock's `embedded-domain-resolver` feature
-/// is disabled (spec §11), so we supply this — reusing the Public Suffix List
+/// is disabled (spec §11), so we supply this - reusing the Public Suffix List
 /// crate already compiled for the vault rather than adblock's separate `addr`.
 struct PslResolver;
 
 impl ResolvesDomain for PslResolver {
     fn get_host_domain(&self, host: &str) -> (usize, usize) {
         // The registrable domain (eTLD+1) is always a byte-suffix of `host`, so
-        // its start index is `host_len - domain_len` — the exact computation the
+        // its start index is `host_len - domain_len` - the exact computation the
         // crate's embedded resolver does. No valid domain ⇒ `(0, host.len())`,
         // per the trait contract.
         match psl::domain(host.as_bytes()) {
@@ -32,7 +32,7 @@ impl ResolvesDomain for PslResolver {
 }
 
 /// Register the domain resolver exactly once, process-wide. Must run before any
-/// engine construction or request check — the crate panics on a check otherwise.
+/// engine construction or request check - the crate panics on a check otherwise.
 /// Idempotent; safe to call from every entry point.
 pub fn ensure_resolver() {
     static ONCE: Once = Once::new();
@@ -53,8 +53,8 @@ pub fn build(rules: &str) -> Engine {
 }
 
 /// Should this request be blocked by the network rules? `BlockerResult::matched`
-/// already accounts for exception (allowlist) rules — an exception rule flips it
-/// to `false` — so the block decision is exactly that bit.
+/// already accounts for exception (allowlist) rules - an exception rule flips it
+/// to `false` - so the block decision is exactly that bit.
 ///
 /// `request_type` is the lowercase resource kind adblock expects (`"script"`,
 /// `"image"`, `"stylesheet"`, `"sub_frame"`, `"xmlhttprequest"`, …); see
@@ -63,12 +63,12 @@ pub fn should_block(engine: &Engine, url: &str, source_url: &str, request_type: 
     match Request::new(url, source_url, request_type) {
         Ok(request) => engine.check_network_request(&request).matched,
         // Non-network schemes (data:, blob:, about:, …) don't parse and are
-        // never a blockable ad request — fail open.
+        // never a blockable ad request - fail open.
         Err(_) => false,
     }
 }
 
-/// The cosmetic-filter stylesheet for `url` — the element-hiding selectors folded
+/// The cosmetic-filter stylesheet for `url` - the element-hiding selectors folded
 /// into one `display:none!important` rule, ready to inject as a `<style>` at
 /// document-start (P2-21, ADR-0020). Empty when the URL has no hide rules.
 ///
@@ -76,7 +76,7 @@ pub fn should_block(engine: &Engine, url: &str, source_url: &str, request_type: 
 /// (JSON-encoded `:has()`/`:style()`/… filters needing a JS operator to apply),
 /// generic class/id cosmetics (which need the page's observed class/id names via
 /// a separate `hidden_class_id_selectors` round-trip), and scriptlets (which need
-/// main-world execution) — all follow-ups. Selectors are sorted for stable output.
+/// main-world execution) - all follow-ups. Selectors are sorted for stable output.
 pub fn cosmetic_css(engine: &Engine, url: &str) -> String {
     let res = engine.url_cosmetic_resources(url);
     if res.hide_selectors.is_empty() {

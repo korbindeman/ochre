@@ -1,4 +1,4 @@
-//! Arc Browser sidebar import — `StorableSidebar.json` on macOS.
+//! Arc Browser sidebar import - `StorableSidebar.json` on macOS.
 //!
 //! Arc stores pinned tabs, folders, spaces, and favorites in one JSON document.
 //! Ephemeral ("Today") tabs, easels, and split views are not represented here and
@@ -16,7 +16,7 @@ const DEFAULT_ICON: &str = "✨";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArcImport {
     pub spaces: Vec<ArcSpace>,
-    /// Arc favorites (global strip) — imported into the first space.
+    /// Arc favorites (global strip) - imported into the first space.
     pub favorites: Vec<ArcTab>,
 }
 
@@ -31,7 +31,7 @@ pub struct ArcSpace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArcFolder {
     pub name: String,
-    /// Children in Arc sidebar order — tabs and nested folders interleaved.
+    /// Children in Arc sidebar order - tabs and nested folders interleaved.
     pub items: Vec<ArcPinnedItem>,
 }
 

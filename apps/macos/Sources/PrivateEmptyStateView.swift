@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Empty canvas for a private window — explains what's protected.
+/// Empty canvas for a private window - explains what's protected.
 struct PrivateEmptyStateView: View {
     var body: some View {
         VStack(spacing: 14) {

@@ -27,7 +27,7 @@ fn handle(msg: &Message) -> Option<serde_json::Value> {
 }
 
 /// Runs in the isolated world at document-start. Reports whenever the sampled
-/// color changes — meta tag edits, late body paint, SPA navigations.
+/// color changes - meta tag edits, late body paint, SPA navigations.
 const SCRIPT: &str = r#"(function () {
   if (!window.__browserCore) return;
   var last = '';

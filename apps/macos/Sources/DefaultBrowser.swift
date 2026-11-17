@@ -1,6 +1,6 @@
 import AppKit
 
-/// macOS default-browser integration — register as an http/https handler, check
+/// macOS default-browser integration - register as an http/https handler, check
 /// whether this build is already the system default, and request the handoff.
 enum DefaultBrowser {
     /// True when Launch Services would route both `http` and `https` to this app.

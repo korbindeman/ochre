@@ -3,10 +3,10 @@
 //! The vault's auth (and later sync) code is pure request-building + response-
 //! parsing; the actual network send is isolated behind [`HttpTransport`] so the
 //! flow logic is unit-testable against a mock and the real `ureq` call lives in
-//! exactly one place ([`UreqTransport`]). The client is **blocking** — vault
+//! exactly one place ([`UreqTransport`]). The client is **blocking** - vault
 //! calls run off the UI thread; there is no async runtime.
 
-/// HTTP method — GET/POST plus PUT/DELETE for single-cipher edit.
+/// HTTP method - GET/POST plus PUT/DELETE for single-cipher edit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     Get,
@@ -67,7 +67,7 @@ impl HttpRequest {
 }
 
 /// A response from a [`HttpTransport`]. Non-2xx statuses are returned normally
-/// (not as errors) so the flow can inspect 4xx bodies — a Bitwarden 2FA
+/// (not as errors) so the flow can inspect 4xx bodies - a Bitwarden 2FA
 /// challenge arrives as HTTP 400 with a body we must parse.
 #[derive(Debug, Clone)]
 pub struct HttpResponse {
@@ -75,7 +75,7 @@ pub struct HttpResponse {
     pub body: Vec<u8>,
 }
 
-/// A transport-level failure (DNS, TLS, connection, body read) — distinct from
+/// A transport-level failure (DNS, TLS, connection, body read) - distinct from
 /// an HTTP error status, which is a normal [`HttpResponse`].
 #[derive(Debug)]
 pub struct TransportError(pub String);

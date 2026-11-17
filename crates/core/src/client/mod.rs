@@ -1,4 +1,4 @@
-//! Client — the CEF Client and handler implementations.
+//! Client - the CEF Client and handler implementations.
 //!
 //! This module provides:
 //! - `BrowserClient`: the top-level Client with display, life span, and load handlers.
@@ -44,7 +44,7 @@ fn platform_title_change(_browser: Option<&mut Browser>, _title: Option<&CefStri
 
 static HANDLER_INSTANCE: OnceLock<Weak<Mutex<BrowserHandler>>> = OnceLock::new();
 
-/// Shared state for the browser handler — tracks all live browser instances
+/// Shared state for the browser handler - tracks all live browser instances
 /// and the closing flag.
 pub struct BrowserHandler {
     runtime_style: RuntimeStyle,
@@ -53,12 +53,12 @@ pub struct BrowserHandler {
     weak_self: Weak<Mutex<Self>>,
     /// Per-browser main-frame URL, tracked from `on_address_change` so title
     /// and favicon changes attribute to the right history row. Keyed by CEF
-    /// browser identifier (*not* the core tab id — the `tabs::note_*` calls
+    /// browser identifier (*not* the core tab id - the `tabs::note_*` calls
     /// translate, ADR-0013); multi-tab means one "current page" per browser,
     /// not one globally.
     current_url: HashMap<i32, String>,
     /// CEF ids of browsers whose view is embedded in a **host-owned** window
-    /// (tabs, normal and private) — registered at creation, dropped in
+    /// (tabs, normal and private) - registered at creation, dropped in
     /// `on_before_close`. [`do_close`](Self::do_close) must return `true` for
     /// these: CEF's default close would `performClose:` the browser's
     /// top-level parent window, i.e. the whole app window (ADR-0037).
@@ -188,7 +188,7 @@ impl BrowserHandler {
     /// Decide who closes the window when a browser closes (ADR-0037).
     ///
     /// Returning `false` makes CEF send the platform close (`performClose:` on
-    /// macOS) to the browser's **top-level parent window** — for a tab that is
+    /// macOS) to the browser's **top-level parent window** - for a tab that is
     /// the host's own `NSWindow`, so a mere tab close/hide/suspend would close
     /// the whole window whenever the tab's view is still attached when CEF's
     /// close pipeline lands. The host's view detach usually wins that race,
@@ -200,7 +200,7 @@ impl BrowserHandler {
     /// - app shutdown (`is_closing`): CEF's close re-request is what lets the
     ///   host's vetoed `windowShouldClose` proceed (`embed::request_close_all`);
     /// - non-tab browsers (popups, DevTools): CEF created their window, and
-    ///   the default close is what closes it — OAuth popups rely on
+    ///   the default close is what closes it - OAuth popups rely on
     ///   `window.close()` working this way.
     fn do_close(&mut self, browser: Option<&mut Browser>) -> bool {
         if self.is_closing {
@@ -218,7 +218,7 @@ impl BrowserHandler {
         }
         // A page that closed itself (`window.close()` in a tab) arrives here
         // with its tab still in the model: drop the tab row so the host prunes
-        // the view, completing destruction. A no-op for host-initiated closes —
+        // the view, completing destruction. A no-op for host-initiated closes -
         // those already removed the tab or took its browser binding.
         if crate::private_window::is_private_cef(id) {
             crate::private_window::note_closed(id);
@@ -253,7 +253,7 @@ impl BrowserHandler {
             self.is_closing
         );
         // Quit only when the whole app is closing (window close / ⌘Q) and the
-        // last browser is gone — *not* when the user merely closed the last tab.
+        // last browser is gone - *not* when the user merely closed the last tab.
         if self.is_closing && self.browser_list.is_empty() {
             quit_message_loop();
         }
@@ -305,7 +305,7 @@ impl BrowserHandler {
     /// Close every live browser. Associated function (not a method) on
     /// purpose: `close_browser` synchronously re-enters `do_close` /
     /// `on_before_close` on the UI thread, and those handlers lock this same
-    /// mutex — so the caller must NOT hold the lock, and this function only
+    /// mutex - so the caller must NOT hold the lock, and this function only
     /// takes it briefly to snapshot the browser list.
     pub fn close_all_browsers(this: &Arc<Mutex<Self>>, force_close: bool) {
         let thread_id = ThreadId::UI;
@@ -330,7 +330,7 @@ impl BrowserHandler {
     }
 }
 
-/// Register `browser` as host-embedded — a tab whose view lives inside a
+/// Register `browser` as host-embedded - a tab whose view lives inside a
 /// host-owned window (ADR-0037). Called right after the synchronous tab
 /// creation paths (`embed::create_tab_browser`, private windows); popups and
 /// DevTools never pass through those, so they keep CEF's default close.
@@ -392,7 +392,7 @@ impl BrowserClient {
     /// `is_closing`, and `embedded_tabs` are app-global state, and everything
     /// that drains or counts browsers (`close_all_browsers`, `browser_count`,
     /// `mark_closing`) reaches them through [`BrowserHandler::instance`]. A
-    /// fresh handler per client silently splits that state per tab — each
+    /// fresh handler per client silently splits that state per tab - each
     /// browser's `do_close`/`on_before_close` then consults a handler the rest
     /// of the app never talks to.
     ///

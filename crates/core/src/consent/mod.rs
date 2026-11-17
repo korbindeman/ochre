@@ -1,16 +1,16 @@
-//! Cookie-consent — reject-first CMP automation + banner hiding (P2-22/P2-25/P2-26, ADR-0026).
+//! Cookie-consent - reject-first CMP automation + banner hiding (P2-22/P2-25/P2-26, ADR-0026).
 //!
 //! EU consent banners (GDPR/ePrivacy CMPs) are handled by *opting out*, not just
-//! hiding — hiding-without-rejecting leaves the user tracked behind a clean face,
+//! hiding - hiding-without-rejecting leaves the user tracked behind a clean face,
 //! which is the anti-pattern we position against (ADR-0026). This [`crate::inject`]
 //! consumer runs both tiers, gated on one **cookie-consent toggle** (distinct from
 //! ad-block):
 //!
-//! - **Tier B (reject)** — detect a known CMP and click its "reject all" control,
+//! - **Tier B (reject)** - detect a known CMP and click its "reject all" control,
 //!   so the CMP dismisses itself with consent *denied* (OneTrust/Cookiebot/Didomi
 //!   and other top CMPs via a core-served ruleset; a `MutationObserver` catches
 //!   async banners).
-//! - **Tier A (hide)** — a consent-plugin stylesheet *plus* the EasyList Cookie
+//! - **Tier A (hide)** - a consent-plugin stylesheet *plus* the EasyList Cookie
 //!   cosmetic engine (bundled seed → background refresh → hot-swap). Generic
 //!   `##` rules are matched by scanning the page's class/id names and injecting
 //!   `display:none` CSS at document-start. Honest fallback: hidden ≠ rejected.
@@ -55,7 +55,7 @@ pub fn rejected_count(tab_id: i32) -> u64 {
         .unwrap_or(0)
 }
 
-/// Reset a tab's count — call on a main-frame navigation start (new page).
+/// Reset a tab's count - call on a main-frame navigation start (new page).
 pub fn reset_count(tab_id: i32) {
     counts()
         .lock()
@@ -76,8 +76,8 @@ pub fn forget_tab(tab_id: i32) {
 static ENGINE: OnceLock<RwLock<Arc<Engine>>> = OnceLock::new();
 
 /// Pre-folded CSS for global (`###id` / `##.class`) hide rules from the cookie
-/// list. adblock-rust does not surface these via `hide_selectors` — they only
-/// match through `hidden_class_id_selectors` once the page reports its ids —
+/// list. adblock-rust does not surface these via `hide_selectors` - they only
+/// match through `hidden_class_id_selectors` once the page reports its ids -
 /// too late for banners injected after document-start. Hot-swapped with the engine.
 static GLOBAL_HIDE_CSS: OnceLock<RwLock<String>> = OnceLock::new();
 
@@ -85,7 +85,7 @@ static GLOBAL_HIDE_CSS: OnceLock<RwLock<String>> = OnceLock::new();
 /// binding round-trip. A single ~300k script exceeds CEF's injection limit.
 static LIST_HIDE_SCRIPTS: OnceLock<RwLock<Vec<&'static str>>> = OnceLock::new();
 
-/// Selectors per injected stylesheet chunk — keeps each script under ~50k.
+/// Selectors per injected stylesheet chunk - keeps each script under ~50k.
 const LIST_HIDE_CHUNK_SELECTORS: usize = 600;
 
 /// Install the cookie-list engine (seed on first call, hot-swap on refresh).
@@ -286,7 +286,7 @@ pub fn is_enabled() -> bool {
 }
 
 /// Turn cookie-consent handling on/off (persisted). Takes effect on the next
-/// page load (the host reloads the active tab — see [`crate::embed`]).
+/// page load (the host reloads the active tab - see [`crate::embed`]).
 pub fn set_enabled(enabled: bool) {
     let changed = {
         let mut state = STATE.lock().unwrap_or_else(|p| p.into_inner());
@@ -349,7 +349,7 @@ pub fn register() {
         handler: handle,
     });
     // Global list hides (~300k CSS) inject synchronously at document-start in
-    // chunks — too large for one script or the config binding (P2-26).
+    // chunks - too large for one script or the config binding (P2-26).
     for script in list_hide_scripts() {
         register_consumer(Consumer {
             channel: "consent-list-hide",
@@ -485,7 +485,7 @@ const RULESET_JSON: &str = r##"{
   ]
 }"##;
 
-/// Tier A — consent-plugin containers. Injected optimistically at document-start
+/// Tier A - consent-plugin containers. Injected optimistically at document-start
 /// (embedded in [`operator_script`]) before the core config round-trip. Global
 /// list rules ride a separate document-start script ([`list_hide_script`]).
 const PLUGIN_HIDE_SELECTORS: &str = "#onetrust-consent-sdk,\
@@ -534,7 +534,7 @@ fn operator_script() -> &'static str {
         let plugin_css = plugin_hide_css();
         let script = format!(
             r##"(function () {{
-  // Per-document guard — `window.__cookieConsent` persisted across navigations
+  // Per-document guard - `window.__cookieConsent` persisted across navigations
   // and blocked re-run on the real page after `runImmediately` fired on the
   // initial empty document during CDP setup (ADR-0017).
   if (!window.__browserCore || document.documentElement.hasAttribute('data-browser-consent-op')) return;
@@ -548,7 +548,7 @@ fn operator_script() -> &'static str {
     (document.head || document.documentElement).appendChild(style);
   }}
 
-  // Optimistic plugin hide — before the config round-trip — so known CMP
+  // Optimistic plugin hide - before the config round-trip - so known CMP
   // containers never flash. Removed when the core reports consent is off.
   var pluginStyle = document.createElement('style');
   pluginStyle.setAttribute('data-cookie-hide', '');
@@ -746,7 +746,7 @@ mod tests {
     #[test]
     fn global_id_hides_require_dom_ids_not_url_cosmetics() {
         // adblock-rust keeps global `###id` / `##.class` rules out of
-        // `hide_selectors` — they only match via `hidden_class_id_selectors`
+        // `hide_selectors` - they only match via `hidden_class_id_selectors`
         // once the page reports its ids/classes.
         install_engine("###bbccookies\n###CookieBanner\n");
         let engine = crate::adblock::build_engine("###bbccookies\n###CookieBanner\n");
@@ -808,7 +808,7 @@ mod tests {
 
     #[test]
     fn cosmetic_reply_matches_generic_class_rules() {
-        // Pure engine path — the global ENGINE is shared across parallel tests.
+        // Pure engine path - the global ENGINE is shared across parallel tests.
         let engine = build_engine("##.cookie-alert\n###CookieBanner\n");
         let classes = vec!["cookie-alert".to_string(), "main".to_string()];
         let ids: Vec<String> = vec![];

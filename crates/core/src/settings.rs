@@ -1,21 +1,21 @@
-//! Browser-wide user preferences — persisted under `root_cache_dir()` and
+//! Browser-wide user preferences - persisted under `root_cache_dir()` and
 //! owned by the core (ADR-0010: native settings UI is view-only over FFI).
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-/// When the vault should auto-lock. Timed idle lock is intentionally absent —
+/// When the vault should auto-lock. Timed idle lock is intentionally absent -
 /// policies are event-based (quit, Mac reboot, password use).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum VaultAutoLock {
-    /// No automatic lock during a session — manual Lock Now only.
+    /// No automatic lock during a session - manual Lock Now only.
     Never,
     /// Lock when Browser quits gracefully.
     #[default]
     OnBrowserClose,
-    /// Lock when the Mac reboots — not when Browser relaunches. The host forwards
+    /// Lock when the Mac reboots - not when Browser relaunches. The host forwards
     /// the system boot time; unlock records it and a boot-session change locks.
     #[serde(alias = "on_restart")]
     OnMacRestart,
@@ -73,7 +73,7 @@ struct SettingsState {
     /// Whether the first-run private-window password prompt has been shown.
     #[serde(default)]
     private_vault_prompt_seen: bool,
-    /// Legacy timed setting — read for migration only.
+    /// Legacy timed setting - read for migration only.
     #[serde(default, skip_serializing)]
     vault_lock_timeout_secs: Option<u64>,
 }
@@ -357,7 +357,7 @@ mod tests {
         )
         .unwrap();
 
-        // Stand in for root_cache_dir — test the logic directly.
+        // Stand in for root_cache_dir - test the logic directly.
         let state: SettingsState = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(state.vault_auto_lock, VaultAutoLock::OnMacRestart);
         assert_eq!(state.vault_unlock_boot_secs, 100);
@@ -373,7 +373,7 @@ mod tests {
         }
         assert!(locked);
 
-        // Don't leak OnMacRestart + boot secs into later tests — `is_locked()`
+        // Don't leak OnMacRestart + boot secs into later tests - `is_locked()`
         // re-enters this policy and used to recurse forever.
         SYSTEM_BOOT_SECS.store(0, Ordering::Relaxed);
         *STATE.lock().unwrap() = SettingsState::default();

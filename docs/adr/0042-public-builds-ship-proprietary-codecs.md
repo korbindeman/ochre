@@ -1,4 +1,4 @@
-# ADR-0042: Public browser builds ship proprietary codecs — a conscious pre-launch risk, codec-less as the one-flag retreat
+# ADR-0042: Public browser builds ship proprietary codecs - a conscious pre-launch risk, codec-less as the one-flag retreat
 
 - **Status:** Accepted
 - **Date:** 2026-07-09
@@ -13,19 +13,19 @@ distribution plan: **`ochre` is a public repo, and we intend to publish public b
 built by GitHub Actions.**
 
 The patent-license obligation for H.264/AAC decoding attaches to **whoever ships the decoding
-software to end users** — here, the release publisher — not to where a build artifact is stored.
+software to end users** - here, the release publisher - not to where a build artifact is stored.
 So a public browser release that embeds the codec-enabled framework *is* a public redistribution
 of H.264/AAC decoders under the maintainer's name, regardless of the CEF tarball living in a
 private artifact repo. Keeping the raw tarball private reduces exposure **only** if the public
 builds are codec-less. This is a distribution decision ADR-0040 did not actually make.
 
 The forces:
-- **AVC/H.264** is royalty-free under Via LA's **100,000-units/year** tier — comfortable at our
+- **AVC/H.264** is royalty-free under Via LA's **100,000-units/year** tier - comfortable at our
   scale for a long time.
-- **AAC has no royalty-free tier** — technically owed from unit one. This is the naked exposure,
+- **AAC has no royalty-free tier** - technically owed from unit one. This is the naked exposure,
   and public release makes it attributable to a named individual on GitHub.
 - The product thesis (roadmap) is a *usable* browser. Codec-less public builds mean video doesn't
-  play — the exact problem ADR-0040 set out to solve stays unsolved for public users.
+  play - the exact problem ADR-0040 set out to solve stays unsolved for public users.
 - Many small OSS projects (OBS being the canonical example) ship proprietary codecs publicly and
   accept the risk; enforcement against hobby-scale free software is near-zero in practice.
 
@@ -44,9 +44,9 @@ while the project is pre-launch and small. Concretely:
   a clean **maintainer-codecs / contributor-codecless** split for free.
 - **Codec-less is the documented one-flag retreat.** The fetch/build path keeps the stock-prebuilt
   fallback as a first-class configuration, so we can revert public builds to clean-hands the moment
-  scale, attention, or the AAC exposure becomes uncomfortable — without an architecture change.
+  scale, attention, or the AAC exposure becomes uncomfortable - without an architecture change.
 - The **raw CEF-with-codecs tarball stays in the private `ochre_cef` repo** (release assets, one
-  per CEF version) — not for patent protection (the app makes the codecs public anyway) but to
+  per CEF version) - not for patent protection (the app makes the codecs public anyway) but to
   avoid becoming a convenient standalone CEF-with-codecs *upstream* others pull from, i.e. avoiding
   an additional redistribution beyond our own app.
 
@@ -55,24 +55,24 @@ risk-acceptance at hobby scale, to be revisited before distribution numbers or v
 
 ## Alternatives
 
-- **Codec-less public builds** (the Chromium / ungoogled-chromium path) — rejected *for now*:
+- **Codec-less public builds** (the Chromium / ungoogled-chromium path) - rejected *for now*:
   clean on patents, but ships the exact broken-video experience we're trying to fix; public users
   would have to side-load codecs. Kept available as the retreat, not the default.
-- **Pretend private artifact hosting neutralized the exposure** — rejected as false: the codecs
+- **Pretend private artifact hosting neutralized the exposure** - rejected as false: the codecs
   reach the public through the app regardless of where the artifact is stored. Recording the real
   posture is the point of this ADR.
-- **Pay AAC per-unit royalties for a free product** — rejected as absurd at this scale; the point
+- **Pay AAC per-unit royalties for a free product** - rejected as absurd at this scale; the point
   of the retreat flag is to have a clean exit rather than a royalty stream.
-- **Bundle HEVC** — still rejected (ADR-0040): worse, multi-pool, no free tier, not needed.
+- **Bundle HEVC** - still rejected (ADR-0040): worse, multi-pool, no free tier, not needed.
 
 ## Consequences
 
-- Public users get a browser where mainstream H.264/AAC video plays — the thesis holds.
+- Public users get a browser where mainstream H.264/AAC video plays - the thesis holds.
 - The maintainer (release publisher) carries the AAC exposure publicly and by name. Accepted
-  consciously; **file a scale-gated revisit** — reassess (retreat to codec-less, or pursue a
+  consciously; **file a scale-gated revisit** - reassess (retreat to codec-less, or pursue a
   license) before download volume or public visibility grows meaningfully.
 - The GHA release workflow needs a read-only PAT for `ochre_cef` as a repo secret; the fetch script
-  must degrade to the stock prebuilt when the token is absent (contributor path) — this is a hard
+  must degrade to the stock prebuilt when the token is absent (contributor path) - this is a hard
   requirement, not a nicety, and is what makes the maintainer/contributor split work.
 - The retreat must stay real: the codec-less build path is tested/kept working, not left to rot,
   so "flip back to clean-hands" is genuinely one flag.

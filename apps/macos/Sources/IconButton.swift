@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The house style for chrome icon buttons (style §17): a quiet rounded fill that
-/// appears on hover and *deepens on press* — the two-stage feedback native macOS /
+/// appears on hover and *deepens on press* - the two-stage feedback native macOS /
 /// Arc toolbar buttons give. Our custom `.plain` buttons previously showed hover at
 /// best (via a hand-rolled `@State hovering` + `.background`) and never a pressed
 /// state; this folds that boilerplate into one place and adds the press.
@@ -31,7 +31,7 @@ struct IconButtonStyle: ButtonStyle {
     }
 
     /// A nested `View` (not a bare modifier) so the hover highlight can hold `@State`
-    /// and read the environment's enabled / Reduce-Motion flags — a `ButtonStyle`
+    /// and read the environment's enabled / Reduce-Motion flags - a `ButtonStyle`
     /// body can't do either directly.
     private struct Feedback: View {
         let configuration: Configuration

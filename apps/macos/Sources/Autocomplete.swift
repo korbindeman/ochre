@@ -24,7 +24,7 @@ struct Suggestion: Identifiable, Sendable {
     let title: String
     let subtitle: String?
     let run: @MainActor @Sendable () -> Void
-    /// Unified ranking score — higher rows float up after providers merge.
+    /// Unified ranking score - higher rows float up after providers merge.
     var score: Int = 0
     /// Character offsets in `title` / `subtitle` the query matched, for
     /// highlighting. Empty when the source has nothing to emphasise (a live
@@ -32,7 +32,7 @@ struct Suggestion: Identifiable, Sendable {
     var titleMatches: [Int] = []
     var subtitleMatches: [Int] = []
     /// The normalized URL (scheme + `www.` stripped) this row points at, when it
-    /// is a page — the basis for inline autocomplete. `nil` for non-page rows
+    /// is a page - the basis for inline autocomplete. `nil` for non-page rows
     /// (a web search).
     var displayURL: String? = nil
     /// Key for cross-source deduplication (usually a normalized page URL).
@@ -129,7 +129,7 @@ final class SuggestionController: ObservableObject {
             self.publishLocal(locals)
         }
 
-        // Remote tier: debounced. Skipped for an empty query — there is nothing
+        // Remote tier: debounced. Skipped for an empty query - there is nothing
         // to complete and the zero-state is entirely local.
         guard !remoteProviders.isEmpty, !query.isEmpty else { return }
         remoteTask = Task { [weak self, debounce] in
@@ -142,7 +142,7 @@ final class SuggestionController: ObservableObject {
     }
 
     /// Populate the zero-state dropdown (top sites, frecency history). No current
-    /// host calls this — omniboxes stay collapsed until the user types.
+    /// host calls this - omniboxes stay collapsed until the user types.
     func showZeroState() {
         update(query: "", allowInline: false, zeroState: true)
     }
@@ -166,7 +166,7 @@ final class SuggestionController: ObservableObject {
     }
 
     /// The keyboard-highlighted suggestion (arrow navigation), if any. Hover does
-    /// not count — return commits the field text unless the user arrowed to a row.
+    /// not count - return commits the field text unless the user arrowed to a row.
     func selected() -> Suggestion? {
         guard let selection, suggestions.indices.contains(selection) else { return nil }
         return suggestions[selection]
@@ -207,7 +207,7 @@ final class SuggestionController: ObservableObject {
         let merged = head + remotes.sorted { $0.score > $1.score } + tail
         suggestions = dedupe(merged)
         // Keep the current highlight if still valid; otherwise clear it. Never
-        // disturb the inline completion — remote rows never drive it.
+        // disturb the inline completion - remote rows never drive it.
         if let s = selection, !suggestions.indices.contains(s) {
             selection = nil
         }
@@ -224,7 +224,7 @@ final class SuggestionController: ObservableObject {
     }
 
     /// Index of the best host-prefix row: shallowest URL first (bare domain over
-    /// deep path), then highest score — so TopSites `youtube.com` beats a
+    /// deep path), then highest score - so TopSites `youtube.com` beats a
     /// frecency-heavy `youtube.com/watch?v=…` from history.
     private func bestHostPrefixIndex(in list: [Suggestion], typed: String) -> Int? {
         list.enumerated()
@@ -238,12 +238,12 @@ final class SuggestionController: ObservableObject {
             .offset
     }
 
-    /// Path segments after the host — `youtube.com` is 0, `youtube.com/watch` is 1.
+    /// Path segments after the host - `youtube.com` is 0, `youtube.com/watch` is 1.
     private func displayPathDepth(_ displayURL: String) -> Int {
         max(0, displayURL.split(separator: "/").count - 1)
     }
 
-    /// Complete to the bare host when the query is a host prefix — "you" becomes
+    /// Complete to the bare host when the query is a host prefix - "you" becomes
     /// "youtube.com", not "youtube.com/watch?v=…".
     private func hostPrefixFill(_ suggestion: Suggestion, _ typed: String) -> String? {
         guard let display = suggestion.displayURL else { return nil }
@@ -255,7 +255,7 @@ final class SuggestionController: ObservableObject {
         return typed + host.dropFirst(typed.count)
     }
 
-    /// Full display-URL prefix completion — used when no host-level match exists.
+    /// Full display-URL prefix completion - used when no host-level match exists.
     private func displayPrefixFill(_ suggestion: Suggestion, _ typed: String) -> String? {
         guard let display = suggestion.displayURL else { return nil }
         let q = typed.lowercased()
@@ -302,7 +302,7 @@ final class SuggestionController: ObservableObject {
 struct AutocompleteList: View {
     @ObservedObject var controller: SuggestionController
     let onChoose: (Suggestion) -> Void
-    /// Visual hover highlight only — does not affect return-key behaviour.
+    /// Visual hover highlight only - does not affect return-key behaviour.
     @State private var hoverIndex: Int?
 
     var body: some View {
@@ -332,8 +332,8 @@ struct AutocompleteList: View {
 }
 
 /// Render `text` with the characters at `matches` (character offsets, as the
-/// Rust matcher reports them) emphasised — heavier weight, and full-strength
-/// colour when `dimUnmatched` fades the rest — so the user sees exactly what
+/// Rust matcher reports them) emphasised - heavier weight, and full-strength
+/// colour when `dimUnmatched` fades the rest - so the user sees exactly what
 /// their query hit. Offsets are treated as `Character` positions, which lines up
 /// with the matcher's scalar indices for the URLs and titles it sees.
 private func highlighted(
@@ -429,7 +429,7 @@ private struct SuggestionIconView: View {
 /// inline-autocomplete behaviour both the command bar and the sidebar URL bar
 /// share: the default match is shown with its completed tail selected, and the
 /// completion is suppressed while the user deletes. The host owns the field's
-/// chrome, the results list, and keyboard navigation (arrows/return/escape) —
+/// chrome, the results list, and keyboard navigation (arrows/return/escape) -
 /// this view only manages the field text and feeds the controller.
 struct AutocompleteField: View {
     @ObservedObject var controller: SuggestionController
@@ -438,13 +438,13 @@ struct AutocompleteField: View {
     /// Notified when the field gains or loses focus. The sidebar URL bar
     /// dismisses itself on focus loss; the command bar (a key panel) ignores it.
     var onFocusChange: (Bool) -> Void = { _ in }
-    /// Select the entire field on focus and on click — standard address-bar UX.
+    /// Select the entire field on focus and on click - standard address-bar UX.
     var selectAllOnFocus: Bool = false
 
     /// The text shown in the field, which may carry an inline-autocomplete tail
     /// beyond what the user typed.
     @State private var fieldText: String
-    /// What the user has actually typed (the field minus any inline tail) — drives
+    /// What the user has actually typed (the field minus any inline tail) - drives
     /// the query and the forward-vs-delete decision that gates inline completion.
     @State private var userText: String
     /// Set while we write an inline completion, so the resulting `onChange` isn't
@@ -551,7 +551,7 @@ extension View {
     ///
     /// Note: hosts embedded in a borderless `NSPanel` (like the command bar) may
     /// prefer an AppKit key monitor, which intercepts arrow keys before the
-    /// focused field more reliably than `onKeyPress` — see `CommandBarController`.
+    /// focused field more reliably than `onKeyPress` - see `CommandBarController`.
     func autocompleteKeyboard(
         _ controller: SuggestionController,
         onChoose: @escaping (Suggestion) -> Void,

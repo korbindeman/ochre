@@ -10,7 +10,7 @@
 ## Summary
 
 `AppDelegate.closeActiveTab` guards the ⌘W window close against key-repeat with
-`NSApp.currentEvent?.isARepeat`. `isARepeat` is only valid on key events — AppKit raises
+`NSApp.currentEvent?.isARepeat`. `isARepeat` is only valid on key events - AppKit raises
 `NSInternalInconsistencyException` ("Invalid message sent to event") for any other event type,
 and `NSApp.currentEvent` is whatever AppKit last dequeued, not necessarily the triggering key
 press. Reaching the close-window branch with a mouse event current (File ▸ Close Tab clicked in
@@ -28,7 +28,7 @@ events.
 
 ## Evidence
 
-Found by the ⌘W close-path self-test (`just close-selftest`, ADR-0037) — its final case died
+Found by the ⌘W close-path self-test (`just close-selftest`, ADR-0037) - its final case died
 with signal 6 instead of closing the window.
 
 ### Key stack / backtrace
@@ -62,5 +62,5 @@ if let event = NSApp.currentEvent, event.type == .keyDown, event.isARepeat { ret
 
 - `NSApp.currentEvent` is a grab-bag: never call type-restricted NSEvent accessors
   (`isARepeat`, `characters`, `keyCode`, …) on it without checking `event.type` first.
-- Menu actions must not assume they were invoked by their key equivalent — every shortcut has a
+- Menu actions must not assume they were invoked by their key equivalent - every shortcut has a
   mouse path through the menu bar.
