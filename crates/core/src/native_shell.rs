@@ -1,11 +1,11 @@
-//! Pure-Rust native shell — an AppKit `NSWindow` hosting the embedded browser.
+//! Pure-Rust native shell - an AppKit `NSWindow` hosting the embedded browser.
 //!
 //! A spike proving the embedded ("Option B") hosting model without Swift: this
 //! process owns the `NSWindow` (built directly with objc2/AppKit), hands its
 //! content view to [`crate::embed::create_browser`], and lets CEF pump the run
 //! loop. It drives the exact same lifecycle the SwiftUI app drives over FFI
 //! (`initialize` → `create_browser` → `run_message_loop` → `shutdown`), minus
-//! the FFI — so it isolates window-embedding issues from Xcode/Swift/bridging
+//! the FFI - so it isolates window-embedding issues from Xcode/Swift/bridging
 //! ones.
 //!
 //! Run with `just run --native-shell [--url=...]`.
@@ -106,7 +106,7 @@ pub fn run() -> Result<(), &'static str> {
         .unwrap_or_else(|| DEFAULT_URL.to_owned());
 
     // Loads the CEF framework, installs the CEF-conformant NSApplication, and
-    // initializes CEF — all before we create the window, matching the order
+    // initializes CEF - all before we create the window, matching the order
     // the SwiftUI host uses.
     if !embed::initialize() {
         return Err("failed to initialize CEF");
@@ -132,7 +132,10 @@ pub fn run() -> Result<(), &'static str> {
     // We own the window via `Retained`; the AppKit default of also releasing
     // it on close would over-release.
     unsafe { window.setReleasedWhenClosed(false) };
-    window.setTitle(&NSString::from_str("Browser (native shell)"));
+    window.setTitle(&NSString::from_str(&format!(
+        "{} (native shell)",
+        crate::product::NAME
+    )));
 
     let container: Retained<ContainerView> =
         unsafe { msg_send![ContainerView::alloc(mtm), initWithFrame: content_rect] };

@@ -1,4 +1,4 @@
-//! CEF bundler — assemble `browser.app` so the standalone binary can run.
+//! CEF bundler - assemble `browser.app` so the standalone binary can run.
 //!
 //! CEF on macOS must run from a `.app` bundle whose `Contents/Frameworks` holds
 //! `Chromium Embedded Framework.framework` and one helper app per subprocess
@@ -6,8 +6,8 @@
 //! and lays out that structure via cef-rs's `bundle` helper.
 //!
 //! Output:
-//! - debug (default): `target/bundle/browser.app` — used by `just run` / `just bundle`
-//! - release (`--release`): `target/bundle-release/browser.app` — used by `just dogfood`
+//! - debug (default): `target/bundle/browser.app` - used by `just run` / `just bundle`
+//! - release (`--release`): `target/bundle-release/browser.app` - used by `just dogfood`
 //!
 //! cef-rs's `build_bundle` hardcodes `target/debug`; we call `bundle` directly so
 //! release helpers stay matched to release binaries.
@@ -34,9 +34,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Match apps/macos/project.yml PRODUCT_BUNDLE_IDENTIFIER so standalone
     // bundles and the SwiftUI shell share one identifier family.
     let (bundle_id, display_name) = if release {
-        ("com.nativechrome.Browser", "Browser")
+        (
+            browser_core::product::BUNDLE_ID,
+            browser_core::product::NAME,
+        )
     } else {
-        ("com.nativechrome.Browser.dev", "Browser Dev")
+        (
+            browser_core::product::BUNDLE_ID_DEV,
+            browser_core::product::NAME_DEV,
+        )
     };
     let bundle_info = BundleInfo::new(
         "browser",
@@ -60,6 +66,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .arg(&bundle_metadata.helper_name);
     if release {
         build.arg("--release");
+    }
+    if let Ok(features) = env::var("BROWSER_CARGO_FEATURES") {
+        if !features.is_empty() {
+            build.arg("--features").arg(features);
+        }
     }
     if !build.status()?.success() {
         return Err(io::Error::from(io::ErrorKind::Interrupted).into());

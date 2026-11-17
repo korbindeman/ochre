@@ -6,7 +6,7 @@
 # same identifier family (e.g. com.example.Browser.helper.renderer), not a stale
 # dev-only ID that doesn't match the SwiftUI shell.
 #
-# Usage: patch-helper-bundle-ids.sh /path/to/Browser.app
+# Usage: patch-helper-bundle-ids.sh /path/to/App.app
 set -euo pipefail
 
 APP="${1:?app bundle path}"

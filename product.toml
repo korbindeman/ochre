@@ -1,0 +1,19 @@
+# Canonical product identity. See ADR-0060 and `.claude/skills/rename-product/SKILL.md`.
+#
+# `name` is what users see: Ochre.app, the menu bar, window title, Finder,
+# Application Support, and release artifacts. Code identifiers (crates, FFI,
+# Swift types, Xcode target/scheme) stay `browser` / `Browser` across renames.
+#
+# Change this file, run `just sync-product`, then `just product-check`.
+
+name = "Ochre"
+dev_suffix = " Dev"
+
+# Last component of the macOS bundle ID (`{bundle_id_prefix}.{bundle_id_name}`).
+# Changing this resets TCC, UserDefaults, and default-browser registration.
+bundle_id_prefix = "com.nativechrome"
+bundle_id_name = "Ochre"
+
+# Previous `name` values. First launch migrates Application Support folders;
+# crash harvest still scans these names.
+legacy_names = ["Browser"]

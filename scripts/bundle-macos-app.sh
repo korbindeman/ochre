@@ -1,10 +1,10 @@
 #!/bin/bash
-# Post-build phase for the macOS Browser.app (run by Xcode via apps/macos/project.yml).
+# Post-build phase for the macOS .app (run by Xcode via apps/macos/project.yml).
 #
-# Xcode has just produced Browser.app with the Swift code linked against
+# Xcode has just produced the host .app with the Swift code linked against
 # libbrowser_ffi.dylib. CEF loads its 215 MB framework (dlopen) and launches its
-# helper subprocess (exec) from Contents/Frameworks at runtime — neither is
-# linked — so we inject them here, embed the dylib, then ad-hoc sign inside-out
+# helper subprocess (exec) from Contents/Frameworks at runtime - neither is
+# linked - so we inject them here, embed the dylib, then ad-hoc sign inside-out
 # so the (otherwise unsigned) dev build launches.
 set -euo pipefail
 
@@ -48,8 +48,8 @@ ln -s "Versions/Current/$CEF_BIN" "$CEF_FW/$CEF_BIN"
 ln -s "Versions/Current/Resources" "$CEF_FW/Resources"
 ln -s "Versions/Current/Libraries" "$CEF_FW/Libraries"
 
-# CEF derives per-role helper bundle names from the subprocess path — renderers
-# launch from "browser Helper (Renderer).app", GPU from "... (GPU).app", etc. —
+# CEF derives per-role helper bundle names from the subprocess path - renderers
+# launch from "browser Helper (Renderer).app", GPU from "... (GPU).app", etc. -
 # so every variant must be present. (With only the generic helper, the renderer
 # silently fails to spawn and pages stay blank.)
 echo "[bundle] injecting helper subprocess apps (all roles)"
@@ -69,11 +69,17 @@ ditto "$ROOT/target/${CARGO_TARGET}/libbrowser_ffi.dylib" "$FRAMEWORKS/libbrowse
 # ad-hoc signature, and dyld refuses to load an arm64 dylib whose signature is
 # broken. The CEF framework, helper app, and main executable keep their existing
 # valid signatures (CEF's own / cargo's / the linker's). We deliberately do NOT
-# seal the app bundle here — Xcode's later CopySwiftLibs phase would invalidate
+# seal the app bundle here - Xcode's later CopySwiftLibs phase would invalidate
 # any such seal, and `just run-macos` execs the binary directly, which does not
 # require a sealed bundle.
 echo "[bundle] re-signing libbrowser_ffi.dylib"
 codesign --force --sign - "$FRAMEWORKS/libbrowser_ffi.dylib"
+
+# Do not ad-hoc-sign the host with Browser.entitlements. keychain-access-groups
+# is a restricted entitlement; AMFI SIGKILLs an ad-hoc binary that carries it
+# (CRASH-0004 / ADR-0062, amfid -424). Developer ID dogfood stamps the group
+# in scripts/codesign-macos-app.sh after xcodebuild. Unsigned debug keeps
+# Blink WebAuthentication off (CRASH-0003 / ADR-0061).
 
 # patch-helper-bundle-ids.sh already re-seals each helper after editing its
 # Info.plist. (CopySwiftLibs only scans the main app's Frameworks, never the

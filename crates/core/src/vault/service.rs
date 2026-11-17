@@ -1,19 +1,19 @@
-//! Vault service — the process-global [`VaultManager`] + a flat, FFI-facing API.
+//! Vault service - the process-global [`VaultManager`] + a flat, FFI-facing API.
 //!
 //! Mirrors how [`embed`](crate::embed) / [`tabs`](crate::tabs) expose the browser:
 //! the native app never touches the vault types directly; it calls these free
 //! functions (through the thin `browser_vault_*` FFI), which own the one global
-//! manager. Returns are FFI-friendly — bools, counts, `String`/JSON, and
+//! manager. Returns are FFI-friendly - bools, counts, `String`/JSON, and
 //! `Result<_, String>` (the error already rendered for display).
 //!
 //! **Threading:** the networked calls ([`unlock_online`], [`import_csv`],
 //! [`import_bitwarden_json`]) and [`unlock_offline`] (heavy KDF) **block** and
 //! must be called off the UI thread. They hold the global lock while running, so
-//! a concurrent [`is_locked`] blocks until they finish — fine for the modal
+//! a concurrent [`is_locked`] blocks until they finish - fine for the modal
 //! unlock/import flows; a non-blocking (callback) variant is a later refinement
 //! if a caller needs to poll during an unlock.
 //!
-//! **Secrets:** [`lookup`] / [`list`] return metadata only — never passwords.
+//! **Secrets:** [`lookup`] / [`list`] return metadata only - never passwords.
 //! A password crosses the boundary solely via [`password_for`] on an explicit
 //! user gesture (ADR-0017).
 
@@ -29,7 +29,9 @@ use serde::Serialize;
 use std::sync::Mutex;
 
 /// This device's name as it appears in the Bitwarden account's device list.
-const DEVICE_NAME: &str = "Browser (macOS)";
+fn device_name() -> String {
+    format!("{} (macOS)", crate::product::NAME)
+}
 
 static VAULT: Mutex<Option<VaultManager<UreqTransport>>> = Mutex::new(None);
 
@@ -41,7 +43,7 @@ fn with<R>(f: impl FnOnce(&mut VaultManager<UreqTransport>) -> R) -> Option<R> {
     guard.as_mut().map(f)
 }
 
-/// A login as the UI lists it — **no password** (see [`password_for`]).
+/// A login as the UI lists it - **no password** (see [`password_for`]).
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct LoginView {
     pub id: String,
@@ -119,7 +121,7 @@ pub fn is_configured() -> bool {
     load_config().is_some()
 }
 
-/// Auto-initialize the manager from persisted config at startup — leaving it
+/// Auto-initialize the manager from persisted config at startup - leaving it
 /// locked and ready to unlock (from cache offline, or by re-login online). No-op
 /// when the vault was never set up. Called by [`crate::embed::initialize`].
 pub fn start() {
@@ -186,7 +188,7 @@ pub fn is_locked() -> bool {
 }
 
 /// Online unlock. `code` empty ⇒ no second factor supplied yet. On a two-factor
-/// challenge this returns [`UnlockOutcome::TwoFactorRequired`] — and, for the
+/// challenge this returns [`UnlockOutcome::TwoFactorRequired`] - and, for the
 /// Email provider, dispatches the code before returning so the user has one to
 /// enter. Blocks (network + KDF); call off the UI thread.
 pub fn unlock_online(email: &str, password: &str, code: &str, provider: &str) -> UnlockOutcome {
@@ -207,7 +209,7 @@ pub fn unlock_online(email: &str, password: &str, code: &str, provider: &str) ->
         }
         Some(Err(VaultError::Auth(AuthError::TwoFactorRequired(providers)))) => {
             let primary = select_provider(&providers);
-            // Email is the one provider the client must trigger — dispatch it now
+            // Email is the one provider the client must trigger - dispatch it now
             // so the user has a code to enter. Best-effort: a send failure still
             // surfaces the challenge (the UI's Resend can retry).
             if primary == TwoFactorProvider::Email {
@@ -272,7 +274,7 @@ pub fn lock() {
     with(|m| m.lock());
 }
 
-/// Logins matching `host` (metadata only), best-first — strongest match first,
+/// Logins matching `host` (metadata only), best-first - strongest match first,
 /// most-recently-used first within a tier. Empty when locked.
 pub fn lookup(host: &str) -> Vec<LoginView> {
     let recency = usage::snapshot();
@@ -284,10 +286,10 @@ pub fn lookup(host: &str) -> Vec<LoginView> {
     .unwrap_or_default()
 }
 
-/// Record that login `id` was just used to sign in — the recency signal
+/// Record that login `id` was just used to sign in - the recency signal
 /// [`lookup`] orders by. Call this from the **explicit use gestures** (fill the
 /// active tab, pick an entry in the in-page picker, copy the username/password
-/// out of the URL-bar popover) — deliberately *not* from [`password_for`] /
+/// out of the URL-bar popover) - deliberately *not* from [`password_for`] /
 /// [`login_detail`] themselves, or merely revealing an entry on the Passwords
 /// page would reshuffle the autofill order (ADR-0048).
 ///
@@ -302,7 +304,7 @@ pub fn note_used(id: &str) {
 }
 
 /// Logins matching a free-text `query` (metadata only), best-first across the
-/// **whole vault** — the popover's search field and the Passwords page's list
+/// **whole vault** - the popover's search field and the Passwords page's list
 /// (ADR-0049). An empty query lists everything, so one call serves both the
 /// filtered and unfiltered states. Empty when locked.
 pub fn search(query: &str) -> Vec<LoginView> {
@@ -325,7 +327,7 @@ pub fn list() -> Vec<LoginView> {
     .unwrap_or_default()
 }
 
-/// The password for login `id` — the one path a secret crosses the boundary.
+/// The password for login `id` - the one path a secret crosses the boundary.
 /// `None` if locked or unknown.
 pub fn password_for(id: &str) -> Option<String> {
     let password = with(|m| {
@@ -341,7 +343,7 @@ pub fn password_for(id: &str) -> Option<String> {
     password
 }
 
-/// A login's full detail — **includes the password** (an explicit gesture: the
+/// A login's full detail - **includes the password** (an explicit gesture: the
 /// user opened edit) and notes, so the edit form round-trips every field.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct LoginDetail {
@@ -354,7 +356,7 @@ pub struct LoginDetail {
     pub notes: Option<String>,
 }
 
-/// Full detail for login `id` (`None` when locked/unknown) — for the edit form.
+/// Full detail for login `id` (`None` when locked/unknown) - for the edit form.
 pub fn login_detail(id: &str) -> Option<LoginDetail> {
     let detail = with(|m| {
         m.logins().ok().and_then(|logins| {
@@ -461,7 +463,7 @@ fn not_initialized() -> String {
 
 /// Debug-only: seed an unlocked vault with one demo login for `localhost`, for
 /// the autofill end-to-end harness (triggered by the `BROWSER_VAULT_DEMO` env
-/// var in [`crate::embed::initialize`]). Bypasses network/crypto — the real
+/// var in [`crate::embed::initialize`]). Bypasses network/crypto - the real
 /// unlock path is live-validated separately.
 #[cfg(debug_assertions)]
 pub fn seed_demo_vault() {
@@ -518,10 +520,10 @@ fn load_or_create_device(cache_dir: &str) -> Device {
     if let Ok(id) = std::fs::read_to_string(&path) {
         let id = id.trim();
         if !id.is_empty() {
-            return Device::with_identifier(id.to_string(), DEVICE_NAME);
+            return Device::with_identifier(id.to_string(), &device_name());
         }
     }
-    let device = Device::generate(DEVICE_NAME);
+    let device = Device::generate(&device_name());
     if let Err(err) = std::fs::write(&path, &device.identifier) {
         eprintln!("[vault] failed to persist device id to {path}: {err}");
     }
@@ -584,14 +586,14 @@ mod tests {
             "device id is stable across calls"
         );
         assert_eq!(first.identifier.len(), 36, "UUIDv4");
-        assert_eq!(second.name, DEVICE_NAME);
+        assert_eq!(second.name, device_name());
 
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn operations_are_safe_before_init() {
-        // Without init() the global is None — nothing panics, and it reads locked.
+        // Without init() the global is None - nothing panics, and it reads locked.
         // (This runs in the shared test process; init() is never called here.)
         assert!(is_locked());
         assert!(lookup("example.com").is_empty());

@@ -1,4 +1,4 @@
-//! Browser core — CEF engine wrapper and lifecycle.
+//! Browser core - CEF engine wrapper and lifecycle.
 //!
 //! This crate provides the CEF initialization, browser lifecycle management,
 //! and the minimal client/handler implementations needed to render a single
@@ -28,6 +28,7 @@ pub mod inject;
 pub mod mac;
 pub mod native_shell;
 pub mod private_window;
+pub mod product;
 pub mod redirect_selftest;
 pub mod resources;
 pub mod search_engine;
@@ -37,12 +38,14 @@ pub mod tab_suspension;
 pub mod tabs;
 pub mod theme;
 pub mod theme_color;
+pub mod update;
 pub mod vault;
 
 use cef::{
     api_hash, args::Args, execute_process, initialize, run_message_loop, shutdown, sys,
     ImplCommandLine, MainArgs, Settings,
 };
+use std::path::Path;
 
 /// Initialize CEF and run the message loop.
 ///
@@ -80,7 +83,8 @@ fn run_browser_process(main_args: &MainArgs, cmd_line: &cef::CommandLine) {
     let is_browser_process = cmd_line.has_switch(Some(&switch)) != 1;
 
     // Pass `BrowserApp` so helper subprocesses run `on_before_command_line_processing`
-    // and pick up `use-mock-keychain` (see `app::append_mock_keychain_switch`).
+    // and pick up `use-mock-keychain` plus the WebAuthn guard
+    // (see `app::append_mock_keychain_switch` / `append_webauthn_guard_switch`).
     let mut app = app::BrowserApp::new();
     let ret = execute_process(Some(main_args), Some(&mut app), std::ptr::null_mut());
 
@@ -109,6 +113,10 @@ fn run_browser_process(main_args: &MainArgs, cmd_line: &cef::CommandLine) {
         1
     );
 
+    // CEF installs its own signal handlers during initialize; reclaim them so
+    // local crash dumps still fire for in-process faults.
+    crash_report::reinstall_after_cef();
+
     // Bring the app to the foreground so the CEF window becomes key/visible.
     mac::setup_app_delegate();
 
@@ -120,44 +128,117 @@ fn run_browser_process(main_args: &MainArgs, cmd_line: &cef::CommandLine) {
 /// Application Support folder name for this build profile.
 ///
 /// Debug (`just run`) and release (`just dogfood`) must not share CEF cache,
-/// session, history, vault, or any other persisted state — and separate
+/// session, history, vault, or any other persisted state - and separate
 /// directories also let both run at once without Chromium's process singleton
 /// colliding.
 pub(crate) fn profile_data_dir_name() -> &'static str {
     if cfg!(debug_assertions) {
-        "Browser Dev"
+        product::NAME_DEV
     } else {
-        "Browser"
+        product::NAME
+    }
+}
+
+/// Rename a previous product's Application Support folder when the current
+/// one does not exist yet (ADR-0060). No-op if the destination is already there.
+fn migrate_legacy_profile_dir(support: &Path, dest_name: &str) {
+    let dest = support.join(dest_name);
+    if dest.exists() {
+        return;
+    }
+    let suffix = if dest_name == product::NAME_DEV {
+        product::NAME_DEV
+            .strip_prefix(product::NAME)
+            .unwrap_or(" Dev")
+    } else {
+        ""
+    };
+    for legacy in product::LEGACY_NAMES {
+        let src_name = format!("{legacy}{suffix}");
+        if src_name == dest_name {
+            continue;
+        }
+        let src = support.join(&src_name);
+        if !src.is_dir() {
+            continue;
+        }
+        match std::fs::rename(&src, &dest) {
+            Ok(()) => {
+                eprintln!("[profile] migrated {src_name} → {dest_name}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[profile] failed to migrate {src_name} → {dest_name}: {e}");
+            }
+        }
     }
 }
 
 /// Absolute directory CEF uses for its cache and the single-instance lock.
 ///
 /// CEF requires an absolute `root_cache_path`. Without one it falls back to a
-/// shared default, and every launch collides on Chromium's process singleton —
+/// shared default, and every launch collides on Chromium's process singleton -
 /// a second `browser` detects the first, hands its command line off to it, and
 /// exits. Pinning a stable per-user directory lets repeated dev launches reuse
 /// the same profile instead of racing the singleton.
 pub(crate) fn root_cache_dir() -> String {
     let home = std::env::var("HOME").expect("HOME environment variable is not set");
-    let dir = format!(
-        "{home}/Library/Application Support/{}",
-        profile_data_dir_name()
-    );
+    let support = Path::new(&home).join("Library/Application Support");
+    let dest_name = profile_data_dir_name();
+    migrate_legacy_profile_dir(&support, dest_name);
+    let dir = support.join(dest_name);
     std::fs::create_dir_all(&dir).expect("failed to create the CEF root cache directory");
-    dir
+    dir.to_string_lossy().into_owned()
 }
 
 #[cfg(test)]
 mod profile_tests {
-    use super::profile_data_dir_name;
+    use super::{migrate_legacy_profile_dir, product, profile_data_dir_name};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn profile_data_dir_matches_build_profile() {
         if cfg!(debug_assertions) {
-            assert_eq!(profile_data_dir_name(), "Browser Dev");
+            assert_eq!(profile_data_dir_name(), product::NAME_DEV);
         } else {
-            assert_eq!(profile_data_dir_name(), "Browser");
+            assert_eq!(profile_data_dir_name(), product::NAME);
         }
+    }
+
+    #[test]
+    fn migrates_legacy_profile_when_dest_missing() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let support = std::env::temp_dir().join(format!("ochre-profile-{unique}"));
+        let legacy = support.join("Browser Dev");
+        fs::create_dir_all(legacy.join("crashes")).expect("legacy dir");
+        fs::write(legacy.join("marker.txt"), "ok").expect("marker");
+        migrate_legacy_profile_dir(&support, product::NAME_DEV);
+        let dest = support.join(product::NAME_DEV);
+        assert!(dest.join("marker.txt").is_file());
+        assert!(!legacy.exists());
+        let _ = fs::remove_dir_all(&support);
+    }
+
+    #[test]
+    fn does_not_clobber_existing_profile() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let support = std::env::temp_dir().join(format!("ochre-profile-keep-{unique}"));
+        let dest = support.join(product::NAME_DEV);
+        let legacy = support.join("Browser Dev");
+        fs::create_dir_all(&dest).expect("dest");
+        fs::write(dest.join("keep.txt"), "new").expect("dest marker");
+        fs::create_dir_all(&legacy).expect("legacy");
+        fs::write(legacy.join("old.txt"), "old").expect("legacy marker");
+        migrate_legacy_profile_dir(&support, product::NAME_DEV);
+        assert!(dest.join("keep.txt").is_file());
+        assert!(legacy.join("old.txt").is_file());
+        let _ = fs::remove_dir_all(&support);
     }
 }
