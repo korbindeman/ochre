@@ -9,7 +9,7 @@ use crate::tabs;
 use super::BrowserHandler;
 
 // Forwards find-in-page results to the host's registered callback (embedded
-// mode only; a no-op in standalone, where no callback is set). Stateless — it
+// mode only; a no-op in standalone, where no callback is set). Stateless - it
 // carries no handler state, only bridges CEF's `on_find_result` to the FFI.
 wrap_find_handler! {
     pub struct BrowserFindHandler;
@@ -51,7 +51,7 @@ wrap_focus_handler! {
 
         // The web view is about to receive focus. `source` distinguishes a
         // page-driven focus (NAVIGATION, e.g. autofocus) from a host/system one
-        // (SYSTEM, e.g. our `set_focus` or a click). Returning 0 never cancels —
+        // (SYSTEM, e.g. our `set_focus` or a click). Returning 0 never cancels -
         // this only observes.
         fn on_set_focus(&self, browser: Option<&mut Browser>, source: FocusSource) -> i32 {
             let id = browser.map_or(-1, |b| b.identifier());
@@ -103,6 +103,22 @@ wrap_display_handler! {
             let mut inner = self.inner.lock().expect("Failed to lock handler");
             inner.on_favicon_urlchange(browser, icon_urls);
         }
+
+        // Alloy style: content already resizes to the browser area; the host must
+        // enter/exit real OS window fullscreen (and hide chrome). Without this,
+        // video "fullscreen" only fills the content pane inside the normal window.
+        fn on_fullscreen_mode_change(
+            &self,
+            browser: Option<&mut Browser>,
+            fullscreen: ::std::os::raw::c_int,
+        ) {
+            let cef_id = browser.map(|b| b.identifier()).unwrap_or(-1);
+            let enter = fullscreen != 0;
+            eprintln!("[fullscreen] content fullscreen={enter} cef={cef_id}");
+            if !crate::private_window::note_fullscreen(cef_id, enter) {
+                tabs::note_fullscreen(enter);
+            }
+        }
     }
 }
 
@@ -126,7 +142,7 @@ fn should_open_as_tab(disposition: WindowOpenDisposition) -> bool {
 /// Whether a window-open request must stay a real CEF popup window.
 ///
 /// OAuth and similar flows rely on `window.opener` and `window.close()` on a
-/// script-opened popup — routing those to app tabs breaks login (the callback
+/// script-opened popup - routing those to app tabs breaks login (the callback
 /// never reaches the opener). Defer when:
 /// - the URL is blank (the `window.open(''); w.location = url` pattern),
 /// - Chromium marked it `NEW_POPUP`, or
@@ -326,7 +342,7 @@ wrap_load_handler! {
             }
             // Autofill no longer hooks here: it rides the injection substrate
             // (isolated world, ask-the-core, gesture-gated) via `crate::inject`
-            // — see `crate::vault::autofill` (P2-15, ADR-0017). The v0 main-world,
+            // - see `crate::vault::autofill` (P2-15, ADR-0017). The v0 main-world,
             // password-baked-in `on_load_end` push is retired.
         }
 
@@ -339,7 +355,7 @@ wrap_load_handler! {
             failed_url: Option<&CefString>,
         ) {
             // Chromium renders its own net-error page in ALLOY. Do not call
-            // `frame.load_url` here — a custom data-URI page flashes over the
+            // `frame.load_url` here - a custom data-URI page flashes over the
             // native one, and loading while holding `BrowserHandler`'s mutex
             // deadlocks the UI thread.
             if frame.as_ref().map(|f| f.is_main() != 0) != Some(true) {
@@ -406,7 +422,7 @@ wrap_request_handler! {
 // The network filter itself. Runs on the CEF **IO thread**: cancels ad/tracker
 // requests before they hit the network and records the block against the tab for
 // the sidebar shield. Cosmetic (element-hiding) filtering is the P2-21 fast-
-// follow on the document-start injection substrate — this is network blocking.
+// follow on the document-start injection substrate - this is network blocking.
 wrap_resource_request_handler! {
     struct BrowserResourceRequestHandler;
 
@@ -422,7 +438,7 @@ wrap_resource_request_handler! {
                 return ReturnValue::CONTINUE;
             };
 
-            // Never cancel a top-level document load — blocking it would blank
+            // Never cancel a top-level document load - blocking it would blank
             // the tab. Adblock targets sub-resources.
             let resource_type = request.resource_type();
             if resource_type == ResourceType::MAIN_FRAME {
@@ -430,7 +446,7 @@ wrap_resource_request_handler! {
             }
 
             let url = CefString::from(&request.url()).to_string();
-            // The top-level document URL — adblock's first-party for third-party
+            // The top-level document URL - adblock's first-party for third-party
             // detection, and the host the per-site allowlist keys on.
             let source_url = CefString::from(&request.first_party_for_cookies()).to_string();
             let first_party_host =

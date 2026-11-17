@@ -22,6 +22,7 @@ use crate::vault::lookup::matching_logins;
 use crate::vault::search::search_logins;
 use crate::vault::sync::{parse_sync, Login, SyncError, Vault};
 use crate::vault::usage::UsageMap;
+use zeroize::Zeroizing;
 
 /// Owns the vault's lock state and the client used to unlock/sync it.
 pub struct VaultManager<T: HttpTransport> {
@@ -33,7 +34,7 @@ pub struct VaultManager<T: HttpTransport> {
 }
 
 // The manager holds exactly one `State` (never a collection), so the size gap
-// between `Locked` and `Unlocked` costs nothing — boxing would only add
+// between `Locked` and `Unlocked` costs nothing - boxing would only add
 // indirection.
 #[allow(clippy::large_enum_variant)]
 enum State {
@@ -90,7 +91,7 @@ impl<T: HttpTransport> VaultManager<T> {
         matches!(self.state, State::Locked)
     }
 
-    /// Log in, sync, decrypt, and cache — leaving the vault unlocked with a live
+    /// Log in, sync, decrypt, and cache - leaving the vault unlocked with a live
     /// session.
     pub fn unlock_online(
         &mut self,
@@ -101,7 +102,7 @@ impl<T: HttpTransport> VaultManager<T> {
     ) -> Result<(), VaultError> {
         let creds = Credentials {
             email,
-            master_password,
+            master_password: Zeroizing::new(master_password),
             grant,
         };
         let session = self
@@ -122,12 +123,12 @@ impl<T: HttpTransport> VaultManager<T> {
     }
 
     /// Ask the server to email a login two-factor code (the Email provider). Does
-    /// not change lock state — it just dispatches the code so the user can read it
+    /// not change lock state - it just dispatches the code so the user can read it
     /// and then re-attempt [`unlock_online`](Self::unlock_online) with it.
     pub fn send_email_code(&self, email: &str, master_password: &str) -> Result<(), VaultError> {
         let creds = Credentials {
             email: email.to_string(),
-            master_password: master_password.to_string(),
+            master_password: Zeroizing::new(master_password.to_string()),
             grant: Grant::Password,
         };
         self.client
@@ -135,7 +136,7 @@ impl<T: HttpTransport> VaultManager<T> {
             .map_err(VaultError::Auth)
     }
 
-    /// Unlock read-only from the cache — re-derive the key from the master
+    /// Unlock read-only from the cache - re-derive the key from the master
     /// password and decrypt the cached vault. No network.
     pub fn unlock_offline(&mut self, master_password: &str) -> Result<(), VaultError> {
         let path = self.cache_path.as_deref().ok_or(VaultError::NoCache)?;
@@ -154,7 +155,7 @@ impl<T: HttpTransport> VaultManager<T> {
     }
 
     /// Logins matching `host`, best-first (recency breaks ties within a match
-    /// tier — see [`matching_logins`]). `usage` is supplied by the caller rather
+    /// tier - see [`matching_logins`]). `usage` is supplied by the caller rather
     /// than read here: the manager stays a pure state machine over its own vault,
     /// and the process-global usage store lives with the other globals in
     /// [`service`](crate::vault::service). `Err(Locked)` if the vault is locked.
@@ -182,7 +183,7 @@ impl<T: HttpTransport> VaultManager<T> {
         }
     }
 
-    /// Debug-only: force an unlocked, session-less state with the given logins —
+    /// Debug-only: force an unlocked, session-less state with the given logins -
     /// no network, no crypto. For the autofill end-to-end harness (the real
     /// unlock path is live-validated separately).
     #[cfg(debug_assertions)]
@@ -196,7 +197,7 @@ impl<T: HttpTransport> VaultManager<T> {
     /// **Merge**-import: refresh from the server, keep only the records not
     /// already present (dedupe against the current vault), upload those, and
     /// resync so they appear locally. Returns the count actually added (skipped
-    /// duplicates are not counted). Requires a live online session — so
+    /// duplicates are not counted). Requires a live online session - so
     /// re-importing a file is idempotent and a second source only adds what's new.
     pub fn import(&mut self, records: &[ImportRecord]) -> Result<usize, VaultError> {
         // Sync first so the merge dedupes against what's actually on the server.

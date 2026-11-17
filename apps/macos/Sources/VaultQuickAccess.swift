@@ -2,21 +2,21 @@ import AppKit
 import SwiftUI
 
 /// The URL-bar vault quick-access button + current-site logins popover (P2-34,
-/// ADR-0029) — the 1Password/Bitwarden toolbar idiom, adapted to sit beside the
+/// ADR-0029) - the 1Password/Bitwarden toolbar idiom, adapted to sit beside the
 /// address chip like the adblock shield (`URLBar`).
 ///
 /// This is the **detection-independent** autofill path: it lists the logins the
 /// core matched to the active tab's host (`browser_vault_lookup`, mirrored on
 /// `BrowserState.vaultMatches`) and offers, per entry, **Fill** (core-initiated
-/// injection — `browser_vault_fill_active_tab`), **Copy username**, and **Copy
-/// password**. Copy works on *any* page regardless of form detection — the
+/// injection - `browser_vault_fill_active_tab`), **Copy username**, and **Copy
+/// password**. Copy works on *any* page regardless of form detection - the
 /// reliable escape hatch when the auto-picker can't find the fields (e.g. a
 /// two-step `google.com` sign-in). Passwords cross only on the explicit Fill/Copy
 /// gesture; the list carries metadata only.
 ///
 /// Two orthogonal scopes (both ranked by the core, never here):
-/// - **Un-searched** — this site's matches, ordered by last use (ADR-0048).
-/// - **Searching** — `browser_vault_search` over the whole vault (ADR-0049), so a
+/// - **Un-searched** - this site's matches, ordered by last use (ADR-0048).
+/// - **Searching** - `browser_vault_search` over the whole vault (ADR-0049), so a
 ///   login saved under a different host is still reachable and fillable here.
 
 // ─── The button ────────────────────────────────────────────────────────────────
@@ -35,7 +35,7 @@ struct VaultKeyButton: View {
     @ObservedObject private var state = BrowserState.shared
 
     /// Filled + accent-tinted when this site has saved logins (the valuable
-    /// case); a plain outline otherwise (locked, or no match — reachable on hover).
+    /// case); a plain outline otherwise (locked, or no match - reachable on hover).
     private var hasMatches: Bool { !state.vaultLocked && !state.vaultMatches.isEmpty }
 
     @ViewBuilder var body: some View {
@@ -67,7 +67,7 @@ struct VaultKeyButton: View {
         }
     }
 
-    /// `onTapGesture` + `contentShape` — same hit-test path as the in-page address
+    /// `onTapGesture` + `contentShape` - same hit-test path as the in-page address
     /// pill. A `Button` does not register under `PassthroughHostingView`.
     private var viewportBody: some View {
         Image(systemName: hasMatches ? "key.horizontal.fill" : "key.horizontal")
@@ -89,7 +89,7 @@ struct VaultKeyButton: View {
     }
 
     private var vaultHelp: String {
-        if state.vaultLocked { return "Vault locked — click to unlock" }
+        if state.vaultLocked { return "Vault locked. Click to unlock" }
         switch state.vaultMatches.count {
         case 0: return "No saved logins for this site"
         case 1: return "1 saved login for this site"
@@ -108,7 +108,7 @@ private struct VaultQuickPopover: View {
     /// The search box (P2-42). Empty ⇒ the list stays scoped to this site's
     /// matches; typing widens it to the whole vault, so a login filed under a
     /// different host (shared SSO, a renamed site) is reachable without leaving
-    /// the page. Ranking is the core's (ADR-0049) — this never filters.
+    /// the page. Ranking is the core's (ADR-0049) - this never filters.
     @State private var query = ""
     @State private var results: [VaultLogin] = []
 
@@ -159,7 +159,7 @@ private struct VaultQuickPopover: View {
         VaultQuickUnlock(isPresented: $isPresented)
     }
 
-    /// Nothing to show: either this site has no saved logins (point at search —
+    /// Nothing to show: either this site has no saved logins (point at search -
     /// the entry may be filed elsewhere), or the search itself found nothing.
     private var empty: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -186,7 +186,7 @@ private struct VaultQuickPopover: View {
 
 // ─── Search field ────────────────────────────────────────────────────────────
 
-/// The popover's search box — mirrors the Passwords page's `SearchField` idiom
+/// The popover's search box - mirrors the Passwords page's `SearchField` idiom
 /// (magnifier + Liquid Glass capsule + clear button), sized for the popover.
 /// Deliberately **not** focused on open: the primary action is picking from this
 /// site's list; search is the escape hatch.
@@ -219,7 +219,7 @@ private struct VaultQuickSearchField: View {
 
 // ─── Inline unlock (vault locked) ───────────────────────────────────────────
 
-/// Master-password unlock in the popover — same offline path as the Passwords
+/// Master-password unlock in the popover - same offline path as the Passwords
 /// page, without leaving the tab.
 private struct VaultQuickUnlock: View {
     @Binding var isPresented: Bool
@@ -304,7 +304,7 @@ private struct VaultQuickRow: View {
                 Text(login.displayName)
                     .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
-                Text(login.username ?? "—")
+                Text(login.username ?? "-")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -336,7 +336,7 @@ private struct VaultQuickRow: View {
                 .opacity(hovering ? 0.6 : 0)
         )
         .contentShape(.rect(cornerRadius: 7))
-        // The row itself fills — the primary action, like picking an entry in
+        // The row itself fills - the primary action, like picking an entry in
         // Bitwarden. The copy buttons are nested actions, so (as with TabRow /
         // the URL chip) the row uses onTapGesture to keep their taps unambiguous.
         .onTapGesture { fill() }
@@ -367,26 +367,16 @@ private struct VaultQuickRow: View {
 
     private func copyPassword() {
         guard let password = VaultModel.shared.password(for: login.id) else { return }
-        // Auto-clear after 30s (Bitwarden-style), but only if the user hasn't
-        // copied something else since — never clobber a later clipboard.
-        copy(password, clearAfter: 30)
+        SecurePasteboard.copySecret(password)
         BrowserState.shared.noteVaultUse(id: login.id)
         copiedPassword = true
         resetFlags()
     }
 
-    private func copy(_ string: String, clearAfter seconds: Double? = nil) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(string, forType: .string)
-        guard let seconds else { return }
-        let stamp = pasteboard.changeCount
-        Task {
-            try? await Task.sleep(for: .seconds(seconds))
-            if NSPasteboard.general.changeCount == stamp {
-                NSPasteboard.general.clearContents()
-            }
-        }
+    /// Non-secret copy (username). Passwords go through `SecurePasteboard`.
+    private func copy(_ string: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
     }
 
     /// Clear the copy-confirmation checkmarks after a beat (matches VaultRow /

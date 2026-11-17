@@ -2,12 +2,12 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The Passwords page — the native vault surface (ADR-0010/0016/0017, style §15).
+/// The Passwords page - the native vault surface (ADR-0010/0016/0017, style §15).
 ///
 /// Like History, it is a *content-area surface* hosted by `RootView` in an
 /// `NSHostingView` over the web content, not a tab. It shows the unlock screen
 /// when the vault is locked and the login list (with on-gesture password reveal)
-/// when unlocked. All data comes from the core over the `browser_vault_*` FFI —
+/// when unlocked. All data comes from the core over the `browser_vault_*` FFI -
 /// **passwords cross only via `browser_vault_password`, on an explicit reveal.**
 struct VaultView: View {
     @ObservedObject private var model = VaultModel.shared
@@ -30,7 +30,7 @@ struct VaultView: View {
 
 // ─── Setup (first-run) ────────────────────────────────────────────────────────
 
-/// First-run setup — log into an existing Bitwarden / Vaultwarden account. On
+/// First-run setup - log into an existing Bitwarden / Vaultwarden account. On
 /// success the vault unlocks and its config is persisted so later launches auto-
 /// init; import (which merges) is then a click away in the list.
 private struct SetupView: View {
@@ -47,7 +47,7 @@ private struct SetupView: View {
     /// The pending two-factor challenge kind (from the last attempt), or nil.
     private var twoFactor: String? { model.twoFactor }
 
-    /// The server to log into — empty for cloud, the entered URL when self-hosted.
+    /// The server to log into - empty for cloud, the entered URL when self-hosted.
     private var resolvedServer: String { selfHosted ? server : "" }
 
     private var canSubmit: Bool {
@@ -57,7 +57,7 @@ private struct SetupView: View {
         return twoFactor == nil || !code.isEmpty
     }
 
-    /// Copy under the title — adapts to a live two-factor challenge.
+    /// Copy under the title - adapts to a live two-factor challenge.
     private var subtitle: String {
         switch twoFactor {
         case "email": return "Enter the code we emailed to \(email)."
@@ -266,7 +266,7 @@ private struct VaultList: View {
     }
 }
 
-/// Title + Liquid Glass search + a Lock button — the macOS 26 toolbar idiom that
+/// Title + Liquid Glass search + a Lock button - the macOS 26 toolbar idiom that
 /// History uses (glass on the capsule controls, native content below).
 private struct Toolbar: View {
     @ObservedObject var model: VaultModel
@@ -276,7 +276,7 @@ private struct Toolbar: View {
         // region and blend as a single material (never stack glass on glass).
         GlassEffectContainer {
             HStack(spacing: 12) {
-                // Leading dismiss — mirrors History (ADR-0010): a surface is exclusive
+                // Leading dismiss - mirrors History (ADR-0010): a surface is exclusive
                 // with the tabs, so ✕ returns to the page (Escape also works).
                 Button {
                     BrowserState.shared.closeVault()
@@ -397,7 +397,7 @@ private struct VaultRow: View {
                     .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
                 HStack(spacing: 6) {
-                    Text(login.username ?? "—")
+                    Text(login.username ?? "-")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -468,7 +468,7 @@ private struct VaultRow: View {
 
     private func copyPassword() {
         guard let password = model.password(for: login.id) else { return }
-        copy(password)
+        SecurePasteboard.copySecret(password)
         copied = true
         Task {
             try? await Task.sleep(for: .seconds(1))
@@ -476,13 +476,14 @@ private struct VaultRow: View {
         }
     }
 
+    /// Non-secret copy (username). Passwords go through `SecurePasteboard`.
     private func copy(_ string: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(string, forType: .string)
     }
 }
 
-/// Site favicon (or a globe fallback) — shared by the vault list and the URL-bar
+/// Site favicon (or a globe fallback) - shared by the vault list and the URL-bar
 /// quick-access popover (`VaultQuickAccess`).
 struct HostFavicon: View {
     let host: String
@@ -539,7 +540,7 @@ private struct EmptyState: View {
 // ─── Add / edit sheet ─────────────────────────────────────────────────────────
 
 /// Create or edit a login. Prefilled from `target.detail` when editing (a full
-/// round-trip — a PUT replaces the cipher, so every field must be present).
+/// round-trip - a PUT replaces the cipher, so every field must be present).
 private struct LoginEditor: View {
     @ObservedObject var model: VaultModel
     let target: EditorTarget
@@ -608,7 +609,7 @@ private struct LoginEditor: View {
 
 // ─── Model ──────────────────────────────────────────────────────────────────
 
-/// One login as listed by `browser_vault_list` — metadata only, no password.
+/// One login as listed by `browser_vault_list` - metadata only, no password.
 struct VaultLogin: Decodable, Identifiable {
     let id: String
     let name: String
@@ -651,7 +652,7 @@ struct LoginDetail: Decodable {
     let notes: String?
 }
 
-/// The add/edit sheet's target — a detail to edit, or `nil` fields for a new login.
+/// The add/edit sheet's target - a detail to edit, or `nil` fields for a new login.
 struct EditorTarget: Identifiable {
     let detail: LoginDetail?
     var id: String { detail?.id ?? "__new__" }
@@ -683,7 +684,7 @@ final class VaultModel: ObservableObject {
     static let shared = VaultModel()
 
     /// The list filter. Ranking lives in the core (`browser_vault_search`), so a
-    /// change re-queries rather than filtering `logins` here — the semantics stay
+    /// change re-queries rather than filtering `logins` here - the semantics stay
     /// identical to the URL-bar popover's search, and a second frontend inherits
     /// them instead of reinventing them (ADR-0049).
     @Published var query = "" {
@@ -695,7 +696,7 @@ final class VaultModel: ObservableObject {
     @Published private(set) var isConfigured = false
     @Published private(set) var isLocked = true
     @Published private(set) var logins: [VaultLogin] = []
-    /// `logins` ranked against `query` by the core — what the list renders.
+    /// `logins` ranked against `query` by the core - what the list renders.
     @Published private(set) var filtered: [VaultLogin] = []
     /// A blocking op (setup / unlock / import) is in flight.
     @Published private(set) var busy = false
@@ -728,7 +729,7 @@ final class VaultModel: ObservableObject {
 
     /// First-run setup / online login. Blocks (network + KDF), so the FFI call
     /// runs off the main actor. Three outcomes: unlocked (reload), a two-factor
-    /// challenge (keep the form, switch to code entry — for email the code is
+    /// challenge (keep the form, switch to code entry - for email the code is
     /// already sent), or an error.
     func setup(server: String, email: String, password: String, code: String, provider: String) {
         guard !busy else { return }
@@ -742,7 +743,7 @@ final class VaultModel: ObservableObject {
                 twoFactor = nil
                 reload()
             } else if let kind = result.twoFactor {
-                // A fresh challenge — prompt for the code (no error to show yet).
+                // A fresh challenge - prompt for the code (no error to show yet).
                 twoFactor = kind
             } else {
                 // Keep any challenge mode so a rejected code stays on code entry.
@@ -768,7 +769,7 @@ final class VaultModel: ObservableObject {
         run { await Self.envelope1(browser_vault_unlock_offline)(password) }
     }
 
-    /// Import a CSV or Bitwarden-JSON export file — **merges** into the vault
+    /// Import a CSV or Bitwarden-JSON export file - **merges** into the vault
     /// (the core dedupes). Picks the FFI by extension.
     func importFile(_ url: URL) {
         guard let data = try? String(contentsOf: url, encoding: .utf8) else {
@@ -882,14 +883,14 @@ final class VaultModel: ObservableObject {
         reload()
     }
 
-    /// Full detail for login `id` (fast, in-memory) — for prefilling the editor.
+    /// Full detail for login `id` (fast, in-memory) - for prefilling the editor.
     func loginDetail(id: String) -> LoginDetail? {
         guard let raw = id.withCString({ browser_vault_login($0) }) else { return nil }
         defer { browser_string_free(raw) }
         return try? JSONDecoder().decode(LoginDetail.self, from: Data(String(cString: raw).utf8))
     }
 
-    /// Create (`id == nil`) or update a login. Blocks (network) — runs off-main.
+    /// Create (`id == nil`) or update a login. Blocks (network) - runs off-main.
     func save(id: String?, draft: LoginDraft) {
         run {
             await Task.detached {
@@ -909,12 +910,12 @@ final class VaultModel: ObservableObject {
         }
     }
 
-    /// Delete login `id`. Blocks (network) — runs off-main.
+    /// Delete login `id`. Blocks (network) - runs off-main.
     func delete(id: String) {
         run { await Self.envelope1(browser_vault_delete_login)(id) }
     }
 
-    /// Fetch a login's password (fast, in-memory) — the one secret path.
+    /// Fetch a login's password (fast, in-memory) - the one secret path.
     func password(for id: String) -> String? {
         guard let raw = id.withCString({ browser_vault_password($0) }) else { return nil }
         defer { browser_string_free(raw) }

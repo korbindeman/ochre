@@ -1,7 +1,8 @@
 import AppKit
+import Combine
 import SwiftUI
 
-/// One browser window — normal or private — with its own chrome state and CEF hosts.
+/// One browser window - normal or private - with its own chrome state and CEF hosts.
 @MainActor
 final class BrowserWindowController: NSObject, NSWindowDelegate {
     let windowId: Int32
@@ -14,6 +15,12 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
     private(set) var window: NSWindow?
     private var viewportClickMonitor: Any?
     private var spaceSwipeMonitor: SpaceSwipeMonitor?
+    /// True when *this* controller entered OS fullscreen because content
+    /// requested HTML5 fullscreen - so we exit OS fullscreen when content does.
+    /// False if the window was already fullscreen (green button) when video
+    /// fullscreen started.
+    private var enteredWindowFullscreenForContent = false
+    private var cancellables: Set<AnyCancellable> = []
 
     init(windowId: Int32, isPrivate: Bool, state: BrowserState) {
         self.windowId = windowId
@@ -21,10 +28,20 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
         self.state = state
         self.rootView = RootView(frame: .zero, state: state, isPrivate: isPrivate)
         super.init()
+        // Alloy style: CEF only resizes content to the browser area. The host
+        // must enter/exit real macOS window fullscreen for video/HTML5 fullscreen.
+        state.$isContentFullscreen
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] want in
+                self?.syncWindowFullscreen(forContent: want)
+            }
+            .store(in: &cancellables)
     }
 
     func makeWindow(size: NSSize) {
-        let title = isPrivate ? "Private" : "Browser"
+        let title = isPrivate ? "Private" : Product.displayName
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -38,6 +55,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
         // background drag competes with it at `mouseDown`. Top chrome drags via
         // `WindowDragHandle`.
         window.isMovableByWindowBackground = false
+        window.collectionBehavior.insert(.fullScreenPrimary)
         window.delegate = self
         window.center()
 
@@ -61,6 +79,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
 
         let swipeMonitor = SpaceSwipeMonitor(
             isPrivate: isPrivate,
+            rootView: rootView,
             commandBar: commandBar,
             findBar: findBar
         )
@@ -105,6 +124,25 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Drive OS window fullscreen to match content (HTML5) fullscreen.
+    private func syncWindowFullscreen(forContent want: Bool) {
+        guard let window else { return }
+        let isWinFS = window.styleMask.contains(.fullScreen)
+        if want {
+            if !isWinFS {
+                enteredWindowFullscreenForContent = true
+                window.toggleFullScreen(nil)
+            } else {
+                enteredWindowFullscreenForContent = false
+            }
+        } else {
+            if enteredWindowFullscreenForContent, isWinFS {
+                window.toggleFullScreen(nil)
+            }
+            enteredWindowFullscreenForContent = false
+        }
+    }
+
     // MARK: - NSWindowDelegate
 
     func windowDidBecomeKey(_ notification: Notification) { activate() }
@@ -118,6 +156,12 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
     func windowDidExitFullScreen(_ notification: Notification) {
         state.isFullscreen = false
         setNativeButtonsHidden(true)
+        // User left OS fullscreen (green button / swipe) while content is still
+        // in browser fullscreen - tell CEF to exit content fullscreen too.
+        if state.isContentFullscreen {
+            enteredWindowFullscreenForContent = false
+            browser_exit_fullscreen()
+        }
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {

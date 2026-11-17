@@ -1,4 +1,4 @@
-//! Private (incognito) windows — ephemeral tab sets in isolated CEF profiles.
+//! Private (incognito) windows - ephemeral tab sets in isolated CEF profiles.
 //!
 //! Each private window owns a flat list of tabs backed by a dedicated
 //! [`cef::RequestContext`] with an empty `cache_path` (in-memory / off-the-record).
@@ -215,6 +215,21 @@ fn window_id_for_cef(cef_id: i32) -> Option<WindowId> {
     None
 }
 
+/// Notify the host that a private-window tab entered/left browser fullscreen.
+/// Returns `true` when `cef_id` belongs to a private window.
+pub fn note_fullscreen(cef_id: i32, fullscreen: bool) -> bool {
+    let Some(window_id) = window_id_for_cef(cef_id) else {
+        return false;
+    };
+    emit(
+        window_id,
+        Event::FullscreenChanged,
+        i32::from(fullscreen),
+        None,
+    );
+    true
+}
+
 /// Create a tab in private window `window_id`. Returns the tab id or [`NONE_ID`].
 ///
 /// # Safety
@@ -267,7 +282,7 @@ unsafe fn create_tab_browser(
         None,
         context.as_mut(),
     );
-    // Private tabs live inside the host's window too — suppress CEF's default
+    // Private tabs live inside the host's window too - suppress CEF's default
     // close-the-parent-window for them (ADR-0037).
     if let Some(browser) = &browser {
         crate::client::note_embedded_tab(browser);
@@ -686,7 +701,7 @@ pub fn set_site_allowlisted(window_id: WindowId, host: &str, allowlisted: bool) 
     });
 }
 
-/// Live browsers in a private window — for close-on-window-exit.
+/// Live browsers in a private window - for close-on-window-exit.
 pub fn browsers_in_window(window_id: WindowId) -> Vec<Browser> {
     with_window(window_id, |window| {
         window
