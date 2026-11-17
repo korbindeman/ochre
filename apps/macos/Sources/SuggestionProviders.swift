@@ -16,6 +16,7 @@ enum SuggestionScore {
     static let typedURL = 10_000
     static let openTabPrefix = 9_500
     static let openTabMatch = 8_800
+    static let command = 8_700
     static let historyBase = 8_000
     static let topSitePrefix = 7_200
     static let topSite = 6_000
@@ -25,7 +26,7 @@ enum SuggestionScore {
 
 // ─── Fuzzy match (core FFI) ──────────────────────────────────────────────
 
-/// The omnibox fuzzy scorer from the Rust core — same algorithm history uses.
+/// The omnibox fuzzy scorer from the Rust core - same algorithm history uses.
 enum FuzzyMatch {
     struct Result {
         let score: Int
@@ -106,7 +107,7 @@ struct HistoryProvider: SuggestionProvider {
 
 // ─── Open tabs ─────────────────────────────────────────────────────────────
 
-/// Open tabs in the current profile — "Switch to this tab" rows, boosted when
+/// Open tabs in the current profile - "Switch to this tab" rows, boosted when
 /// the query matches the tab's title or URL (Chrome's open-tab provider).
 struct OpenTabsProvider: SuggestionProvider {
     func suggestions(for query: String) async -> [Suggestion] {
@@ -118,7 +119,7 @@ struct OpenTabsProvider: SuggestionProvider {
         }
         guard !tabs.isEmpty else { return [] }
 
-        // Zero-state: skip — an empty omnibox should surface frecency + top
+        // Zero-state: skip - an empty omnibox should surface frecency + top
         // sites, not every open tab.
         if q.isEmpty { return [] }
 
@@ -157,7 +158,7 @@ struct OpenTabsProvider: SuggestionProvider {
         let host = tab.host.lowercased()
         let normalized = normalizeQuery(query)
 
-        // Host / URL prefix — inline-autocomplete quality, Chrome's tab boost.
+        // Host / URL prefix - inline-autocomplete quality, Chrome's tab boost.
         if !normalized.isEmpty, display.lowercased().hasPrefix(normalized) {
             let detail = FuzzyMatch.match(query: query, text: display)?.score ?? 0
             return TabMatch(
@@ -175,7 +176,7 @@ struct OpenTabsProvider: SuggestionProvider {
             )
         }
 
-        // Fuzzy title / URL / host — pick the best field.
+        // Fuzzy title / URL / host - pick the best field.
         let titleM = tab.title.isEmpty
             ? nil
             : FuzzyMatch.match(query: query, text: tab.title)
@@ -206,7 +207,7 @@ struct TopSitesProvider: SuggestionProvider {
     }
 
     /// A compact set of globally popular sites. Kept in the native layer as
-    /// bootstrap data — user-specific frecency comes from `HistoryProvider`.
+    /// bootstrap data - user-specific frecency comes from `HistoryProvider`.
     private static let sites: [Site] = [
         Site(title: "Google", url: "https://www.google.com"),
         Site(title: "YouTube", url: "https://www.youtube.com"),
@@ -458,7 +459,7 @@ struct SearchSuggestProvider: SuggestionProvider {
 
 // ─── Search fallback ─────────────────────────────────────────────────────
 
-/// The omnibox's bottom anchor row — "Search … for …" — always available when
+/// The omnibox's bottom anchor row - "Search … for …" - always available when
 /// the query is not already a URL.
 struct SearchQueryProvider: SuggestionProvider {
     func suggestions(for query: String) async -> [Suggestion] {
@@ -565,4 +566,14 @@ enum OmniboxProviders {
         SearchQueryProvider(),
     ]
     static let remote: [any SuggestionProvider] = [SearchSuggestProvider()]
+}
+
+/// Cmd-T adds browser actions and Space switching to the regular omnibox
+/// sources. The inline sidebar address bar stays navigation-only.
+enum CommandBarProviders {
+    static let local: [any SuggestionProvider] = OmniboxProviders.local + [
+        BrowserCommandsProvider(),
+        SpaceCommandsProvider(),
+    ]
+    static let remote = OmniboxProviders.remote
 }

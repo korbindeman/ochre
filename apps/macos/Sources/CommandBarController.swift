@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// The ⌘T command bar — a Spotlight-style floating panel over the browser
+/// The ⌘T command bar - a Spotlight-style floating panel over the browser
 /// window for web search / URL entry, with favicon autocomplete.
 ///
 /// It lives in its own borderless `NSPanel` (a child window of the browser
@@ -21,7 +21,7 @@ final class CommandBarController {
     var keyMonitor: Any?
     /// Demo/verification only: keep the bar presented even when its panel resigns
     /// key, so it can be screenshotted without staying frontmost. Never set in
-    /// normal use — the resign-key dismissal is the correct product behaviour.
+    /// normal use - the resign-key dismissal is the correct product behaviour.
     var keepPresentedForDemo = false
 
     /// Drives the `glassEffectID` morph in `CommandBarView` so dismiss can shrink
@@ -33,8 +33,8 @@ final class CommandBarController {
     /// history, top sites, search fallback) run instantly; live search suggestions
     /// are the debounced remote tier, merged above the fallback row.
     let suggestions = SuggestionController(
-        local: OmniboxProviders.local,
-        remote: OmniboxProviders.remote
+        local: CommandBarProviders.local,
+        remote: CommandBarProviders.remote
     )
     /// The SwiftUI hosting view, retained to measure its fitting height.
     var hosting: NSView?
@@ -75,7 +75,7 @@ final class CommandBarController {
         self.panel = panel
 
         // Fresh state each presentation. The command bar is the ⌘T new-tab
-        // surface (editing the current tab's URL is inline in the sidebar now —
+        // surface (editing the current tab's URL is inline in the sidebar now -
         // ADR-0014), so commits always open a new tab and the field starts empty.
         suggestions.reset()
         suggestions.showZeroState()
@@ -83,7 +83,7 @@ final class CommandBarController {
         presentation.isPresented = false
 
         // Host the SwiftUI content pinned top/left/right at a fixed width, with
-        // its height left to the content — that is what lets `fittingSize`
+        // its height left to the content - that is what lets `fittingSize`
         // report the height to grow the panel to.
         let hosting = NSHostingView(
             rootView: CommandBarView(
@@ -121,7 +121,7 @@ final class CommandBarController {
         // Hide the panel *before* it is ever placed on screen, then reveal it.
         // A freshly-made panel defaults to alphaValue 1, so ordering it in first
         // (as `addChildWindow` does) and lowering the alpha afterwards let its
-        // not-yet-composited-as-glass content present one opaque frame — the
+        // not-yet-composited-as-glass content present one opaque frame - the
         // square that flashed under the bar on the *first* ⌘T only. The glass
         // morph (CommandBarView) carries the entrance; keep a short alpha ramp so
         // the first frame never flashes raw content.
