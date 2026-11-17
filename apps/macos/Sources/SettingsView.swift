@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// The Settings page — a native content-area surface with a sidebar of sections
+/// The Settings page - a native content-area surface with a sidebar of sections
 /// (ADR-0010, style §15). Values are core-owned; this view binds over FFI.
 struct SettingsView: View {
     @ObservedObject private var model = SettingsModel.shared
@@ -152,11 +152,11 @@ private struct GeneralPane: View {
     @ObservedObject var model: SettingsModel
 
     var body: some View {
-        SettingsHeader(title: "General", subtitle: "Basics for how Browser behaves on this Mac.")
+        SettingsHeader(title: "General", subtitle: "Basics for how \(Product.name) behaves on this Mac.")
         SettingsGroup("Default Browser") {
             SettingsRow(
                 title: model.isDefaultBrowser
-                    ? "Browser is the default" : "Browser is not the default",
+                    ? "\(Product.name) is the default" : "\(Product.name) is not the default",
                 subtitle: "Opens http and https links from other apps."
             ) {
                 if !model.isDefaultBrowser {
@@ -186,7 +186,7 @@ private struct GeneralPane: View {
         SettingsGroup("About") {
             SettingsRow(
                 title: "Version",
-                subtitle: "Browser for macOS"
+                subtitle: "\(Product.name) for macOS"
             ) {
                 Text(model.appVersion)
                     .font(.system(size: 12))
@@ -358,7 +358,7 @@ private struct PasswordsPane: View {
         SettingsGroup("Unlock") {
             SettingsToggle(title: "Touch ID", isOn: .constant(false)) { _ in }
                 .disabled(true)
-            SettingsFootnote("Requires a signed build — coming soon.")
+            SettingsFootnote("Vault unlock with Touch ID needs a signed build. Site passkeys use the device (iCloud Keychain) once signing lands.")
         }
         SettingsGroup("Manage") {
             SettingsRow(
@@ -562,7 +562,7 @@ enum VaultAutoLockPolicy: Int32, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .never: return "Never"
-        case .onBrowserClose: return "When Browser closes"
+        case .onBrowserClose: return "When \(Product.name) closes"
         case .onMacRestart: return "When Mac restarts"
         case .onPasswordUse: return "After each password"
         }
@@ -574,10 +574,10 @@ enum VaultAutoLockPolicy: Int32, CaseIterable, Identifiable {
             return "Stay unlocked until you choose Lock Now."
         case .onBrowserClose:
             return
-                "Lock when you quit Browser. Quitting and reopening Browser is the same thing — your vault is always locked on relaunch."
+                "Lock when you quit \(Product.name). Quitting and reopening \(Product.name) is the same thing: your vault is always locked on relaunch."
         case .onMacRestart:
             return
-                "Lock when your Mac reboots, not when you quit Browser. Reopening Browser still requires unlock — the vault never persists across launches."
+                "Lock when your Mac reboots, not when you quit \(Product.name). Reopening \(Product.name) still requires unlock; the vault never persists across launches."
         case .onPasswordUse:
             return "Lock immediately after filling or copying a password."
         }

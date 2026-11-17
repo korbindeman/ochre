@@ -1,4 +1,4 @@
-// Bridging header — exposes the Rust core's C ABI (libbrowser_ffi) to Swift.
+// Bridging header - exposes the Rust core's C ABI (libbrowser_ffi) to Swift.
 // Mirrors the `#[no_mangle] extern "C"` functions in crates/ffi/src/lib.rs.
 
 #ifndef BROWSER_BRIDGING_HEADER_H
@@ -29,11 +29,13 @@ void browser_crash_report_swift_exception(const char *name, const char *reason);
 //   2  TabLoadStarted    payload = NULL
 //   3  TabLoadEnded      payload = NULL
 //   4  TabFaviconChanged payload = host (fetch the PNG via browser_favicon_png)
-//   5  StructureChanged  no id / payload — re-pull browser_structure_json
-//   6  TabNavStateChanged payload = "bf" — back/forward enablement as '0'/'1'
+//   5  StructureChanged  no id / payload - re-pull browser_structure_json
+//   6  TabNavStateChanged payload = "bf" - back/forward enablement as '0'/'1'
 //   7  OpenTabRequested   payload = url; id = 1 foreground / 0 background
-//   8  TabSuspended       no payload — host detaches the CEF view (ADR-0033)
+//   8  TabSuspended       no payload - host detaches the CEF view (ADR-0033)
 //   9  TabThemeColorChanged payload = CSS color string (viewport URL bar tint)
+//  10  FullscreenChanged  id = 1 enter / 0 exit - HTML5 content fullscreen;
+//                         Alloy host must enter/exit OS window fullscreen
 
 // Register (or clear, with NULL) the tab/space event callback. Invoked on the
 // main thread. `payload` is owned by the core and valid only during the call.
@@ -42,7 +44,7 @@ void browser_set_event_callback(void (*callback)(int32_t event_type,
                                                  const char *payload));
 
 // The whole tree as a JSON snapshot (see crates/ffi browser_structure_json).
-// Heap-allocated by Rust — free with browser_string_free.
+// Heap-allocated by Rust - free with browser_string_free.
 char *browser_structure_json(void);
 
 // Create a new tab rendering into `parent_view` (NSView*) at the given size,
@@ -87,6 +89,9 @@ void browser_tab_set_pinned(int32_t id, bool pinned);
 
 // Pin or unpin tab `id` in the Arc-style icon strip (ADR-0032). Main thread only.
 void browser_tab_set_favorite(int32_t id, bool favorite);
+void browser_space_set_pinned_expanded(int32_t id, bool expanded);
+// Make the current live URL the durable URL of a saved tab / favorite.
+void browser_tab_replace_pinned_url(int32_t id);
 
 // Move tab `id` into folder `folder` (negative ⇒ out of any folder). Moving
 // into a folder auto-saves the tab. Main thread only.
@@ -117,7 +122,7 @@ void browser_set_folder_expanded(int32_t id, bool expanded);
 // icon, shown in the switcher) and switch to it.
 int32_t browser_create_space(const char *name, const char *icon);
 void browser_select_space(int32_t id);
-// Keyboard shortcuts (style §9) — main window, active space.
+// Keyboard shortcuts (style §9) - main window, active space.
 bool browser_tab_select_by_index(int32_t index);   // 1…8, 9 = last
 bool browser_tab_select_adjacent(int32_t delta);   // -1 prev, +1 next
 bool browser_space_select_adjacent(int32_t delta); // -1 prev, +1 next
@@ -134,7 +139,7 @@ int32_t browser_folder_to_space(int32_t id);
 int32_t browser_space_to_folder(int32_t id);
 
 // Arc sidebar import (`StorableSidebar.json`). Preview counts without mutating
-// the tab store; import merges or replaces the session. JSON envelopes — free
+// the tab store; import merges or replaces the session. JSON envelopes - free
 // with browser_string_free. Main thread only.
 char *browser_import_arc_default_path(void);
 char *browser_import_arc_preview(const char *path);
@@ -143,7 +148,7 @@ char *browser_import_arc(const char *path, bool replace);
 // Run the CEF message loop. Blocks until browser_quit / all browsers close.
 void browser_run_message_loop(void);
 
-// Navigation — all main-thread only, no-ops when no browser is alive.
+// Navigation - all main-thread only, no-ops when no browser is alive.
 // Load `url` (NUL-terminated UTF-8) in the primary browser's main frame.
 void browser_navigate(const char *url);
 // Navigate back / forward one history entry.
@@ -170,12 +175,16 @@ bool browser_can_go_forward(void);
 char *browser_get_url(void);
 void browser_string_free(char *ptr);
 
+// Exit HTML5 / browser content fullscreen on the active tab. Call when the
+// host window leaves OS fullscreen while content is still fullscreen (Alloy).
+void browser_exit_fullscreen(void);
+
 // Zoom the current page in / out / back to actual size.
 void browser_zoom_in(void);
 void browser_zoom_out(void);
 void browser_zoom_reset(void);
 
-// Toggle DevTools for the current page — open it in its own window, or close it
+// Toggle DevTools for the current page - open it in its own window, or close it
 // if already open. Backs the Cmd+Opt+I menu item (F12 is handled in the core).
 // DevTools opens as a separate window; inline docking isn't feasible under CEF
 // 149's Chrome bootstrap (ADR-0021).
@@ -198,9 +207,9 @@ void browser_set_find_result_callback(void (*callback)(int32_t count,
 void browser_quit(void);
 
 // Route a host window close through CEF's browser-close flow. Returns true if
-// a close was initiated — veto the window close and wait for CEF to re-request
+// a close was initiated - veto the window close and wait for CEF to re-request
 // it (the message loop quits once the last browser is gone). Returns false if
-// closing is already underway — let the window close, and release the parent
+// closing is already underway - let the window close, and release the parent
 // view so browser teardown can complete.
 bool browser_request_close_all(void);
 
@@ -210,7 +219,7 @@ bool browser_request_close_window(int32_t window_id);
 // Tell the core which window owns nav commands. Main thread only.
 void browser_set_focused_window(int32_t window_id);
 
-// Private (incognito) windows — ephemeral tabs in isolated CEF profiles.
+// Private (incognito) windows - ephemeral tabs in isolated CEF profiles.
 int32_t browser_private_window_create(void);
 char *browser_private_structure_json(int32_t window_id);
 int32_t browser_private_tab_create(int32_t window_id, void *parent_view,
@@ -230,13 +239,13 @@ void browser_settings_set_private_vault_prompt_seen(bool seen);
 
 // ─── Autocomplete: history suggestions + favicons ───────────────────────────
 // Frecency-ranked history suggestions for `query`, as a JSON array string of
-// {"url","title","host"} objects. Heap-allocated by Rust — free with
+// {"url","title","host"} objects. Heap-allocated by Rust - free with
 // browser_string_free (declared above).
 char *browser_query_suggestions(const char *query);
 
 // Fuzzy-match `query` against `text` using the core omnibox scorer. Returns a
 // JSON object {"score":…,"indices":[…]} on success, or the literal "null" when
-// there is no match. Heap-allocated by Rust — free with browser_string_free.
+// there is no match. Heap-allocated by Rust - free with browser_string_free.
 char *browser_fuzzy_match(const char *query, const char *text);
 
 // Captured favicon PNG bytes for `host`, or NULL if none is cached. On success
@@ -250,7 +259,7 @@ void browser_free_bytes(uint8_t *ptr, size_t len);
 // Recency-ordered history rows for `query`, as a JSON array string of
 // {"url","title","host","last_visit","visit_count"} objects (empty [] when none
 // match). An empty query lists all history; limit/offset paginate. Heap-allocated
-// by Rust — free with browser_string_free. Main thread only.
+// by Rust - free with browser_string_free. Main thread only.
 char *browser_history_list(const char *query, uint32_t limit, uint32_t offset);
 
 // Delete the history entry for `url`. Returns whether a row was removed. Main
@@ -264,8 +273,8 @@ uint64_t browser_history_clear(int64_t since);
 // ─── Password vault surface (the native Passwords page) ─────────────────────
 // Thin C ABI over the vault service (ADR-0016/0017). Fallible calls return a JSON
 // envelope string ({"ok":true} / {"ok":true,"imported":N} / {"ok":false,"error":"…"});
-// every returned string is heap-allocated — free with browser_string_free. The
-// networked/heavy calls (unlock_*, import_*) BLOCK — call them off the main thread.
+// every returned string is heap-allocated - free with browser_string_free. The
+// networked/heavy calls (unlock_*, import_*) BLOCK - call them off the main thread.
 
 // Initialize the global vault for `server_url` (empty ⇒ default Bitwarden cloud;
 // else a self-hosted base URL), caching under `cache_dir`.
@@ -296,7 +305,7 @@ void browser_vault_lock(void);
 // match first, then most-recently-used within a tier (ADR-0048).
 char *browser_vault_lookup(const char *host);
 // Record that login `id` was just used, so it leads its site's list next time
-// (ADR-0048). For the gestures the host owns — copying the username/password out
+// (ADR-0048). For the gestures the host owns - copying the username/password out
 // of the URL-bar popover; the core's own fill and in-page picker record
 // themselves. NOT for revealing an entry on the Passwords page. Private-window
 // use is ignored by the core.
@@ -307,17 +316,17 @@ char *browser_vault_list(void);
 // (metadata only), best-first: fuzzy-scored on name/username/URI-host, ties
 // broken by last-used (ADR-0049). An EMPTY query lists the whole vault, so the
 // filtered and unfiltered states are one call. Empty array when locked. The
-// popover's search field and the Passwords page list both use this — never
+// popover's search field and the Passwords page list both use this - never
 // filter the list in the frontend.
 char *browser_vault_search(const char *query);
-// The password for login `id` — the one path a secret leaves the core, on an
+// The password for login `id` - the one path a secret leaves the core, on an
 // explicit user gesture. NULL when locked/unknown. Free with browser_string_free.
 char *browser_vault_password(const char *id);
 // Full detail for login `id` as JSON {id,name,username,password,uri,totp,notes}
-// for the edit form — a secret path, on an explicit gesture. NULL when
+// for the edit form - a secret path, on an explicit gesture. NULL when
 // locked/unknown. Free with browser_string_free.
 char *browser_vault_login(const char *id);
-// Fill the active tab's login form with vault login `id` — the URL-bar vault
+// Fill the active tab's login form with vault login `id` - the URL-bar vault
 // button's Fill action (P2-34/ADR-0029). The credential enters the page on this
 // gesture; a lenient fill targets the current login fields (works on a two-step
 // form's email-only first step too). No-op when locked/unknown or no active tab.
@@ -357,7 +366,7 @@ bool browser_adblock_active_site_allowlisted(void);
 // (persisted); reloads the tab so it applies on screen.
 void browser_adblock_set_active_site_allowlisted(bool allowlisted);
 
-// Cookie-consent handling (reject + hide) — its own toggle, persisted (ADR-0026).
+// Cookie-consent handling (reject + hide) - its own toggle, persisted (ADR-0026).
 // Whether cookie-consent handling is on (on by default).
 bool browser_consent_is_enabled(void);
 // Toggle cookie-consent handling (persisted); reloads the active tab so it applies.
@@ -365,7 +374,7 @@ void browser_consent_set_enabled(bool enabled);
 // Consent banners auto-rejected on the active tab since its last navigation.
 uint64_t browser_consent_active_rejected_count(void);
 
-// Browser settings — vault auto-lock policy (0 Never / 1 OnBrowserClose /
+// Browser settings - vault auto-lock policy (0 Never / 1 OnBrowserClose /
 // 2 OnMacRestart / 3 OnPasswordUse).
 int32_t browser_settings_vault_auto_lock(void);
 void browser_settings_set_vault_auto_lock(int32_t policy);
@@ -389,6 +398,16 @@ int32_t browser_theme_preference(void);
 void browser_theme_set_preference(int32_t preference);
 // Forward the current OS appearance (launch + on OS theme change); drives System mode.
 void browser_theme_set_system_dark(bool is_dark);
+
+// Auto-update (ADR-0052, Zinnia model). Check/install block - call off main.
+// Returns JSON AvailableUpdate or null. Free with browser_string_free.
+char *browser_update_check(const char *current_version);
+// Last check result as JSON, or null. Free with browser_string_free.
+char *browser_update_last_available(void);
+void browser_update_dismiss(void);
+// Download + verify + stage + spawn relaunch helper. True ⇒ host should quit.
+bool browser_update_download_and_install(const char *app_bundle, const char *update_json);
+void browser_update_download_progress(uint64_t *downloaded, uint64_t *total);
 
 // Tear down CEF. Call after browser_run_message_loop returns.
 void browser_shutdown(void);

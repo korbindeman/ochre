@@ -16,7 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let minWindowSize = NSSize(width: 640, height: 480)
     /// The ⌘F find bar. Non-private so `browserFindResultCallback` can reach it.
     let findBar = FindBarController()
-    /// KVO on `NSApp.effectiveAppearance` — forwards OS light/dark changes to the
+    /// KVO on `NSApp.effectiveAppearance` - forwards OS light/dark changes to the
     /// core so `System` appearance tracks the OS live (ADR-0030). Held for the
     /// app's lifetime.
     private var appearanceObserver: NSKeyValueObservation?
@@ -28,8 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Install the menu bar first: it owns every app-level shortcut (⌘T, ⌘R,
         // ⌘[, …) as a key equivalent, so it must exist before the browser view
         // starts receiving key events.
-        let appName =
-            Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Browser"
+        let appName = Product.displayName
         NSApp.mainMenu = MainMenu.build(appName: appName, actions: self)
 
         // Appearance (ADR-0030). Apply the persisted preference to the native
@@ -61,12 +60,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         browser_set_event_callback(browserTabEventCallback)
 
         // Sidebar state (pin / hover / empty-canvas float) drives the AppKit
-        // skeleton's animated layout. `RootView` owns those subscriptions — it
-        // holds the floating host and its geometry — and binds them in its init
+        // skeleton's animated layout. `RootView` owns those subscriptions - it
+        // holds the floating host and its geometry - and binds them in its init
         // (before this initial snapshot pull), so the empty-session auto-float the
         // pull may trigger is observed.
 
-        // Pull the initial snapshot — the core already holds the restored
+        // Pull the initial snapshot - the core already holds the restored
         // session (or the default empty space), and no event fires until the
         // first mutation. Publishing the restored active tab triggers RootView
         // to hydrate it (lazy session restore, ADR-0013).
@@ -74,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         BrowserState.normal.reloadStructure()
 
         // Vault harness: open the Passwords surface at launch so it can be
-        // inspected without driving the menu — `BROWSER_VAULT_DEMO` (seeded, shows
+        // inspected without driving the menu - `BROWSER_VAULT_DEMO` (seeded, shows
         // the list) or `BROWSER_VAULT_OPEN` (unseeded, shows setup/unlock).
         // Delayed past the launch-time empty-state/session setup so it lands on top.
         let env = ProcessInfo.processInfo.environment
@@ -118,11 +117,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pendingExternalURLs.removeAll()
             openExternalURLs(urls)
         }
+
+        // Auto-update (ADR-0052): "Updated to vX" banner + background check.
+        // Delayed slightly past launch chrome so the card does not compete with
+        // the first paint; release builds only auto-check (dev skips noise).
+        // `BROWSER_UPDATE_DEMO` forces the card immediately for screenshots.
+        let updateDelay: TimeInterval =
+            ProcessInfo.processInfo.environment["BROWSER_UPDATE_DEMO"] != nil ? 0.4 : 1.5
+        DispatchQueue.main.asyncAfter(deadline: .now() + updateDelay) {
+            AppUpdateModel.shared.start()
+        }
+    }
+
+    @objc func checkForUpdates(_ sender: Any?) {
+        AppUpdateModel.shared.checkForUpdatesManual()
     }
 
     // MARK: - External URLs
 
-    /// Launch Services hands http/https links here — from Mail, Slack, `open`, etc.
+    /// Launch Services hands http/https links here - from Mail, Slack, `open`, etc.
     func application(_ sender: NSApplication, open urls: [URL]) {
         guard normalController != nil else {
             pendingExternalURLs.append(contentsOf: urls)
@@ -220,7 +233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    /// Persist the windowed content size. Skipped while fullscreen — AppKit owns
+    /// Persist the windowed content size. Skipped while fullscreen - AppKit owns
     /// that geometry and restores the pre-fullscreen frame on exit.
     private func persistWindowSize() {
         guard let window = normalController?.window, !BrowserState.normal.isFullscreen else {
@@ -232,7 +245,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Hide (or reveal) the real `NSWindow` traffic-light buttons. Hidden while
-    /// windowed — the sidebar draws its own (ADR-0012) — and revealed in
+    /// windowed - the sidebar draws its own (ADR-0012) - and revealed in
     /// fullscreen, where the OS auto-hiding titlebar owns them. Re-asserted on
     /// key/main changes in case AppKit restores them on its own relayout.
     // MARK: - Focus self-test hooks
@@ -259,7 +272,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Edit the active tab's address in place (⌘L / clicking the URL chip):
     /// inline in the sidebar (ADR-0014) or the viewport bar when that mode is on.
-    /// With no active tab there is nothing to edit — fall back to the command bar
+    /// With no active tab there is nothing to edit - fall back to the command bar
     /// for a new tab. Reveal a collapsed sidebar first when the chip lives there.
     @objc func editCurrentURL() {
         guard !BrowserState.shared.isSurfaceOpen else { return }
@@ -324,21 +337,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = browser_tab_move_visible(delta)
     }
 
-    /// Show/hide the History page (⌘Y) — a native content-area surface, not a
+    /// Show/hide the History page (⌘Y) - a native content-area surface, not a
     /// tab (ADR-0010).
     @objc func showHistory() {
         guard !BrowserState.current.isPrivate else { return }
         BrowserState.current.toggleHistory()
     }
 
-    /// Show/hide the Passwords (vault) page — a native content-area surface
+    /// Show/hide the Passwords (vault) page - a native content-area surface
     /// (ADR-0010/0016).
     @objc func showVault() {
         guard !BrowserState.current.isPrivate else { return }
         BrowserState.current.toggleVault()
     }
 
-    /// Show/hide the Settings page — a native content-area surface (ADR-0010).
+    /// Show/hide the Settings page - a native content-area surface (ADR-0010).
     @objc func showSettings() {
         BrowserState.current.toggleSettings()
     }
@@ -353,7 +366,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = "Set Default Browser"
         alert.informativeText =
-            "Choose Browser in System Settings → Desktop & Dock → Default web browser."
+            "Choose \(Product.name) in System Settings → Desktop & Dock → Default web browser."
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -364,22 +377,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // sidebar, and empty state; `closeActiveTab` backs the ⌘W menu item.
     func closeTab(_ id: Int32) { focusedController.closeTab(id) }
 
-    /// Permanently delete a tab (context-menu path) — including pinned favorites.
+    /// Permanently delete a tab (context-menu path) - including pinned favorites.
     func deleteTab(_ id: Int32) { focusedController.deleteTab(id) }
 
-    /// Hide an active saved tab (− affordance): deselect and suspend, but keep
-    /// it in the saved section.
-    func hideSavedTab(_ id: Int32) { browser_tab_hide_saved(id) }
+    /// Close a pinned tab without deleting it. The core resets temporary
+    /// navigation, deselects it when active, and suspends its browser.
+    func closePinnedTab(_ id: Int32) { browser_tab_hide_saved(id) }
 
-    // Save/organize (from the sidebar's tab & folder context menus).
-    func setTabSaved(_ id: Int32, _ saved: Bool) { browser_tab_set_pinned(id, saved) }
+    // Pin/organize (from the sidebar's tab and folder context menus).
+    func setTabPinned(_ id: Int32, _ pinned: Bool) { browser_tab_set_pinned(id, pinned) }
     func setTabFavorite(_ id: Int32, _ favorite: Bool) { browser_tab_set_favorite(id, favorite) }
+    func replacePinnedURL(_ id: Int32) { browser_tab_replace_pinned_url(id) }
+
+    @objc func toggleActiveTabPinned() {
+        guard !BrowserState.current.isPrivate, let tab = BrowserState.current.activeTab else {
+            return
+        }
+        setTabPinned(tab.id, !tab.pinned)
+    }
+
+    @objc func toggleActiveTabFavorite() {
+        guard !BrowserState.current.isPrivate, let tab = BrowserState.current.activeTab else {
+            return
+        }
+        setTabFavorite(tab.id, !tab.favorite)
+    }
+
+    /// File-menu path for the same explicit replacement exposed by pinned-tab
+    /// context menus. It is enabled only while the active pin is away from home.
+    @objc func replaceActivePinnedURL() {
+        guard let tab = BrowserState.current.activeTab,
+            tab.hasTemporaryPinnedNavigation
+        else { return }
+        replacePinnedURL(tab.id)
+    }
     func moveTab(_ id: Int32, toFolder folder: Int32?) {
         browser_tab_move_to_folder(id, folder ?? -1)
     }
 
     /// Drag-and-drop relocation (see `browser_tab_move`): move `id` into a
-    /// section — pinned/loose or a folder — positioned before `before` (nil ⇒
+    /// section - pinned/loose or a folder - positioned before `before` (nil ⇒
     /// the section's end). A folder destination auto-pins.
     func moveTab(_ id: Int32, favorite: Bool, pinned: Bool, folder: Int32?, before: Int32?) {
         browser_tab_move(id, favorite, pinned, folder ?? -1, before ?? -1)
@@ -454,7 +491,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Close open tabs except the multi-selection (or the active tab when nothing
-    /// is selected) — the sidebar Open → Clear control.
+    /// is selected) - the sidebar Open → Clear control.
     func clearOpenTabs() {
         let state = BrowserState.shared
         let keep = Array(state.selectedTabIds)
@@ -476,13 +513,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Delete a folder — its tabs survive (drop to loose pinned), so no confirm.
+    /// Delete a folder - its tabs survive (drop to loose pinned), so no confirm.
     func deleteFolder(_ id: Int32) { browser_delete_folder(id) }
 
     /// Persist a folder's expand/collapse state (ADR-0039). Round-trips through
     /// the core so it survives relaunch and space switches.
     func setFolderExpanded(_ id: Int32, _ expanded: Bool) {
         browser_set_folder_expanded(id, expanded)
+    }
+
+    /// Persist a Space's Pinned-section disclosure state in the core.
+    func setPinnedSectionExpanded(_ spaceId: Int32, _ expanded: Bool) {
+        browser_space_set_pinned_expanded(spaceId, expanded)
+    }
+
+    @objc func togglePinnedSection() {
+        let state = BrowserState.shared
+        guard !state.isPrivate,
+            let space = state.spaces.first(where: { $0.id == state.activeSpaceId })
+        else { return }
+        setPinnedSectionExpanded(space.id, !space.pinnedExpanded)
     }
 
     /// Promote a folder to its own space.
@@ -529,7 +579,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// First grapheme cluster of the trimmed input (one emoji, including ZWJ
-    /// sequences), or `fallback` when empty — icons are exactly one character.
+    /// sequences), or `fallback` when empty - icons are exactly one character.
     private func firstGrapheme(of input: String, fallback: String) -> String {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let first = trimmed.first else { return fallback }
@@ -564,7 +614,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Reopen the most recently closed tab (⌘⇧T). The core restores it into its
     /// original space/section and makes it active; `RootView` hydrates it on the
     /// resulting `StructureChanged`, exactly like a session-restored tab. Dismiss
-    /// any open app-UI surface (if up) so the reopened tab is actually visible —
+    /// any open app-UI surface (if up) so the reopened tab is actually visible -
     /// only when a tab was in fact reopened.
     @objc func reopenClosedTab() {
         if browser_tab_reopen_closed() >= 0 {
@@ -573,7 +623,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func closeActiveTab(_ sender: Any?) {
-        // An open app-UI surface (History / Passwords / Settings) intercepts ⌘W —
+        // An open app-UI surface (History / Passwords / Settings) intercepts ⌘W -
         // close the surface, not the tab or window beneath it.
         if BrowserState.shared.isSurfaceOpen {
             BrowserState.shared.closeSurfaces()
@@ -582,9 +632,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let active = BrowserState.current.activeTabId {
             if let tab = BrowserState.current.tabs.first(where: { $0.id == active }) {
                 if tab.favorite {
-                    focusedController.closeTab(active)  // deselect, keep icon + loaded
+                    focusedController.closeTab(active)  // reset home, deselect, keep resident
                 } else if tab.pinned {
-                    hideSavedTab(active)
+                    closePinnedTab(active)
                 } else {
                     focusedController.closeTab(active)
                 }
@@ -594,7 +644,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         // No active tab. Dismiss transient chrome first. On the empty canvas
-        // ⌘W closes the window (Arc semantics) — saved tabs and favorites
+        // ⌘W closes the window (Arc semantics) - saved tabs and favorites
         // persist in the session and return on relaunch. Key-repeat is ignored
         // so hold-to-close-tab stops at the empty canvas instead of blowing
         // through it into the window close.
@@ -606,7 +656,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             findBar.hide()
             return
         }
-        // `isARepeat` may only be asked of key events — on anything else (a
+        // `isARepeat` may only be asked of key events - on anything else (a
         // mouse click on the File ▸ Close Tab menu item, a synthetic dispatch)
         // it raises `NSInternalInconsistencyException`.
         if let event = NSApp.currentEvent, event.type == .keyDown, event.isARepeat { return }
@@ -642,7 +692,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func setThemeDark() { setThemePreference(2) }
 
     /// Persist the appearance preference in the core (which re-themes open tabs),
-    /// then update the native shell's appearance and re-forward the OS appearance —
+    /// then update the native shell's appearance and re-forward the OS appearance -
     /// switching to `System` must set `NSApp.appearance = nil` first so the
     /// re-forwarded value reflects the OS again, not the previously-pinned look.
     private func setThemePreference(_ preference: Int32) {
@@ -670,7 +720,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Forward the Mac's boot time so the vault can lock after a system restart
-    /// (OnMacRestart policy) without conflating that with quitting Browser.
+    /// (OnMacRestart policy) without conflating that with quitting the app.
     private func forwardSystemBootTime() {
         var boot = timeval()
         var size = MemoryLayout<timeval>.size
@@ -718,6 +768,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case #selector(goForward): return browser_can_go_forward()
         case #selector(reopenClosedTab):
             return !BrowserState.current.isPrivate && browser_tab_can_reopen_closed()
+        case #selector(replaceActivePinnedURL):
+            return !BrowserState.current.isPrivate
+                && (BrowserState.current.activeTab?.hasTemporaryPinnedNavigation ?? false)
+        case #selector(toggleActiveTabPinned):
+            guard !BrowserState.current.isPrivate, let tab = BrowserState.current.activeTab else {
+                return false
+            }
+            menuItem.title = tab.pinned ? "Unpin Tab" : "Pin Tab"
+            return true
+        case #selector(toggleActiveTabFavorite):
+            guard !BrowserState.current.isPrivate, let tab = BrowserState.current.activeTab else {
+                return false
+            }
+            menuItem.title = tab.favorite ? "Remove from Favorites" : "Move to Favorites"
+            return tab.favorite || BrowserState.current.canPinMoreFavorites
+        case #selector(togglePinnedSection):
+            let state = BrowserState.shared
+            guard !state.isPrivate,
+                let space = state.spaces.first(where: { $0.id == state.activeSpaceId })
+            else { return false }
+            menuItem.title = space.pinnedExpanded
+                ? "Collapse Pinned Section" : "Expand Pinned Section"
+            return !state.rootFolders(inSpace: space.id).isEmpty
+                || !state.looseSavedTabs(inSpace: space.id).isEmpty
         case #selector(showHistory), #selector(showVault):
             return !BrowserState.current.isPrivate
         case #selector(findNext), #selector(findPrevious): return findBar.hasActiveSearch

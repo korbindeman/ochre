@@ -2,7 +2,7 @@
 //!
 //! Built as a `cdylib` (`libbrowser_ffi.dylib`) that the SwiftUI app links
 //! against and calls through a bridging header. The functions here are a thin,
-//! `extern "C"` surface over [`browser_core::embed`] — the embedded-hosting
+//! `extern "C"` surface over [`browser_core::embed`] - the embedded-hosting
 //! lifecycle where the native app owns the window and hands CEF a child NSView.
 //!
 //! Architecture spec §17/§18: FFI is the single bridge from core to native UIs.
@@ -55,7 +55,7 @@ pub unsafe extern "C" fn browser_crash_report_swift_exception(
 /// on the main thread with `(event_type, id, payload)`; `event_type` selects the
 /// event, `id` names the tab (or space), and `payload` is a nullable UTF-8 C
 /// string whose meaning is per-event (see the bridging header). The core owns
-/// `payload` — copy out during the call, don't retain it.
+/// `payload` - copy out during the call, don't retain it.
 #[no_mangle]
 pub extern "C" fn browser_set_event_callback(callback: Option<browser_core::tabs::EventCallback>) {
     browser_core::embed::set_event_callback(callback);
@@ -136,7 +136,7 @@ pub extern "C" fn browser_tab_reopen_closed() -> i32 {
     browser_core::embed::reopen_closed_tab()
 }
 
-/// Whether a closed tab is available to reopen — for the "Reopen Closed Tab"
+/// Whether a closed tab is available to reopen - for the "Reopen Closed Tab"
 /// menu item's enabled state. Call on the main thread.
 #[no_mangle]
 pub extern "C" fn browser_tab_can_reopen_closed() -> bool {
@@ -155,12 +155,24 @@ unsafe fn cstr(ptr: *const c_char) -> String {
     }
 }
 
-/// The current structure as a JSON snapshot (ADR-0005) — the host rebuilds its
+/// Like [`cstr`], but for a secret (the master password): the copy is wrapped in
+/// `Zeroizing` so its plaintext is wiped from heap on drop rather than left in
+/// freed memory. Bind it to a `let` (so it lives across the call) and pass
+/// `&value`, which derefs to `&str`.
+///
+/// # Safety
+/// `ptr` must be null or a valid, NUL-terminated UTF-8 C string.
+unsafe fn cstr_secret(ptr: *const c_char) -> zeroize::Zeroizing<String> {
+    zeroize::Zeroizing::new(cstr(ptr))
+}
+
+/// The current structure as a JSON snapshot (ADR-0005) - the host rebuilds its
 /// tree from this on `StructureChanged`. Shape:
 /// `{"active_space":i,"active_tab":i|null,"spaces":[{"id","name"}],
 ///   "folders":[{"id","space","name","parent":i|null,"expanded"}],
-///   "tabs":[{"id","space","folder":i|null,"pinned","url","title","loading"}]}`.
-/// Heap-allocated by Rust — free with [`browser_string_free`].
+///   "tabs":[{"id","space","folder":i|null,"pinned","favorite",
+///             "saved_url":s|null,"url","title","loading"}]}`.
+/// Heap-allocated by Rust - free with [`browser_string_free`].
 #[no_mangle]
 pub extern "C" fn browser_structure_json() -> *mut c_char {
     let json = serde_json::to_string(&browser_core::tabs::snapshot()).unwrap_or_default();
@@ -183,6 +195,20 @@ pub extern "C" fn browser_tab_set_favorite(id: i32, favorite: bool) {
     browser_core::embed::set_tab_favorite(id, favorite);
 }
 
+/// Expand or collapse a Space's Pinned section. Emits `StructureChanged`.
+/// Main thread only.
+#[no_mangle]
+pub extern "C" fn browser_space_set_pinned_expanded(id: i32, expanded: bool) {
+    browser_core::embed::set_space_pinned_expanded(id, expanded);
+}
+
+/// Replace a saved tab/favorite's pinned URL with its current live URL. This is
+/// the only operation that makes temporary navigation durable. Main thread only.
+#[no_mangle]
+pub extern "C" fn browser_tab_replace_pinned_url(id: i32) {
+    browser_core::embed::replace_tab_pinned_url(id);
+}
+
 /// Move tab `id` into folder `folder` (negative ⇒ out of any folder). Moving
 /// into a folder auto-pins the tab. Emits `StructureChanged`. Main thread only.
 #[no_mangle]
@@ -191,7 +217,7 @@ pub extern "C" fn browser_tab_move_to_folder(id: i32, folder: i32) {
 }
 
 /// Relocate tab `id` for drag-and-drop: set its section (`favorite`, `pinned`,
-/// and `folder` — negative ⇒ no folder) and position it just before tab `before`
+/// and `folder` - negative ⇒ no folder) and position it just before tab `before`
 /// (negative ⇒ the section's end). A folder destination auto-pins. Emits
 /// `StructureChanged`. Main thread only.
 #[no_mangle]
@@ -236,7 +262,7 @@ pub unsafe extern "C" fn browser_create_folder_with_tabs(
 
 /// Close ephemeral ("today") tabs in the active space except those listed in
 /// `keep_ids` (length `count`). When `count` is 0, the active tab is kept.
-/// Bulk close — not reopenable. Main thread only.
+/// Bulk close - not reopenable. Main thread only.
 ///
 /// # Safety
 /// When `count > 0`, `keep_ids` must point at `count` valid `i32`s.
@@ -265,7 +291,7 @@ pub unsafe extern "C" fn browser_rename_folder(id: i32, name: *const c_char) {
     browser_core::embed::rename_folder(id, &cstr(name));
 }
 
-/// Set folder `id`'s sidebar expand/collapse state — persisted, so it survives
+/// Set folder `id`'s sidebar expand/collapse state - persisted, so it survives
 /// relaunch and space switches (ADR-0039). Emits `StructureChanged`. Main
 /// thread only.
 #[no_mangle]
@@ -368,7 +394,7 @@ pub extern "C" fn browser_import_arc_default_path() -> *mut c_char {
     }
 }
 
-/// Preview an Arc sidebar import. JSON envelope — free with [`browser_string_free`].
+/// Preview an Arc sidebar import. JSON envelope - free with [`browser_string_free`].
 /// Main thread only.
 ///
 /// # Safety
@@ -388,7 +414,7 @@ pub unsafe extern "C" fn browser_import_arc_preview(path: *const c_char) -> *mut
 }
 
 /// Import an Arc sidebar (`StorableSidebar.json`). `replace` clears the existing
-/// session first; otherwise the import merges. JSON envelope — free with
+/// session first; otherwise the import merges. JSON envelope - free with
 /// [`browser_string_free`]. Main thread only.
 ///
 /// # Safety
@@ -525,6 +551,14 @@ pub unsafe extern "C" fn browser_string_free(ptr: *mut c_char) {
     }
 }
 
+/// Exit HTML5 / browser content fullscreen on the active tab. Call when the
+/// host window leaves OS fullscreen while content is still fullscreen (Alloy).
+/// Main thread only.
+#[no_mangle]
+pub extern "C" fn browser_exit_fullscreen() {
+    browser_core::embed::exit_fullscreen();
+}
+
 /// Zoom the current page in / out / back to actual size. Call on the main thread.
 #[no_mangle]
 pub extern "C" fn browser_zoom_in() {
@@ -590,9 +624,9 @@ pub extern "C" fn browser_set_find_result_callback(
 
 /// Route a host window close through CEF's browser-close flow.
 ///
-/// Returns `true` if a close was initiated — veto the window close and wait
+/// Returns `true` if a close was initiated - veto the window close and wait
 /// for CEF to re-request it; the message loop quits once the last browser is
-/// gone. Returns `false` if closing is already underway — let the window
+/// gone. Returns `false` if closing is already underway - let the window
 /// close, and release the parent view so browser teardown can complete.
 #[no_mangle]
 pub extern "C" fn browser_request_close_all() -> bool {
@@ -727,7 +761,7 @@ pub extern "C" fn browser_settings_set_private_vault_prompt_seen(seen: bool) {
 ///
 /// The returned pointer is heap-allocated by Rust; free it with
 /// [`browser_string_free`]. Returns null only if the JSON contains an interior
-/// NUL (it cannot — the fields come from CEF as valid strings).
+/// NUL (it cannot - the fields come from CEF as valid strings).
 ///
 /// # Safety
 /// `query` must be null or a valid, NUL-terminated UTF-8 C string.
@@ -881,7 +915,7 @@ pub unsafe extern "C" fn browser_free_bytes(ptr: *mut u8, len: usize) {
 // Thin glue over `browser_core::vault::service` (which owns the one global
 // `VaultManager`). Every returned string is heap-allocated by Rust and the caller
 // **must** free it with [`browser_string_free`]. The fallible calls return a JSON
-// envelope — `{"ok":true}` / `{"ok":true,"imported":N}` / `{"ok":false,"error":"…"}`.
+// envelope - `{"ok":true}` / `{"ok":true,"imported":N}` / `{"ok":false,"error":"…"}`.
 // The networked/heavy calls (`unlock_*`, `import_*`) block: **call them off the
 // main thread.**
 
@@ -941,7 +975,7 @@ pub extern "C" fn browser_vault_is_locked() -> bool {
 }
 
 /// Whether the vault has been set up on this machine (a server/account is
-/// configured) — the UI shows the setup screen when this is false.
+/// configured) - the UI shows the setup screen when this is false.
 #[no_mangle]
 pub extern "C" fn browser_vault_is_configured() -> bool {
     browser_core::vault::service::is_configured()
@@ -951,7 +985,7 @@ pub extern "C" fn browser_vault_is_configured() -> bool {
 /// cloud**; otherwise a self-hosted base URL), log in with `email`/`password`,
 /// and (on success) persist the config so later launches auto-init. `code` empty
 /// ⇒ first attempt; a `{"two_factor":"…"}` envelope means re-call with the code
-/// and that same `provider` tag. Blocks — call off the main thread. JSON
+/// and that same `provider` tag. Blocks - call off the main thread. JSON
 /// envelope; free with [`browser_string_free`].
 ///
 /// # Safety
@@ -967,7 +1001,7 @@ pub unsafe extern "C" fn browser_vault_setup(
     vault_unlock_envelope(browser_core::vault::service::setup(
         &cstr(server),
         &cstr(email),
-        &cstr(password),
+        &cstr_secret(password),
         &cstr(code),
         &cstr(provider),
     ))
@@ -975,7 +1009,7 @@ pub unsafe extern "C" fn browser_vault_setup(
 
 /// Online unlock. `code` empty ⇒ no second factor supplied yet; a
 /// `{"two_factor":"…"}` envelope means re-call with the code + that `provider`
-/// tag. Blocks — call off the main thread. JSON envelope; free with
+/// tag. Blocks - call off the main thread. JSON envelope; free with
 /// [`browser_string_free`].
 ///
 /// # Safety
@@ -989,14 +1023,14 @@ pub unsafe extern "C" fn browser_vault_unlock_online(
 ) -> *mut c_char {
     vault_unlock_envelope(browser_core::vault::service::unlock_online(
         &cstr(email),
-        &cstr(password),
+        &cstr_secret(password),
         &cstr(code),
         &cstr(provider),
     ))
 }
 
 /// Re-dispatch the login two-factor email (the "Resend code" affordance). Blocks
-/// (network + KDF) — call off the main thread. JSON envelope; free with
+/// (network + KDF) - call off the main thread. JSON envelope; free with
 /// [`browser_string_free`].
 ///
 /// # Safety
@@ -1008,17 +1042,17 @@ pub unsafe extern "C" fn browser_vault_send_email_code(
 ) -> *mut c_char {
     vault_ok_or_err(browser_core::vault::service::send_email_code(
         &cstr(email),
-        &cstr(password),
+        &cstr_secret(password),
     ))
 }
 
-/// Offline unlock from cache. Blocks (KDF) — call off the main thread.
+/// Offline unlock from cache. Blocks (KDF) - call off the main thread.
 ///
 /// # Safety
 /// `password` must be null or a valid NUL-terminated UTF-8 C string.
 #[no_mangle]
 pub unsafe extern "C" fn browser_vault_unlock_offline(password: *const c_char) -> *mut c_char {
-    vault_ok_or_err(browser_core::vault::service::unlock_offline(&cstr(
+    vault_ok_or_err(browser_core::vault::service::unlock_offline(&cstr_secret(
         password,
     )))
 }
@@ -1041,7 +1075,7 @@ pub unsafe extern "C" fn browser_vault_lookup(host: *const c_char) -> *mut c_cha
 }
 
 /// Logins matching a free-text `query` across the **whole vault**, as a JSON
-/// array (metadata only), best-first. An empty query lists everything — so the
+/// array (metadata only), best-first. An empty query lists everything - so the
 /// filtered and unfiltered list states are one call (ADR-0049). Empty array when
 /// locked. Free with [`browser_string_free`].
 ///
@@ -1060,7 +1094,7 @@ pub extern "C" fn browser_vault_list() -> *mut c_char {
     vault_string(serde_json::to_string(&views).unwrap_or_else(|_| "[]".to_string()))
 }
 
-/// The password for login `id` — the only path a secret leaves the core, on an
+/// The password for login `id` - the only path a secret leaves the core, on an
 /// explicit user gesture. Null when locked/unknown. Free with [`browser_string_free`].
 ///
 /// # Safety
@@ -1079,7 +1113,7 @@ pub unsafe extern "C" fn browser_vault_password(id: *const c_char) -> *mut c_cha
 }
 
 /// Full detail for login `id` as JSON (incl. password + notes) for the edit form
-/// — a secret path, on an explicit gesture. Null when locked/unknown. Free with
+/// (a secret path, on an explicit gesture). Null when locked/unknown. Free with
 /// [`browser_string_free`].
 ///
 /// # Safety
@@ -1092,7 +1126,7 @@ pub unsafe extern "C" fn browser_vault_login(id: *const c_char) -> *mut c_char {
     }
 }
 
-/// Fill the active tab's login form with vault login `id` — the button-driven
+/// Fill the active tab's login form with vault login `id` - the button-driven
 /// autofill path (P2-34, ADR-0029). The credential enters the page on this
 /// explicit gesture; a lenient fill targets the current login fields (an email-
 /// only first step included). No-op when locked/unknown or no active tab. Call on
@@ -1106,7 +1140,7 @@ pub unsafe extern "C" fn browser_vault_fill_active_tab(id: *const c_char) {
 }
 
 /// Record that login `id` was just used, so it leads its site's list next time
-/// (ADR-0048). For the gestures the **host** owns — copying the username or
+/// (ADR-0048). For the gestures the **host** owns - copying the username or
 /// password out of the URL-bar popover; the core-side fill/picker paths record
 /// themselves. Not for merely revealing an entry on the Passwords page. Use
 /// inside a private window is ignored by the core.
@@ -1118,7 +1152,7 @@ pub unsafe extern "C" fn browser_vault_note_used(id: *const c_char) {
     browser_core::vault::service::note_used(&cstr(id));
 }
 
-/// Import a CSV export. Blocks — call off the main thread. JSON envelope with an
+/// Import a CSV export. Blocks - call off the main thread. JSON envelope with an
 /// `imported` count; free with [`browser_string_free`].
 ///
 /// # Safety
@@ -1128,7 +1162,7 @@ pub unsafe extern "C" fn browser_vault_import_csv(data: *const c_char) -> *mut c
     vault_count_or_err(browser_core::vault::service::import_csv(&cstr(data)))
 }
 
-/// Import a Bitwarden JSON export. Blocks — call off the main thread. JSON
+/// Import a Bitwarden JSON export. Blocks - call off the main thread. JSON
 /// envelope with an `imported` count; free with [`browser_string_free`].
 ///
 /// # Safety
@@ -1140,7 +1174,7 @@ pub unsafe extern "C" fn browser_vault_import_bitwarden_json(data: *const c_char
     )))
 }
 
-/// Create a new login. Blocks — call off the main thread. JSON envelope.
+/// Create a new login. Blocks - call off the main thread. JSON envelope.
 ///
 /// # Safety
 /// All pointers must be null or valid NUL-terminated UTF-8 C strings.
@@ -1163,7 +1197,7 @@ pub unsafe extern "C" fn browser_vault_add_login(
     ))
 }
 
-/// Update login `id`. Blocks — call off the main thread. JSON envelope.
+/// Update login `id`. Blocks - call off the main thread. JSON envelope.
 ///
 /// # Safety
 /// All pointers must be null or valid NUL-terminated UTF-8 C strings.
@@ -1188,7 +1222,7 @@ pub unsafe extern "C" fn browser_vault_update_login(
     ))
 }
 
-/// Delete login `id`. Blocks — call off the main thread. JSON envelope.
+/// Delete login `id`. Blocks - call off the main thread. JSON envelope.
 ///
 /// # Safety
 /// `id` must be null or a valid NUL-terminated UTF-8 C string.
@@ -1227,7 +1261,7 @@ pub extern "C" fn browser_adblock_set_enabled(enabled: bool) {
     browser_core::embed::adblock_set_enabled(enabled);
 }
 
-/// Count of requests blocked on the active tab since its last navigation — the
+/// Count of requests blocked on the active tab since its last navigation - the
 /// sidebar shield's badge. Main thread.
 #[no_mangle]
 pub extern "C" fn browser_adblock_active_blocked_count() -> u64 {
@@ -1264,7 +1298,7 @@ pub extern "C" fn browser_consent_set_enabled(enabled: bool) {
 }
 
 /// Count of consent banners auto-rejected on the active tab since its last
-/// navigation — the shield popover's transparency line. Main thread.
+/// navigation - the shield popover's transparency line. Main thread.
 #[no_mangle]
 pub extern "C" fn browser_consent_active_rejected_count() -> u64 {
     browser_core::embed::consent_active_rejected_count()
@@ -1354,6 +1388,124 @@ pub extern "C" fn browser_theme_set_preference(preference: i32) {
 #[no_mangle]
 pub extern "C" fn browser_theme_set_system_dark(is_dark: bool) {
     browser_core::theme::set_system_dark(is_dark);
+}
+
+// --- Auto-update (ADR-0052, Zinnia model) ---
+
+/// Check GitHub Releases for a newer version. `current_version` is the running
+/// app's marketing version (no required `v` prefix). Returns a heap-allocated
+/// JSON object (`version`, `current_version`, `notes`, …) when an update is
+/// available, null when up to date or on error (errors are logged). Free with
+/// [`browser_string_free`].
+///
+/// Blocks on the network - call off the main thread.
+///
+/// # Safety
+/// `current_version` must be a valid, NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_update_check(current_version: *const c_char) -> *mut c_char {
+    let current = if current_version.is_null() {
+        ""
+    } else {
+        CStr::from_ptr(current_version).to_str().unwrap_or("")
+    };
+    match browser_core::update::check(current) {
+        Ok(Some(update)) => match serde_json::to_string(&update) {
+            Ok(json) => CString::new(json)
+                .map(CString::into_raw)
+                .unwrap_or(std::ptr::null_mut()),
+            Err(err) => {
+                eprintln!("[update] serialize: {err}");
+                std::ptr::null_mut()
+            }
+        },
+        Ok(None) => std::ptr::null_mut(),
+        Err(err) => {
+            eprintln!("[update] check failed: {err}");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Last update found by a prior [`browser_update_check`], as JSON, or null.
+/// Free with [`browser_string_free`].
+#[no_mangle]
+pub extern "C" fn browser_update_last_available() -> *mut c_char {
+    match browser_core::update::last_available() {
+        Some(update) => match serde_json::to_string(&update) {
+            Ok(json) => CString::new(json)
+                .map(CString::into_raw)
+                .unwrap_or(std::ptr::null_mut()),
+            Err(_) => std::ptr::null_mut(),
+        },
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Dismiss the cached available update (e.g. user closed the card).
+#[no_mangle]
+pub extern "C" fn browser_update_dismiss() {
+    browser_core::update::clear_last_available();
+}
+
+/// Download, verify (minisign), stage, and spawn the replace-and-relaunch
+/// helper for the last available update (or the JSON in `update_json` if non-null).
+/// `app_bundle` is the path to the running `.app`. Returns true on success; the
+/// host should then quit so the helper can swap the bundle and relaunch.
+///
+/// Blocks - call off the main thread.
+///
+/// # Safety
+/// `app_bundle` must be a valid, NUL-terminated UTF-8 path. `update_json` may be
+/// null (use last check) or a valid JSON string matching [`AvailableUpdate`].
+#[no_mangle]
+pub unsafe extern "C" fn browser_update_download_and_install(
+    app_bundle: *const c_char,
+    update_json: *const c_char,
+) -> bool {
+    if app_bundle.is_null() {
+        eprintln!("[update] install: missing app_bundle");
+        return false;
+    }
+    let app = CStr::from_ptr(app_bundle).to_str().unwrap_or("");
+    if app.is_empty() {
+        return false;
+    }
+
+    let update = if update_json.is_null() {
+        browser_core::update::last_available()
+    } else {
+        let raw = CStr::from_ptr(update_json).to_str().unwrap_or("");
+        serde_json::from_str(raw).ok()
+    };
+    let Some(update) = update else {
+        eprintln!("[update] install: no available update");
+        return false;
+    };
+
+    match browser_core::update::download_and_install(&update, std::path::Path::new(app)) {
+        Ok(()) => true,
+        Err(err) => {
+            eprintln!("[update] install failed: {err}");
+            false
+        }
+    }
+}
+
+/// Progress of the in-flight download: writes `downloaded` and `total` (0 if
+/// unknown). Safe to call from any thread while install runs.
+///
+/// # Safety
+/// `downloaded` and `total` must be valid writable pointers.
+#[no_mangle]
+pub unsafe extern "C" fn browser_update_download_progress(downloaded: *mut u64, total: *mut u64) {
+    let (d, t) = browser_core::update::download_progress();
+    if !downloaded.is_null() {
+        *downloaded = d;
+    }
+    if !total.is_null() {
+        *total = t;
+    }
 }
 
 /// Tear down CEF. Call after [`browser_run_message_loop`] returns.

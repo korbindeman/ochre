@@ -1,7 +1,7 @@
 import AppKit
 import UniformTypeIdentifiers
 
-/// Arc `StorableSidebar.json` import — auto-detects Arc on this Mac, previews counts,
+/// Arc `StorableSidebar.json` import - auto-detects Arc on this Mac, previews counts,
 /// then merge/replaces the sidebar. Settings is the primary surface; File → Import
 /// is a shortcut to the same flow.
 enum ArcImportFlow {
@@ -45,7 +45,7 @@ enum ArcImportFlow {
         return URL(fileURLWithPath: String(cString: c))
     }
 
-    /// The sidebar file if it exists on disk — no file picker required.
+    /// The sidebar file if it exists on disk - no file picker required.
     static func detectedSidebarURL() -> URL? {
         guard let url = defaultSidebarURL(),
             FileManager.default.isReadableFile(atPath: url.path)
@@ -97,7 +97,7 @@ enum ArcImportFlow {
         let alert = NSAlert()
         alert.messageText = "Arc sidebar not found"
         alert.informativeText = """
-            Browser looks for Arc's sidebar data at
+            \(Product.name) looks for Arc's sidebar data at
             ~/Library/Application Support/Arc/StorableSidebar.json.
 
             If Arc is installed, open it once so the file exists. You can also import \
@@ -121,7 +121,7 @@ enum ArcImportFlow {
         }
     }
 
-    /// Manual fallback — e.g. importing a backup copy of `StorableSidebar.json`.
+    /// Manual fallback - e.g. importing a backup copy of `StorableSidebar.json`.
     @MainActor
     static func chooseSidebarFile() -> URL? {
         let panel = NSOpenPanel()

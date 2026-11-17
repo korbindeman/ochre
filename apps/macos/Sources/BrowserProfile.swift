@@ -1,10 +1,10 @@
 import Foundation
 
-/// Build-profile identity — must stay in sync with Rust `profile_data_dir_name`.
+/// Build-profile identity - must stay in sync with Rust `profile_data_dir_name`.
 ///
 /// Debug (`just run`) and release (`just dogfood`) keep separate persisted state:
 /// the core pins CEF + all JSON/SQLite under `~/Library/Application Support/`
-/// `Browser Dev` vs `Browser`; Swift chrome prefs use the same `.dev` suffix here.
+/// `{name} Dev` vs `{name}` from `product.toml`; Swift chrome prefs use the same `.dev` suffix here.
 enum BrowserProfile {
     #if DEBUG
     static let defaultsKeySuffix = ".dev"

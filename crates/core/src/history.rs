@@ -8,12 +8,12 @@
 //! Threading: on macOS every write happens on CEF's UI thread (= the main
 //! thread) from the display handler, and every read happens on that same thread
 //! from the FFI query call. A single process-wide `Mutex<History>` therefore
-//! sees no cross-thread contention — the lock is defensive, not a hot path.
+//! sees no cross-thread contention - the lock is defensive, not a hot path.
 //!
 //! The store sits behind this small surface (`record_visit`, `update_title`,
 //! `store_favicon`, `query`, `list`, `delete`, `clear_since`, `favicon`)
 //! precisely so the backend can be swapped
-//! later — e.g. to libSQL for cross-device sync — without touching callers. The
+//! later - e.g. to libSQL for cross-device sync - without touching callers. The
 //! on-disk file format is SQLite-compatible, so that swap needs no data
 //! migration.
 
@@ -27,16 +27,16 @@ use serde::Serialize;
 use crate::fuzzy;
 
 /// Ranking class bases. A row's class (where the query matched) dominates its
-/// score — the bases are spaced wider than the largest reachable detail +
-/// frecency bonus — so a host-prefix match always outranks a mid-URL one, and
+/// score - the bases are spaced wider than the largest reachable detail +
+/// frecency bonus - so a host-prefix match always outranks a mid-URL one, and
 /// frecency only reorders rows *within* a class. See [`History::query`].
 const CLASS_PREFIX: i32 = 4000;
 const CLASS_HOST: i32 = 3000;
 const CLASS_URL: i32 = 2000;
 const CLASS_TITLE: i32 = 1000;
 
-/// How many rows a query fuzzy-scores. We take the most-frecent rows — the ones
-/// actually worth completing to — and score those in memory. A personal history
+/// How many rows a query fuzzy-scores. We take the most-frecent rows - the ones
+/// actually worth completing to - and score those in memory. A personal history
 /// rarely holds more genuinely-relevant candidates than this, and the bound
 /// keeps the per-keystroke cost flat as history grows without end.
 const SCAN_LIMIT: u32 = 2000;
@@ -82,7 +82,7 @@ pub struct HistoryEntry {
     pub visit_count: i64,
 }
 
-/// The store — one SQLite connection with the schema applied on open.
+/// The store - one SQLite connection with the schema applied on open.
 pub struct History {
     conn: Connection,
 }
@@ -149,9 +149,9 @@ impl History {
     /// Up to `limit` fuzzy-ranked autocomplete rows for `query`.
     ///
     /// Ranking mirrors a modern browser's omnibox: the query is fuzzy-matched
-    /// (subsequence, boundary- and run-aware — see [`crate::fuzzy`]) against each
+    /// (subsequence, boundary- and run-aware - see [`crate::fuzzy`]) against each
     /// candidate's host, display URL, and title, and each row is bucketed into a
-    /// *class* by where it matched — a host **prefix** (also what drives inline
+    /// *class* by where it matched - a host **prefix** (also what drives inline
     /// autocomplete) ranks above a host fuzzy-match, above a URL match, above a
     /// title-only match. The class dominates the score, so match quality beats
     /// frecency; within a class, the fuzzy detail and a log-scaled frecency
@@ -188,7 +188,7 @@ impl History {
             } else if let Some(m) = &title_m {
                 (CLASS_TITLE, m.score)
             } else {
-                continue; // no field matched — drop it
+                continue; // no field matched - drop it
             };
 
             let score = base + detail + frecency_bonus(c.visit_count, c.last_visit, now)
@@ -238,8 +238,8 @@ impl History {
     }
 
     /// The `limit` most-frecent pages, as suggestions with no highlight ranges
-    /// (there is no query to highlight). Sorted by frecency — visit frequency
-    /// weighted by recency — so the zero-state omnibox surfaces pages the user
+    /// (there is no query to highlight). Sorted by frecency - visit frequency
+    /// weighted by recency - so the zero-state omnibox surfaces pages the user
     /// actually returns to, not merely the highest raw visit count.
     fn top_frecent(&self, limit: u32) -> rusqlite::Result<Vec<HistorySuggestion>> {
         let now = now();
@@ -266,7 +266,7 @@ impl History {
     }
 
     /// Up to `limit` history rows (skipping the first `offset`) matching `query`
-    /// — a case-insensitive substring of the URL or title — in reverse-
+    /// (a case-insensitive substring of the URL or title) in reverse-
     /// chronological order (most recent visit first). An empty `query` lists all
     /// history. Unlike [`query`](Self::query), which ranks by frecency for
     /// autocomplete, this orders strictly by recency for the History page.
@@ -390,7 +390,7 @@ fn strip_scheme_www(query: &str) -> String {
     strip_www(s).to_string()
 }
 
-/// Penalty for URLs deeper than the bare host — keeps `youtube.com` above
+/// Penalty for URLs deeper than the bare host - keeps `youtube.com` above
 /// `youtube.com/watch?v=…` within the same match class. Waived once a deep URL
 /// is visited often enough that it is clearly the user's habitual destination.
 fn specificity_penalty(display: &str, visit_count: i64) -> i32 {
@@ -432,7 +432,7 @@ static STORE: OnceLock<Mutex<History>> = OnceLock::new();
 
 /// Open the process-wide store at `path`. Call once during initialization.
 ///
-/// A failure to open is logged and leaves the store absent — every operation
+/// A failure to open is logged and leaves the store absent - every operation
 /// below then becomes a silent no-op, so the browser runs without autocomplete
 /// rather than aborting.
 pub fn init(path: &str) {
@@ -605,7 +605,7 @@ mod tests {
     fn fuzzy_matches_non_substring_subsequence() {
         let h = store();
         h.record_visit("https://github.com/").unwrap();
-        // "gh" is a subsequence but not a substring of "github.com" — the old
+        // "gh" is a subsequence but not a substring of "github.com" - the old
         // LIKE matcher missed it; the fuzzy matcher finds it.
         let out = h.query("gh", 10).unwrap();
         assert_eq!(out.len(), 1);
@@ -678,7 +678,7 @@ mod tests {
         assert_eq!(display_url("https://example.com/?q=1"), "example.com/?q=1");
     }
 
-    /// Record `url` then stamp its visit time explicitly — `record_visit` uses
+    /// Record `url` then stamp its visit time explicitly - `record_visit` uses
     /// the wall clock, so tests that assert on ordering/cutoffs set it directly.
     fn visit_at(h: &History, url: &str, at: i64) {
         h.record_visit(url).unwrap();

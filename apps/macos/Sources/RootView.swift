@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// The window's content view — a plain AppKit skeleton.
+/// The window's content view - a plain AppKit skeleton.
 ///
 /// AppKit owns the placement of every top-level region and, critically, the CEF
 /// tab views' frames. SwiftUI only renders *content* inside hosted islands
@@ -12,8 +12,8 @@ import SwiftUI
 /// Chromium's frame pipeline or mis-place the view outright.
 ///
 /// Multi-tab (P1-M1): the content region hosts one `CEFContainerView` per tab
-/// plus a native empty state. This view owns those views imperatively —
-/// [`openNewTab`] / [`closeTab`] — and reconciles which one is visible against
+/// plus a native empty state. This view owns those views imperatively -
+/// [`openNewTab`] / [`closeTab`] - and reconciles which one is visible against
 /// the core's `BrowserState` (the source of truth for the tab list + active tab).
 final class RootView: NSView {
     private let state: BrowserState
@@ -22,7 +22,7 @@ final class RootView: NSView {
     private let background = NSVisualEffectView()
     private lazy var sidebarHost = NSHostingView(rootView: Sidebar(isPrivate: isPrivate))
     private let divider = NSView()
-    /// Transparent, wider grab strip on the sidebar's right edge — drag it to
+    /// Transparent, wider grab strip on the sidebar's right edge - drag it to
     /// resize. Tracks the divider seam when pinned and the floating card's edge
     /// when revealed; hidden when the sidebar is collapsed.
     private let resizeHandle = SidebarResizeHandle()
@@ -31,12 +31,12 @@ final class RootView: NSView {
     private let emptyStateHost: NSHostingView<AnyView>
     private let hotZone = TrackingView()
     private lazy var floatingHost = NSHostingView(rootView: FloatingSidebar(isPrivate: isPrivate))
-    /// The History page — a native content-area surface shown over the web
+    /// The History page - a native content-area surface shown over the web
     /// content and dismissed back to it (ADR-0010), never a tab.
     private let historyHost = NSHostingView(rootView: HistoryView())
-    /// The Passwords (vault) page — another content-area surface (ADR-0010/0016).
+    /// The Passwords (vault) page - another content-area surface (ADR-0010/0016).
     private let vaultHost = NSHostingView(rootView: VaultView())
-    /// The Settings page — native content-area surface (ADR-0010).
+    /// The Settings page - native content-area surface (ADR-0010).
     private let settingsHost = NSHostingView(rootView: SettingsView())
     /// Safari-style address bar floating over the page viewport when enabled.
     private lazy var viewportURLBarHost: ViewportURLBarHostingView = {
@@ -51,22 +51,22 @@ final class RootView: NSView {
     private var cancellables: Set<AnyCancellable> = []
 
     /// Seeded from the persisted state so the first layout pass already matches
-    /// (the `$isSidebarPinned` observer drops the initial value — it only
+    /// (the `$isSidebarPinned` observer drops the initial value - it only
     /// animates *changes*).
     private var sidebarPinned: Bool
     /// Bumped at each pin/unpin animation start so a stale completion handler
     /// from an interrupted transition can't clear a newer one.
     private var sidebarTransitionGeneration: UInt = 0
     /// Drives CEF resizes from the content area's *presentation* bounds during
-    /// sidebar pin/unpin — at most once per display frame, not every layout pass.
+    /// sidebar pin/unpin - at most once per display frame, not every layout pass.
     private var sidebarTransitionTimer: Timer?
     /// Skips redundant Chromium resizes when the animated bounds haven't moved.
     private var lastSyncedCEFSize = NSSize.zero
-    /// Whether the floating host is currently shown — mirrors the derived rule
+    /// Whether the floating host is currently shown - mirrors the derived rule
     /// `BrowserState.isFloatingSidebarShown`. Drives the floating card's geometry
     /// in `applyLayout`; kept in step by `syncFloatingSidebar`.
     private var floatingShown = false
-    /// True only while a *direct* pinned↔floating swap is cross-fading — pinning
+    /// True only while a *direct* pinned↔floating swap is cross-fading - pinning
     /// while the floating card is revealed, or unpinning back onto an empty canvas.
     /// In that case both hosts carry the same content at nearly the same spot, so
     /// `applyLayout` freezes the column at x=0 and the card at its inset and they
@@ -74,7 +74,7 @@ final class RootView: NSView {
     /// runs the column's fade). Cleared when the swap animation completes.
     private var inPlaceSwap = false
 
-    /// A divider drag is in progress — suspends the floating sidebar's hover
+    /// A divider drag is in progress - suspends the floating sidebar's hover
     /// dismissal so dragging its edge past the grace margin doesn't snap it shut.
     private var isResizingSidebar = false
     /// Polls the pointer while the sidebar is hover-revealed (see the dismiss
@@ -95,7 +95,7 @@ final class RootView: NSView {
     /// Inset of the floating (hover-revealed) sidebar from the window edges.
     private let floatingSidebarInset: CGFloat = 8
 
-    // Floating-sidebar hover dismissal — how tightly the pointer is polled and
+    // Floating-sidebar hover dismissal - how tightly the pointer is polled and
     // how far past the right edge it may roam before the sidebar collapses.
     private let revealPollInterval = 0.05
     private let revealDismissGrace: CGFloat = 48
@@ -146,14 +146,14 @@ final class RootView: NSView {
         historyHost.isHidden = true
         contentArea.addSubview(historyHost)
 
-        // The Passwords surface — same hidden-until-summoned model as History.
+        // The Passwords surface - same hidden-until-summoned model as History.
         vaultHost.autoresizingMask = [.width, .height]
         vaultHost.frame = contentArea.bounds
         vaultHost.safeAreaRegions = []
         vaultHost.isHidden = true
         contentArea.addSubview(vaultHost)
 
-        // The Settings surface — same hidden-until-summoned model as History.
+        // The Settings surface - same hidden-until-summoned model as History.
         settingsHost.autoresizingMask = [.width, .height]
         settingsHost.frame = contentArea.bounds
         settingsHost.safeAreaRegions = []
@@ -196,7 +196,7 @@ final class RootView: NSView {
         }
 
         // Bottom-up z-order: background, content region, then everything that may
-        // sit above the web views. AppKit sibling order is deterministic — this
+        // sit above the web views. AppKit sibling order is deterministic - this
         // is the whole point of the AppKit skeleton. The resize handle sits on
         // top so it stays grabbable over the floating sidebar card's edge.
         addSubview(background)
@@ -218,8 +218,8 @@ final class RootView: NSView {
     /// closed tabs, show the active tab (or the empty state), and keep the floating
     /// sidebar in step with the derived rule (`BrowserState.isFloatingSidebarShown`).
     /// The tab *list* and *active* tab are the core's truth; this view is a
-    /// projection of them. Every publisher the rule depends on — pin, hover, active
-    /// tab, the two surfaces — re-runs `syncFloatingSidebar`; the method is
+    /// projection of them. Every publisher the rule depends on - pin, hover, active
+    /// tab, the two surfaces - re-runs `syncFloatingSidebar`; the method is
     /// idempotent, so redundant calls are free.
     private func observeState() {
         state.$tabs
@@ -274,12 +274,24 @@ final class RootView: NSView {
             .sink { [weak self] _ in self?.syncViewportURLBar() }
             .store(in: &cancellables)
 
+        // Content fullscreen hides chrome and reflows the web view full-bleed.
+        state.$isContentFullscreen
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.needsLayout = true
+                self?.syncFloatingSidebar()
+                self?.syncViewportURLBar()
+            }
+            .store(in: &cancellables)
+
         Publishers.Merge3(state.$isHistoryOpen, state.$isVaultOpen, state.$isSettingsOpen)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.syncViewportURLBar() }
             .store(in: &cancellables)
         // Pinning animates the chrome; the floating host follows the derived rule.
-        // `dropFirst` skips the seeded value — the initial layout already matches
+        // `dropFirst` skips the seeded value - the initial layout already matches
         // (`sidebarPinned` is seeded at declaration, before the first pass).
         state.$isSidebarPinned
             .dropFirst()
@@ -314,10 +326,20 @@ final class RootView: NSView {
         return tabViews[id]
     }
 
-    /// The pinned sidebar host — used by the focus self-test to click empty chrome.
+    /// The pinned sidebar host - used by the focus self-test to click empty chrome.
     var focusTestSidebarHost: NSView? { sidebarHost }
 
-    /// Called before a click dispatches — dismiss transient chrome when the user
+    /// Whether a window-local point is over either sidebar presentation. Space
+    /// swipes are scoped here so horizontal gestures over page content continue
+    /// through to Chromium's back/forward navigation.
+    func containsVisibleSidebar(atWindowPoint pointInWindow: NSPoint) -> Bool {
+        let point = convert(pointInWindow, from: nil)
+        return [sidebarHost, floatingHost].contains { host in
+            !host.isHidden && host.alphaValue > 0 && host.frame.contains(point)
+        }
+    }
+
+    /// Called before a click dispatches - dismiss transient chrome when the user
     /// presses into the web viewport (not the URL bar pill or sidebar).
     func dismissTransientFocusIfViewportClick(_ event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
@@ -393,8 +415,8 @@ final class RootView: NSView {
 
     /// Close tab `id`: route it through CEF's close flow, then detach its child
     /// view so teardown completes (CEF finishes destroying a browser only once
-    /// its host view is released — mirroring the window-close path). A favorite
-    /// dismiss keeps its browser resident (ADR-0032).
+    /// its host view is released - mirroring the window-close path). A favorite
+    /// close keeps its reset browser resident (ADR-0032/0056).
     func closeTab(_ id: Int32) {
         let keepView = !isPrivate && (state.tabs.first { $0.id == id }?.favorite ?? false)
         if isPrivate {
@@ -406,7 +428,7 @@ final class RootView: NSView {
         detachTabView(id)
     }
 
-    /// Permanently delete tab `id` — tears down its browser and removes the host
+    /// Permanently delete tab `id` - tears down its browser and removes the host
     /// view. Used for context-menu deletes on pinned/saved tabs.
     func deleteTab(_ id: Int32) {
         if isPrivate {
@@ -439,7 +461,7 @@ final class RootView: NSView {
         }
     }
 
-    /// Detach every tab's CEF child view — used on window close so all browsers
+    /// Detach every tab's CEF child view - used on window close so all browsers
     /// can complete teardown (which quits the message loop).
     func detachAllCEFViews() {
         for container in tabViews.values {
@@ -469,7 +491,7 @@ final class RootView: NSView {
 
     /// Show the active tab's view and hide the rest; reveal the empty state when
     /// there is no active tab. A tab restored from the persisted session has no
-    /// view (or browser) until first shown — build + hydrate it here on demand,
+    /// view (or browser) until first shown - build + hydrate it here on demand,
     /// so restored tabs the user never revisits never cost a renderer process.
     private func showActive(_ active: Int32?) {
         if let active, tabViews[active] == nil {
@@ -588,17 +610,22 @@ final class RootView: NSView {
         let bounds = self.bounds
         background.frame = bounds
 
-        let chrome = sidebarPinned ? chromeWidth : 0
+        // Content (HTML5/video) fullscreen: full-bleed the web area - hide
+        // sidebar, divider, and reveal chrome so the page fills the screen.
+        let contentFS = state.isContentFullscreen
+        let chrome = (sidebarPinned && !contentFS) ? chromeWidth : 0
         // The pinned sidebar slides out to the left instead of shrinking, so its
-        // content never squishes mid-animation — except during a direct swap with
+        // content never squishes mid-animation - except during a direct swap with
         // the floating card, where it's frozen at x=0 and cross-fades in place
         // (`inPlaceSwap`) so the two identical panels don't slide past each other.
+        sidebarHost.isHidden = contentFS
         sidebarHost.frame = NSRect(
             x: inPlaceSwap ? 0 : chrome - chromeWidth,
             y: 0,
             width: sidebarWidth,
             height: bounds.height
         )
+        divider.isHidden = contentFS
         divider.frame = NSRect(x: chrome - 1, y: 0, width: 1, height: bounds.height)
         contentArea.frame = NSRect(
             x: chrome,
@@ -607,6 +634,7 @@ final class RootView: NSView {
             height: bounds.height
         )
 
+        hotZone.isHidden = contentFS
         hotZone.frame = NSRect(x: 0, y: 0, width: 12, height: bounds.height)
         let inset = floatingSidebarInset
         let floatingHeight = max(1, bounds.height - inset * 2)
@@ -619,11 +647,11 @@ final class RootView: NSView {
             height: floatingHeight
         )
 
-        // The grab strip straddles the sidebar's right edge — the divider seam
-        // when pinned, the floating card's edge when revealed — and is hidden
+        // The grab strip straddles the sidebar's right edge - the divider seam
+        // when pinned, the floating card's edge when revealed - and is hidden
         // otherwise so it never swallows clicks over the web content or the
         // reveal hot zone.
-        resizeHandle.isHidden = !(sidebarPinned || floatingShown)
+        resizeHandle.isHidden = contentFS || !(sidebarPinned || floatingShown)
         resizeHandle.frame =
             sidebarPinned
             ? NSRect(
@@ -640,6 +668,7 @@ final class RootView: NSView {
 
     private func showsViewportURLBar() -> Bool {
         state.isViewportURLBarEnabled
+            && !state.isContentFullscreen
             && !state.isSurfaceOpen
             && state.activeTabId != nil
             && (state.activeTabId.flatMap { tabViews[$0] != nil } ?? false)
@@ -652,17 +681,17 @@ final class RootView: NSView {
 
     /// Chrome inset for new/restored tabs before the bar visibility check runs.
     private func viewportChromeInsetForLayout() -> CGFloat {
-        state.isViewportURLBarEnabled && !state.isSurfaceOpen
+        state.isViewportURLBarEnabled && !state.isContentFullscreen && !state.isSurfaceOpen
             ? ViewportURLBarMetrics.chromeInset : 0
     }
 
-    /// Frame for CEF host views — fills the area below the viewport URL bar.
+    /// Frame for CEF host views - fills the area below the viewport URL bar.
     private func webContainerFrame(in bounds: NSRect, chromeInset inset: CGFloat? = nil) -> NSRect {
         let chrome = inset ?? viewportChromeInset()
         return NSRect(x: 0, y: 0, width: bounds.width, height: max(1, bounds.height - chrome))
     }
 
-    /// Size reported to CEF — full content height so the page can scroll behind
+    /// Size reported to CEF - full content height so the page can scroll behind
     /// the transparent chrome strip.
     private func cefBrowserSize(for bounds: NSRect) -> NSSize {
         NSSize(width: max(1, bounds.width), height: max(1, bounds.height))
@@ -736,7 +765,7 @@ final class RootView: NSView {
         // Suspend dismissal while resizing the sidebar (the pointer roams past the
         // edge to drag it) or editing the URL inline (the pointer leaves the hover
         // zone to reach the autocomplete results, and collapsing mid-edit would
-        // yank the field away). The empty-canvas float needs no such guard — it
+        // yank the field away). The empty-canvas float needs no such guard - it
         // isn't hover-driven, so this monitor never runs for it.
         if isResizingSidebar || URLBarModel.shared.isEditing { return }
         guard let window else { return }
@@ -776,8 +805,8 @@ final class RootView: NSView {
         lastSyncedCEFSize = .zero
 
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        // A direct swap with the floating card — pinning while it's revealed, or
-        // unpinning back onto an empty canvas — cross-fades the column in place of
+        // A direct swap with the floating card - pinning while it's revealed, or
+        // unpinning back onto an empty canvas - cross-fades the column in place of
         // the card instead of sliding it in from (or out to) off-screen while the
         // near-identical card slides the other way. Everything else (collapse to
         // nothing, reveal from nothing) keeps the slide. No point under Reduce Motion.
@@ -833,7 +862,7 @@ final class RootView: NSView {
                     if inPlace {
                         self.inPlaceSwap = false
                         if !self.sidebarPinned {
-                            // Faded out onto the card — park the column off-screen
+                            // Faded out onto the card - park the column off-screen
                             // and restore its opacity for the next slide.
                             self.sidebarHost.isHidden = true
                             self.sidebarHost.alphaValue = 1
@@ -859,7 +888,7 @@ final class RootView: NSView {
         sidebarTransitionTimer = nil
     }
 
-    /// The content area's bounds as AppKit is currently *drawing* them — the
+    /// The content area's bounds as AppKit is currently *drawing* them - the
     /// model `bounds` jump to the target immediately under implicit animation.
     private func animatedContentSize() -> NSSize {
         if let presentation = contentArea.layer?.presentation() {
@@ -906,7 +935,7 @@ final class RootView: NSView {
 
     /// Animate the floating sidebar host in/out to match the derived rule
     /// (`BrowserState.isFloatingSidebarShown`): unpinned, and either hover-revealed
-    /// or floating over an empty canvas. The single place the host is shown/hidden —
+    /// or floating over an empty canvas. The single place the host is shown/hidden -
     /// it reads the rule rather than storing a copy, so it can't drift. Idempotent
     /// (guards on the current state), so the several publishers that feed it in
     /// `observeState` can all call it freely.
@@ -937,7 +966,7 @@ final class RootView: NSView {
 /// left-right resize cursor and reports the pointer's x (in its superview's
 /// space) as the drag progresses; `RootView` turns that into the new width.
 ///
-/// Overriding `mouseDown` is what claims the drag — the default forwards it up the
+/// Overriding `mouseDown` is what claims the drag - the default forwards it up the
 /// responder chain, so without it the follow-up `mouseDragged`/`mouseUp` never
 /// arrive here. `acceptsFirstMouse` lets a resize begin even when the window was
 /// inactive, matching native split-view behaviour.

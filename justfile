@@ -1,4 +1,4 @@
-# Justfile — build orchestration for the browser monorepo.
+# Justfile - build orchestration for the browser monorepo.
 # Architecture spec §18: per-platform headless build paths, no IDE required.
 #
 # Prerequisites: cargo, just. macOS builds also need XcodeGen + xcodebuild (CLT).
@@ -6,6 +6,9 @@
 # Default: show available recipes.
 default:
     @just --list
+
+# Product display name (`.app` / executable from product.toml). Xcode scheme/target stays `Browser` (ADR-0060).
+app_name := `python3 scripts/product.py name`
 
 # ── Parallel-agent work leases ──────────────────────────────────────
 # Claim at slice start; release before verify/build. Recipes below wait until
@@ -19,7 +22,7 @@ work-begin *TASK:
 work-touch:
     ./scripts/work-lease.py touch
 
-# Release this session's lease — required before just verify / just build.
+# Release this session's lease - required before just verify / just build.
 work-end:
     ./scripts/work-lease.py end
 
@@ -51,16 +54,16 @@ fmt:
 
 # ── Run ─────────────────────────────────────────────────────────────
 
-# On macOS this builds the SwiftUI Browser.app (embedded CEF via FFI) — the actual
-# product — and execs the binary directly (not via `open`) so CEF's + the core's
+# On macOS this builds the SwiftUI app (embedded CEF via FFI) - the actual
+# product - and execs the binary directly (not via `open`) so CEF's + the core's
 # stdout/stderr stay in the terminal.
 #
 # Run the native development app for the current platform.
 run: gen-macos
     ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
-    ./apps/macos/build/Build/Products/Debug/Browser.app/Contents/MacOS/Browser
+    ./apps/macos/build/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}}
 
-# A pure-Rust AppKit NSWindow hosting the embedded browser (native_shell.rs) — the
+# A pure-Rust AppKit NSWindow hosting the embedded browser (native_shell.rs) - the
 # same embed.rs hosting path the SwiftUI app uses, minus SwiftUI + FFI. Reach for
 # it to answer "is a blank page / CEF issue in the engine or the Swift layer?" CEF
 # must run from a .app bundle, so this assembles target/bundle/browser.app first.
@@ -102,51 +105,68 @@ build-macos: gen-macos
 # synthetic-input focus self-test, which drives page ↔ command-bar ↔ tab-switch ↔
 # ⌘L transitions and asserts the page reclaims keyboard focus each time. Exits
 # non-zero on any failure. Runs under a throwaway $HOME so it never collides with
-# a running Browser on Chromium's process singleton.
+# a running instance on Chromium's process singleton.
 focus-selftest: gen-macos
     ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
-    HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/Browser.app/Contents/MacOS/Browser --focus-selftest
+    HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --focus-selftest
 
 # P1-27 sidebar drag regression (ADR-0035): builds the app and runs the in-process
 # drag self-test, which drives reorder / save / folder / favorite / cancel drags
 # through the gesture pipeline against live row frames and asserts the core's
 # resulting structure after each. Exits non-zero on any failure. Throwaway $HOME
-# so it never collides with a running Browser on Chromium's process singleton.
+# so it never collides with a running instance on Chromium's process singleton.
 drag-selftest: gen-macos
     ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
-    HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/Browser.app/Contents/MacOS/Browser --drag-selftest
+    HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --drag-selftest
 
 # P1-30 ⌘W close-path regression (ADR-0037): builds the app and runs the
 # in-process close self-test, which drives ⌘W through the menu against an
 # ordinary tab, an active saved tab (the suspend path that raced CEF's
 # DoClose→performClose:), and the empty canvas, asserting the window only
 # closes from the empty canvas. Exits non-zero on any failure. Throwaway $HOME
-# so it never collides with a running Browser on Chromium's process singleton.
+# so it never collides with a running instance on Chromium's process singleton.
 close-selftest: gen-macos
     ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
-    HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/Browser.app/Contents/MacOS/Browser --close-selftest
+    HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --close-selftest
 
 # ── Dogfood (release) ───────────────────────────────────────────────
 
-# The artifact `dogfood` installs and the alpha-release CI workflow publishes —
+# The artifact `dogfood` installs and the alpha-release CI workflow publishes -
 # one definition so local and CI can't drift.
 #
-# Release build of Browser.app (no install).
+# Release build of the macOS .app (no install).
 build-release: gen-macos
     ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Release -derivedDataPath build build'
+    ./scripts/codesign-macos-app.sh apps/macos/build/Build/Products/Release/{{app_name}}.app
 
-# Release build of Browser.app, install to /Applications, and launch.
-# Replaces any existing /Applications/Browser.app (quits a running instance first).
+# Release build, install to /Applications, and launch.
+# Replaces any existing /Applications/{{app_name}}.app (quits a running instance first).
 dogfood: build-release
-    ./scripts/install-dogfood.sh apps/macos/build/Build/Products/Release/Browser.app
+    ./scripts/install-dogfood.sh apps/macos/build/Build/Products/Release/{{app_name}}.app
 
 # ── Convenience ─────────────────────────────────────────────────────
 
-# Path to the latest local crash payload JSON (debug builds use "Browser Dev").
+# Path to the latest local crash payload JSON (debug builds use "{name} Dev").
 # Pass --print to dump the file contents.
 crash-latest *ARGS:
     ./scripts/latest-crash.sh {{ARGS}}
 
-# Verify: build + test + lint — the full CI-style check.
-verify: build test lint fmt-check
-    @echo "✓ Workspace verified: build, test, lint, fmt-check all passed."
+# Apply product.toml to generated identity files (ADR-0060).
+sync-product:
+    python3 scripts/product.py sync
+
+# Assert generated identity files and live product-name surfaces match product.toml.
+product-check:
+    python3 scripts/product.py check
+
+# No em-dash rule (CLAUDE.md): fail if any tracked file contains U+2014.
+# The pattern is built via printf so this justfile doesn't contain one itself.
+emdash-check:
+    @if git grep -In "$(printf '\342\200\224')" -- .; then \
+        echo "error: em-dash (U+2014) found in the files above; this repo bans it (see CLAUDE.md)"; \
+        exit 1; \
+    fi
+
+# Verify: build + test + lint + style checks, the full CI-style check.
+verify: build test lint fmt-check emdash-check product-check
+    @echo "✓ Workspace verified: build, test, lint, fmt-check, emdash-check, product-check all passed."
