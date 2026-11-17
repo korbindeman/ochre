@@ -1,4 +1,4 @@
-//! BrowserApp — the CEF App trait implementation.
+//! BrowserApp - the CEF App trait implementation.
 //!
 //! This wires up the browser process handler that fires when CEF's context
 //! is initialized, creating the first browser instance.
@@ -11,7 +11,7 @@ use crate::client::{BrowserBrowserViewDelegate, BrowserClient, BrowserWindowDele
 /// Chromium stores cookie/password encryption keys in the macOS login keychain
 /// ("Chromium Safe Storage"). Unsigned or ad-hoc-signed builds get a new
 /// signature on every rebuild, so the keychain ACL no longer matches and macOS
-/// prompts for your login password — once per CEF subprocess (GPU, renderer, …).
+/// prompts for your login password - once per CEF subprocess (GPU, renderer, …).
 ///
 /// Until a Developer-ID-signed build ships (backlog P0-2), use Chromium's
 /// in-memory mock keychain so dev/dogfood launches stay silent. Enable the
@@ -20,6 +20,44 @@ use crate::client::{BrowserBrowserViewDelegate, BrowserClient, BrowserWindowDele
 pub(crate) fn append_mock_keychain_switch(command_line: &mut CommandLine) {
     #[cfg(not(feature = "production-keychain"))]
     command_line.append_switch(Some(&CefString::from("use-mock-keychain")));
+}
+
+/// Blink `WebAuthentication` stays off until this *browser process* binary
+/// carries Apple's web-browser public-key-credential entitlement (ADR-0061,
+/// CRASH-0003). Helpers inherit the browser process command line; they must
+/// not re-decide from their own (unentitled) helper signature.
+const WEB_AUTHN_GUARD_BLINK_FEATURES: &str = "WebAuthentication";
+
+pub(crate) fn append_webauthn_guard_switch(
+    command_line: &mut CommandLine,
+    is_browser_process: bool,
+) {
+    if !is_browser_process {
+        return;
+    }
+    if crate::mac::has_web_browser_passkey_entitlement() {
+        return;
+    }
+    command_line.append_switch_with_value(
+        Some(&CefString::from("disable-blink-features")),
+        Some(&CefString::from(WEB_AUTHN_GUARD_BLINK_FEATURES)),
+    );
+}
+
+/// Chromium's Media Router (Google Cast) is on by default, but Ochre has no
+/// cast-device picker, so any device discovery it ran would power nothing the
+/// user can reach. Verified inert under ALLOY on CEF 148 (getAvailability
+/// resolves false, no mDNS/DIAL sockets open) - this switch encodes the intent
+/// and guards against a future CEF bump silently activating discovery, which
+/// would trip the macOS 15+ local-network permission prompt. Note: the prompt
+/// users actually see today comes from WebRTC's mDNS local-IP obfuscation,
+/// not from cast discovery - see ADR-0050. Re-enable only as part of a full
+/// Cast slice (backlog P2-44).
+pub(crate) fn append_disable_cast_discovery_switch(command_line: &mut CommandLine) {
+    command_line.append_switch_with_value(
+        Some(&CefString::from("disable-features")),
+        Some(&CefString::from("MediaRouter,DialMediaRouteProvider")),
+    );
 }
 
 wrap_app! {
@@ -34,11 +72,16 @@ wrap_app! {
         /// gets the mock-keychain switch even when launched via `execute_process`.
         fn on_before_command_line_processing(
             &self,
-            _process_type: Option<&CefString>,
+            process_type: Option<&CefString>,
             command_line: Option<&mut CommandLine>,
         ) {
             if let Some(command_line) = command_line {
+                let is_browser_process = process_type
+                    .map(|t| t.to_string().is_empty())
+                    .unwrap_or(true);
                 append_mock_keychain_switch(command_line);
+                append_webauthn_guard_switch(command_line, is_browser_process);
+                append_disable_cast_discovery_switch(command_line);
             }
         }
     }
@@ -114,7 +157,8 @@ wrap_browser_process_handler! {
                 };
 
                 #[cfg(target_os = "windows")]
-                let window_info = window_info.set_as_popup(Default::default(), "Browser");
+                let window_info =
+                    window_info.set_as_popup(Default::default(), crate::product::NAME);
 
                 let mut client = self.default_client();
                 browser_host_create_browser(
@@ -131,5 +175,15 @@ wrap_browser_process_handler! {
         fn default_client(&self) -> Option<Client> {
             self.client.borrow().clone()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn webauthn_guard_disables_blink_webauthentication() {
+        assert!(super::WEB_AUTHN_GUARD_BLINK_FEATURES
+            .split(',')
+            .any(|f| f == "WebAuthentication"));
     }
 }

@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# Developer ID inside-out codesign for the macOS .app (ADR-0061, rm §6.1).
+#
+# Called after xcodebuild so CopySwiftLibs has already finished. Does nothing
+# (exit 0) when no Developer ID identity is available, so CI/ad-hoc dogfood
+# stays unsigned. Never uses `codesign --deep`.
+#
+# Identity: $BROWSER_CODESIGN_IDENTITY, else the first "Developer ID Application"
+# in the keychain. Team ID: $BROWSER_TEAM_ID, else the (TEAMID) suffix on the
+# identity name.
+#
+# Tries Browser.production.entitlements first (web-browser passkey capability).
+# If Apple has not granted that managed entitlement yet, falls back to
+# Browser.signed.entitlements (JIT + Chromium webauthn keychain group).
+set -euo pipefail
+
+APP="${1:?usage: codesign-macos-app.sh /path/to/Ochre.app}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+MACOS="$ROOT/apps/macos"
+
+if [[ ! -d "$APP" ]]; then
+  echo "[codesign] error: not an app bundle: $APP" >&2
+  exit 1
+fi
+
+resolve_identity() {
+  if [[ -n "${BROWSER_CODESIGN_IDENTITY:-}" ]]; then
+    printf '%s\n' "$BROWSER_CODESIGN_IDENTITY"
+    return
+  fi
+  security find-identity -v -p codesigning 2>/dev/null \
+    | awk -F'"' '/Developer ID Application/ { print $2; exit }'
+}
+
+IDENTITY="$(resolve_identity || true)"
+if [[ -z "$IDENTITY" ]]; then
+  echo "[codesign] no Developer ID identity; leaving ad-hoc signature in place"
+  echo "[codesign] set BROWSER_CODESIGN_IDENTITY or install a Developer ID Application certificate"
+  exit 0
+fi
+
+TEAM_ID="${BROWSER_TEAM_ID:-}"
+if [[ -z "$TEAM_ID" && "$IDENTITY" =~ \(([A-Z0-9]+)\)$ ]]; then
+  TEAM_ID="${BASH_REMATCH[1]}"
+fi
+if [[ -z "$TEAM_ID" ]]; then
+  echo "[codesign] error: could not parse team ID from '$IDENTITY'" >&2
+  echo "[codesign] set BROWSER_TEAM_ID to your 10-character Apple team id" >&2
+  exit 1
+fi
+
+echo "[codesign] identity: $IDENTITY"
+echo "[codesign] team id:  $TEAM_ID"
+
+subst_ents() {
+  local src="$1"
+  local dest="$2"
+  # Xcode's AppIdentifierPrefix is "TEAMID." (dot included).
+  sed "s/\$(AppIdentifierPrefix)/${TEAM_ID}./g" "$src" > "$dest"
+}
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+subst_ents "$MACOS/Browser.helper.entitlements" "$TMP/helper.entitlements"
+subst_ents "$MACOS/Browser.signed.entitlements" "$TMP/signed.entitlements"
+subst_ents "$MACOS/Browser.production.entitlements" "$TMP/production.entitlements"
+
+sign() {
+  local path="$1"
+  shift
+  local err="$TMP/last-sign.err"
+  if codesign --force --options runtime --timestamp --sign "$IDENTITY" "$@" "$path" 2>"$err"; then
+    return 0
+  fi
+  if grep -qi timestamp "$err"; then
+    echo "[codesign] timestamp server unreachable; retrying without a timestamp"
+    codesign --force --options runtime --sign "$IDENTITY" "$@" "$path"
+    return
+  fi
+  cat "$err" >&2
+  return 1
+}
+
+FRAMEWORKS="$APP/Contents/Frameworks"
+CEF_FW="$FRAMEWORKS/Chromium Embedded Framework.framework"
+CEF_BIN="Chromium Embedded Framework"
+
+echo "[codesign] Chromium Embedded Framework (libraries, then binary, then bundle)"
+if [[ -d "$CEF_FW/Versions/A/Libraries" ]]; then
+  shopt -s nullglob
+  for lib in "$CEF_FW/Versions/A/Libraries/"*; do
+    [[ -f "$lib" ]] || continue
+    sign "$lib"
+  done
+  shopt -u nullglob
+fi
+if [[ -f "$CEF_FW/Versions/A/$CEF_BIN" ]]; then
+  sign "$CEF_FW/Versions/A/$CEF_BIN"
+fi
+sign "$CEF_FW"
+
+echo "[codesign] libbrowser_ffi.dylib"
+sign "$FRAMEWORKS/libbrowser_ffi.dylib" --entitlements "$TMP/helper.entitlements"
+
+echo "[codesign] helper apps"
+shopt -s nullglob
+for helper in "$FRAMEWORKS"/browser\ Helper*.app; do
+  echo "[codesign]   $(basename "$helper")"
+  sign "$helper" --entitlements "$TMP/helper.entitlements"
+done
+shopt -u nullglob
+
+echo "[codesign] host app"
+if sign "$APP" --entitlements "$TMP/production.entitlements"; then
+  echo "[codesign] stamped web-browser + public-key-credential entitlements"
+else
+  echo "[codesign] production entitlements rejected (Apple has not granted the web-browser passkey capability yet)"
+  echo "[codesign] retrying with JIT + keychain-access-groups only"
+  sign "$APP" --entitlements "$TMP/signed.entitlements"
+fi
+
+codesign --verify --strict --verbose=2 "$APP"
+echo "[codesign] done: $APP"

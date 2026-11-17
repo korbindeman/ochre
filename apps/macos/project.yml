@@ -13,7 +13,7 @@ settings:
     SWIFT_VERSION: "5.0"
     MACOSX_DEPLOYMENT_TARGET: "26.0"
     GENERATE_INFOPLIST_FILE: "YES"
-    PRODUCT_NAME: Browser
+    PRODUCT_NAME: Ochre
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     ENABLE_USER_SCRIPT_SANDBOXING: "NO"
@@ -36,7 +36,7 @@ targets:
               - https
     settings:
       base:
-        PRODUCT_NAME: Browser
+        PRODUCT_NAME: Ochre
 
         INFOPLIST_KEY_LSMinimumSystemVersion: "26.0"
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
@@ -47,22 +47,27 @@ targets:
         LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Automatic
-        # Dev build: ad-hoc signed in the post-build script (after the CEF
-        # framework/helper are injected). Hardened runtime is off because
-        # Chromium's V8 JIT needs it disabled until entitlements land with
-        # real signing; Xcode itself skips signing (we do it inside-out).
+        # Do not point this at Browser.entitlements while the identity is
+        # ad-hoc: keychain-access-groups is restricted and AMFI SIGKILLs
+        # (CRASH-0004 / ADR-0062). Developer ID dogfood applies
+        # Browser.signed.entitlements / Browser.production.entitlements in
+        # scripts/codesign-macos-app.sh after xcodebuild (ADR-0061).
+        # Dev: post-build injects CEF and ad-hoc-signs the dylib + helpers
+        # only. Hardened runtime is off because Chromium's V8 JIT needs it
+        # disabled until production entitlements land with real signing;
+        # Xcode itself skips signing (CODE_SIGNING_ALLOWED: NO).
         ENABLE_HARDENED_RUNTIME: NO
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGNING_ALLOWED: NO
       configs:
         Debug:
-          PRODUCT_BUNDLE_IDENTIFIER: com.nativechrome.Browser.dev
+          PRODUCT_BUNDLE_IDENTIFIER: com.nativechrome.Ochre.dev
           LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../target/debug
-          INFOPLIST_KEY_CFBundleDisplayName: Browser Dev
+          INFOPLIST_KEY_CFBundleDisplayName: Ochre Dev
         Release:
-          PRODUCT_BUNDLE_IDENTIFIER: com.nativechrome.Browser
+          PRODUCT_BUNDLE_IDENTIFIER: com.nativechrome.Ochre
           LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../target/release
-          INFOPLIST_KEY_CFBundleDisplayName: Browser
+          INFOPLIST_KEY_CFBundleDisplayName: Ochre
           SWIFT_COMPILATION_MODE: wholemodule
           SWIFT_OPTIMIZATION_LEVEL: -O
     preBuildScripts:
