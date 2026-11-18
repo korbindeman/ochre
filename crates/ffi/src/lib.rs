@@ -272,6 +272,39 @@ pub unsafe extern "C" fn browser_surface_send(
         .unwrap_or(std::ptr::null_mut())
 }
 
+/// Rank omnibox suggestions (ADR-0071). `request` is JSON
+/// `{"text","prevent_inline","remote":[..],"previous_default","async_pass"}`;
+/// returns `{"rows":[{key,kind,title,subtitle,url,query,host,tab,
+/// title_matches,subtitle_matches,relevance}],"has_default","inline"}`.
+/// `rows[0]` is what Enter runs when `has_default`. Free with
+/// [`browser_string_free`].
+///
+/// # Safety
+/// `request` must be NULL or a valid NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_omnibox_query(request: *const c_char) -> *mut c_char {
+    let request: browser_core::omnibox::Request =
+        serde_json::from_str(&cstr(request)).unwrap_or_default();
+    let json = serde_json::to_string(&browser_core::omnibox::query(&request)).unwrap_or_default();
+    CString::new(json)
+        .map(CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Learn that typing `input` led to `url` (ADR-0071). `typed` marks a URL the
+/// user typed or accepted inline, which later allows inline completion.
+///
+/// # Safety
+/// `input` and `url` must be NULL or valid NUL-terminated UTF-8 strings.
+#[no_mangle]
+pub unsafe extern "C" fn browser_omnibox_note_choice(
+    input: *const c_char,
+    url: *const c_char,
+    typed: bool,
+) {
+    browser_core::omnibox::note_choice(&cstr(input), &cstr(url), typed);
+}
+
 /// Save a friction report (P1-44): the structure, diagnostics log tail, the
 /// user's `note`, and the `focused` surface, into a new directory under the
 /// support folder. Returns that directory so the host can add `window.png`,
@@ -649,8 +682,8 @@ pub extern "C" fn browser_get_url() -> *mut c_char {
     }
 }
 
-/// Free a string returned by [`browser_get_url`] or
-/// [`browser_query_suggestions`].
+/// Free a string returned by any `browser_*` function that hands back a
+/// Rust-allocated `char *` (e.g. [`browser_get_url`], [`browser_omnibox_query`]).
 ///
 /// # Safety
 /// `ptr` must be null or a pointer previously returned by one of this library's
@@ -873,34 +906,6 @@ pub extern "C" fn browser_settings_set_private_vault_prompt_seen(seen: bool) {
 
 // ─── Autocomplete: history suggestions + favicons ────────────────────────
 
-/// Fuzzy-ranked history suggestions for `query`, as a JSON array string
-/// (empty `[]` when nothing matches). Each object is
-/// `{"url","title","host","displayUrl","titleMatches":[…],"urlMatches":[…]}`:
-/// `displayUrl` is the pretty, matched-against URL (scheme + `www.` stripped),
-/// and the two index arrays are the characters in `title` / `displayUrl` the
-/// query matched, for highlighting. Ranking is host-prefix → host → URL → title
-/// class, blended with frecency (see `browser_core::history::query`).
-///
-/// The returned pointer is heap-allocated by Rust; free it with
-/// [`browser_string_free`]. Returns null only if the JSON contains an interior
-/// NUL (it cannot - the fields come from CEF as valid strings).
-///
-/// # Safety
-/// `query` must be null or a valid, NUL-terminated UTF-8 C string.
-#[no_mangle]
-pub unsafe extern "C" fn browser_query_suggestions(query: *const c_char) -> *mut c_char {
-    let query = if query.is_null() {
-        ""
-    } else {
-        CStr::from_ptr(query).to_str().unwrap_or("")
-    };
-    let suggestions = browser_core::history::query(query, 8);
-    let json = serde_json::to_string(&suggestions).unwrap_or_else(|_| "[]".to_string());
-    CString::new(json)
-        .map(CString::into_raw)
-        .unwrap_or(std::ptr::null_mut())
-}
-
 /// Fuzzy-match `query` against `text` (the omnibox scorer in
 /// `browser_core::fuzzy`). Returns a heap-allocated JSON object
 /// `{"score":…,"indices":[…]}` on success, or the literal `"null"` when there is
@@ -937,8 +942,8 @@ pub unsafe extern "C" fn browser_fuzzy_match(
 /// History-page rows for `query`, as a JSON array string of
 /// `{"url","title","host","last_visit","visit_count"}` objects, most-recent
 /// first (empty `[]` when nothing matches). An empty `query` lists all history;
-/// `limit`/`offset` paginate. Distinct from [`browser_query_suggestions`], which
-/// ranks by frecency for autocomplete; this orders by recency for the page.
+/// `limit`/`offset` paginate. Distinct from [`browser_omnibox_query`], which
+/// ranks for autocomplete; this orders by recency for the page.
 ///
 /// The returned pointer is heap-allocated by Rust; free it with
 /// [`browser_string_free`]. Call on the main thread.

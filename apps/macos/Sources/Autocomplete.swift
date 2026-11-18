@@ -55,30 +55,31 @@ protocol SuggestionProvider: Sendable {
 
 // ─── Controller ────────────────────────────────────────────────────────────
 
-/// Fans the query out across providers and publishes the merged list, the
-/// keyboard selection, and an inline-autocomplete completion for the default
-/// match.
+/// Publishes the ranked list, the keyboard selection, and the inline
+/// completion for one omnibox host.
 ///
-/// Providers come in two tiers, mirroring a real omnibox: **local** ones (typed
-/// URL, history) are cheap and run on every keystroke with no delay, so results
-/// and the inline completion appear instantly; **remote** ones (live search
-/// suggestions over the network) run after a short debounce and merge in below.
+/// Ranking lives in the core (`OmniboxCore`, ADR-0071): it decides the rows,
+/// which one Enter runs (`suggestions[0]` while `hasDefault`), and what the
+/// field completes inline. This controller adds the host's own rows (browser
+/// commands, Space switching) under the default row, fetches remote search
+/// suggestions after a short debounce, and hands them back to the core, which
+/// keeps the default row stable while they arrive.
 @MainActor
 final class SuggestionController: ObservableObject {
     @Published private(set) var suggestions: [Suggestion] = []
-    /// Index of the highlighted row, or nil when the list is empty.
+    /// Index of the highlighted row. Starts on the default row, so Return runs
+    /// what the top row shows; arrows move it.
     @Published var selection: Int?
-    /// The field text the host should show for the default match, with the part
-    /// beyond what the user typed offered as a selected completion (type "git",
-    /// get "github.com"). Nil when there is nothing to complete. Only ever set
-    /// on a forward edit, so it never fights the user deleting.
+    /// The field text with an inline completion (type "git", get
+    /// "github.com"), or nil. Never set while the user deletes or pastes.
     @Published private(set) var inline: String?
     /// The most recent typed query fed to `update` (never an inline tail).
     private(set) var currentQuery = ""
-    /// What Return should navigate to when nothing is arrow-highlighted: the
-    /// inline completion if one is showing, otherwise the typed query.
+    /// What Return navigates to when there is no row to run: the inline
+    /// completion if one is showing, otherwise the typed query.
     var commitQuery: String { inline ?? currentQuery }
 
+    /// Host rows (commands) merged under the default row.
     private let localProviders: [any SuggestionProvider]
     private let remoteProviders: [any SuggestionProvider]
     private let maxResults: Int
@@ -86,9 +87,15 @@ final class SuggestionController: ObservableObject {
 
     private var localTask: Task<Void, Never>?
     private var remoteTask: Task<Void, Never>?
-    /// Local results held so a later remote batch can merge below them.
-    private var localResults: [Suggestion] = []
     private var allowInline = false
+    /// The core's last answer and the host rows, kept so a remote pass can
+    /// re-rank without losing either.
+    private var coreRows: [Suggestion] = []
+    private var hasDefault = false
+    private var hostRows: [Suggestion] = []
+    private var remoteTexts: [String] = []
+    /// The default row's key, sent back so the core can keep it stable.
+    private var defaultKey: String?
 
     init(
         local: [any SuggestionProvider],
@@ -102,47 +109,51 @@ final class SuggestionController: ObservableObject {
         self.debounce = debounce
     }
 
-    /// Feed the latest query. `allowInline` is true only for forward typing, so
-    /// the inline completion never re-appears while the user is deleting.
-    /// Cancels any in-flight lookups. An empty query clears the list unless
-    /// `zeroState` is true (explicit zero-state hosts only).
+    /// Feed the latest query. `allowInline` is true only for forward typing
+    /// (not a deletion or paste), so the inline completion never fights the
+    /// user. An empty query shows the zero-state list only when `zeroState`.
     func update(query rawQuery: String, allowInline: Bool, zeroState: Bool = false) {
         localTask?.cancel()
         remoteTask?.cancel()
         currentQuery = rawQuery
         self.allowInline = allowInline
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        remoteTexts = []
+        hostRows = []
 
         guard !query.isEmpty || zeroState else {
-            localResults = []
-            suggestions = []
-            selection = nil
-            inline = nil
+            clearRows()
             return
         }
 
-        // Local tier: instant. Publishes results + the inline completion.
-        localTask = Task { [weak self] in
-            guard let self else { return }
-            let locals = await self.gather(self.localProviders, query)
-            guard !Task.isCancelled else { return }
-            self.publishLocal(locals)
+        // Core ranking is synchronous and cheap: the list and the inline
+        // completion appear on the same keystroke.
+        rank(asyncPass: false)
+
+        // Host rows (commands) - cheap, but providers are async.
+        if !localProviders.isEmpty, !query.isEmpty {
+            localTask = Task { [weak self] in
+                guard let self else { return }
+                let rows = await self.gather(self.localProviders, query)
+                guard !Task.isCancelled else { return }
+                self.hostRows = rows.sorted { $0.score > $1.score }
+                self.publish()
+            }
         }
 
-        // Remote tier: debounced. Skipped for an empty query - there is nothing
-        // to complete and the zero-state is entirely local.
+        // Remote search suggestions, debounced, then re-ranked by the core.
         guard !remoteProviders.isEmpty, !query.isEmpty else { return }
         remoteTask = Task { [weak self, debounce] in
             try? await Task.sleep(for: debounce)
             guard let self, !Task.isCancelled else { return }
             let remotes = await self.gather(self.remoteProviders, query)
             guard !Task.isCancelled else { return }
-            self.publishRemote(remotes)
+            self.remoteTexts = remotes.map(\.title)
+            self.rank(asyncPass: true)
         }
     }
 
-    /// Populate the zero-state dropdown (top sites, frecency history). No current
-    /// host calls this - omniboxes stay collapsed until the user types.
+    /// The empty-field list: frecent pages and open tabs. Enter does nothing.
     func showZeroState() {
         update(query: "", allowInline: false, zeroState: true)
     }
@@ -151,11 +162,9 @@ final class SuggestionController: ObservableObject {
     func reset() {
         localTask?.cancel()
         remoteTask?.cancel()
-        localResults = []
-        suggestions = []
-        selection = nil
-        inline = nil
+        clearRows()
         currentQuery = ""
+        defaultKey = nil
     }
 
     /// Seed the commit query without fetching suggestions. Used to prefill an
@@ -165,8 +174,7 @@ final class SuggestionController: ObservableObject {
         currentQuery = query
     }
 
-    /// The keyboard-highlighted suggestion (arrow navigation), if any. Hover does
-    /// not count - return commits the field text unless the user arrowed to a row.
+    /// The highlighted row: the default row until the user arrows away.
     func selected() -> Suggestion? {
         guard let selection, suggestions.indices.contains(selection) else { return nil }
         return suggestions[selection]
@@ -181,97 +189,36 @@ final class SuggestionController: ObservableObject {
 
     // ─── Publishing ────────────────────────────────────────────────────────
 
-    private func publishLocal(_ locals: [Suggestion]) {
-        // Score-first merge across providers, then float the best host-prefix
-        // match to the top (bare domains beat deep paths at equal tier).
-        var ordered = locals.sorted { $0.score > $1.score }
-        if let idx = bestHostPrefixIndex(in: ordered, typed: currentQuery), idx != 0 {
-            ordered.insert(ordered.remove(at: idx), at: 0)
-        }
-        localResults = ordered
-        suggestions = dedupe(ordered)
+    private func clearRows() {
+        coreRows = []
+        hostRows = []
+        hasDefault = false
+        suggestions = []
         selection = nil
-        inline = allowInline ? bestPrefixFill(in: ordered, typed: currentQuery) : nil
+        inline = nil
     }
 
-    private func publishRemote(_ remotes: [Suggestion]) {
-        // Live search suggestions sit above the fallback "Search for …" row but
-        // below page/tab/history matches.
-        let (tail, head) = localResults.reduce(into: ([Suggestion](), [Suggestion]())) { acc, row in
-            if row.score <= SuggestionScore.searchQuery {
-                acc.0.append(row)
-            } else {
-                acc.1.append(row)
-            }
-        }
-        let merged = head + remotes.sorted { $0.score > $1.score } + tail
-        suggestions = dedupe(merged)
-        // Keep the current highlight if still valid; otherwise clear it. Never
-        // disturb the inline completion - remote rows never drive it.
-        if let s = selection, !suggestions.indices.contains(s) {
-            selection = nil
-        }
+    private func rank(asyncPass: Bool) {
+        let result = OmniboxCore.query(
+            text: currentQuery, preventInline: !allowInline, remote: remoteTexts,
+            previousDefault: defaultKey, asyncPass: asyncPass)
+        coreRows = result.rows
+        hasDefault = result.hasDefault
+        defaultKey = hasDefault ? result.rows.first?.dedupeKey : nil
+        // A remote pass never changes the inline completion.
+        if !asyncPass { inline = allowInline ? result.inline : nil }
+        publish()
     }
 
-    /// The best inline completion across `list`, preferring a host-level prefix
-    /// (type "you" → "youtube.com") over a deep-path prefix.
-    private func bestPrefixFill(in list: [Suggestion], typed: String) -> String? {
-        let hostMatches = list.compactMap { hostPrefixFill($0, typed) }
-        if let shortest = hostMatches.min(by: { $0.count < $1.count }) {
-            return shortest
-        }
-        return list.lazy.compactMap { self.displayPrefixFill($0, typed) }.first
-    }
-
-    /// Index of the best host-prefix row: shallowest URL first (bare domain over
-    /// deep path), then highest score - so TopSites `youtube.com` beats a
-    /// frecency-heavy `youtube.com/watch?v=…` from history.
-    private func bestHostPrefixIndex(in list: [Suggestion], typed: String) -> Int? {
-        list.enumerated()
-            .filter { hostPrefixFill($0.element, typed) != nil }
-            .min(by: {
-                let d0 = displayPathDepth($0.element.displayURL ?? "")
-                let d1 = displayPathDepth($1.element.displayURL ?? "")
-                if d0 != d1 { return d0 < d1 }
-                return $0.element.score > $1.element.score
-            })?
-            .offset
-    }
-
-    /// Path segments after the host - `youtube.com` is 0, `youtube.com/watch` is 1.
-    private func displayPathDepth(_ displayURL: String) -> Int {
-        max(0, displayURL.split(separator: "/").count - 1)
-    }
-
-    /// Complete to the bare host when the query is a host prefix - "you" becomes
-    /// "youtube.com", not "youtube.com/watch?v=…".
-    private func hostPrefixFill(_ suggestion: Suggestion, _ typed: String) -> String? {
-        guard let display = suggestion.displayURL else { return nil }
-        let q = typed.lowercased()
-        guard !q.isEmpty, q == q.trimmingCharacters(in: .whitespaces) else { return nil }
-        let host = display.split(separator: "/", maxSplits: 1).first.map(String.init) ?? display
-        let lowerHost = host.lowercased()
-        guard lowerHost.hasPrefix(q), host.count > typed.count else { return nil }
-        return typed + host.dropFirst(typed.count)
-    }
-
-    /// Full display-URL prefix completion - used when no host-level match exists.
-    private func displayPrefixFill(_ suggestion: Suggestion, _ typed: String) -> String? {
-        guard let display = suggestion.displayURL else { return nil }
-        let q = typed.lowercased()
-        guard !q.isEmpty, q == q.trimmingCharacters(in: .whitespaces) else { return nil }
-        let lowerDisplay = display.lowercased()
-        guard lowerDisplay.hasPrefix(q), display.count > typed.count else { return nil }
-        return typed + display.dropFirst(typed.count)
-    }
-
-    private func dedupe(_ list: [Suggestion]) -> [Suggestion] {
-        var seen = Set<String>()
-        return Array(
-            list.filter { row in
-                let key = row.dedupeKey ?? row.id
-                return seen.insert(key).inserted
-            }.prefix(maxResults))
+    /// Default row first, then the host's command rows (at most two), then the
+    /// rest of the core's list, capped at `maxResults`.
+    private func publish() {
+        var rows = coreRows
+        let commands = Array(hostRows.prefix(2))
+        let insertAt = hasDefault ? min(1, rows.count) : 0
+        rows.insert(contentsOf: commands, at: insertAt)
+        suggestions = Array(rows.prefix(maxResults))
+        selection = hasDefault || (!commands.isEmpty && coreRows.isEmpty) ? 0 : nil
     }
 
     private func gather(_ providers: [any SuggestionProvider], _ query: String) async

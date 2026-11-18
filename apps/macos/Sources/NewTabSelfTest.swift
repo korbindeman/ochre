@@ -14,6 +14,7 @@ final class NewTabSelfTest {
 
     private var steps: [(name: String, run: () -> Void)] = []
     private var stepIndex = 0
+    private var omniboxBefore = 0
     private var failures = 0
     private var beforeCount = 0
     private var afterDirect: Int32 = -1
@@ -166,6 +167,32 @@ final class NewTabSelfTest {
             self.check(
                 "address-commit-navigates-current-tab", pass,
                 "count=\(count) expected=\(self.beforeCount + 3) url=\(url) state=\(OverlayMachine.state)")
+        }))
+
+        // ADR-0071: the top row is highlighted and is what Return runs.
+        steps.append(("omnibox-open", { _ = self.performShortcut("t", [.command]) }))
+        steps.append(("omnibox-type", {
+            self.app.focusTestCommandBar.suggestions.update(
+                query: "example.org/omnibox", allowInline: true)
+        }))
+        steps.append(("omnibox-assert-default", {
+            let bar = self.app.focusTestCommandBar.suggestions
+            let top = bar.suggestions.first?.dedupeKey
+            self.check(
+                "top-row-is-highlighted-default",
+                bar.selection == 0 && top == "example.org/omnibox",
+                "selection=\(String(describing: bar.selection)) top=\(top ?? "nil")")
+            self.omniboxBefore = BrowserState.shared.tabs.count
+            _ = self.app.focusTestCommandBar.handleKey(keyCode: 36, modifiers: [])
+        }))
+        for _ in 0..<3 { steps.append(("omnibox-settle", {})) }
+        steps.append(("omnibox-assert-ran", {
+            let url = BrowserState.shared.activeTab?.url ?? ""
+            self.check(
+                "return-runs-the-top-row",
+                BrowserState.shared.tabs.count == self.omniboxBefore + 1
+                    && url.contains("example.org/omnibox"),
+                "url=\(url)")
         }))
 
         // ADR-0068 cross-surface rules: a page closes the find bar, and an

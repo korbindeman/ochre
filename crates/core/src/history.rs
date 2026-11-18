@@ -24,52 +24,41 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
-use crate::fuzzy;
-
-/// Ranking class bases. A row's class (where the query matched) dominates its
-/// score - the bases are spaced wider than the largest reachable detail +
-/// frecency bonus - so a host-prefix match always outranks a mid-URL one, and
-/// frecency only reorders rows *within* a class. See [`History::query`].
-const CLASS_PREFIX: i32 = 4000;
-const CLASS_HOST: i32 = 3000;
-const CLASS_URL: i32 = 2000;
-const CLASS_TITLE: i32 = 1000;
-
 /// How many rows a query fuzzy-scores. We take the most-frecent rows - the ones
 /// actually worth completing to - and score those in memory. A personal history
 /// rarely holds more genuinely-relevant candidates than this, and the bound
 /// keeps the per-keystroke cost flat as history grows without end.
 const SCAN_LIMIT: u32 = 2000;
 
-/// One ranked autocomplete row from history. Serialized to JSON across the FFI
-/// boundary (see `browser_query_suggestions` in the ffi crate).
-///
-/// `display_url` is the pretty, matched-against form of `url` (scheme + `www.`
-/// dropped); `title_matches` / `url_matches` are the character indices in
-/// `title` and `display_url` the query fuzzy-matched, so the native layer can
-/// highlight exactly those characters. `url` remains the real navigation target.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HistorySuggestion {
+/// A history page with the signals the omnibox ranks on (ADR-0071).
+#[derive(Debug, Clone, PartialEq)]
+pub struct OmniboxPage {
     pub url: String,
     pub title: String,
     pub host: String,
-    pub display_url: String,
-    pub title_matches: Vec<u32>,
-    pub url_matches: Vec<u32>,
+    pub visit_count: i64,
+    pub last_visit: i64,
+    pub typed_count: i64,
 }
 
-/// A history row pulled for scoring (private to the ranking pass).
-struct Candidate {
-    url: String,
-    title: String,
-    host: String,
-    visit_count: i64,
-    last_visit: i64,
+/// A learned pick: typing `input` (or a longer string starting with it) led
+/// the user to `url`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Shortcut {
+    pub input: String,
+    pub url: String,
+    pub use_count: f64,
+    pub last_used: i64,
+}
+
+/// `count` decayed by 0.975 per day since `last` (Firefox adaptive history).
+pub fn decay(count: f64, last: i64, now: i64) -> f64 {
+    let days = ((now - last).max(0) / 86_400) as i32;
+    count * 0.975f64.powi(days)
 }
 
 /// One history-page row: a visited page with its recency and frequency, for the
-/// native History surface. Distinct from [`HistorySuggestion`] (the autocomplete
+/// native History surface. Distinct from [`OmniboxPage`] (the omnibox's
 /// shape) because the page needs the visit timestamp for day-grouping. Serialized
 /// to JSON across the FFI boundary (see `browser_history_list` in the ffi crate).
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -90,7 +79,95 @@ pub struct History {
 impl History {
     fn from_conn(conn: Connection) -> rusqlite::Result<Self> {
         conn.execute_batch(SCHEMA)?;
+        // Added for the omnibox (ADR-0071): how often the user typed this URL
+        // (or accepted its inline completion). Older stores lack the column.
+        let has_typed: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('history') WHERE name = 'typed_count'")?
+            .exists([])?;
+        if !has_typed {
+            conn.execute_batch(
+                "ALTER TABLE history ADD COLUMN typed_count INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
         Ok(Self { conn })
+    }
+
+    /// The `cap` most-frecent pages with everything the omnibox ranks on.
+    fn omnibox_candidates(&self, cap: u32) -> rusqlite::Result<Vec<OmniboxPage>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT url, title, host, visit_count, last_visit, typed_count FROM history
+             ORDER BY visit_count DESC, last_visit DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![cap], |row| {
+            Ok(OmniboxPage {
+                url: row.get(0)?,
+                title: row.get(1)?,
+                host: row.get(2)?,
+                visit_count: row.get(3)?,
+                last_visit: row.get(4)?,
+                typed_count: row.get(5)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Every learned (typed input -> chosen URL) pair, dropping the ones unused
+    /// for about 90 days (Firefox adaptive history's prune point).
+    fn shortcuts(&self) -> rusqlite::Result<Vec<Shortcut>> {
+        let cutoff = now() - 90 * 86_400;
+        self.conn.execute(
+            "DELETE FROM input_history WHERE last_used < ?1",
+            params![cutoff],
+        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT input, url, use_count, last_used FROM input_history")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Shortcut {
+                input: row.get(0)?,
+                url: row.get(1)?,
+                use_count: row.get(2)?,
+                last_used: row.get(3)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Learn from a pick: `input` led to `url`. `use_count` decays by 0.975 per
+    /// idle day, then `x 0.9 + 1` (approaches 10), as Firefox adaptive history
+    /// does. `typed` also counts the URL as typed, which gates inline
+    /// completion.
+    fn note_choice(&self, input: &str, url: &str, typed: bool) -> rusqlite::Result<()> {
+        let input = input.trim().to_lowercase();
+        let now = now();
+        if !input.is_empty() {
+            let prior: Option<(f64, i64)> = self
+                .conn
+                .query_row(
+                    "SELECT use_count, last_used FROM input_history WHERE input = ?1 AND url = ?2",
+                    params![input, url],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            let decayed = prior.map_or(0.0, |(count, last)| decay(count, last, now));
+            self.conn.execute(
+                "INSERT INTO input_history (input, url, use_count, last_used) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(input, url) DO UPDATE SET use_count = ?3, last_used = ?4",
+                params![input, url, decayed * 0.9 + 1.0, now],
+            )?;
+        }
+        if typed {
+            if let Some(host) = host_of(url) {
+                self.conn.execute(
+                    "INSERT INTO history (url, host, visit_count, last_visit, typed_count)
+                         VALUES (?1, ?2, 0, ?3, 1)
+                     ON CONFLICT(url) DO UPDATE SET typed_count = typed_count + 1",
+                    params![url, host, now],
+                )?;
+            }
+        }
+        Ok(())
     }
 
     /// Open (creating if needed) the store at `path`.
@@ -144,125 +221,6 @@ impl History {
                 |row| row.get(0),
             )
             .optional()
-    }
-
-    /// Up to `limit` fuzzy-ranked autocomplete rows for `query`.
-    ///
-    /// Ranking mirrors a modern browser's omnibox: the query is fuzzy-matched
-    /// (subsequence, boundary- and run-aware - see [`crate::fuzzy`]) against each
-    /// candidate's host, display URL, and title, and each row is bucketed into a
-    /// *class* by where it matched - a host **prefix** (also what drives inline
-    /// autocomplete) ranks above a host fuzzy-match, above a URL match, above a
-    /// title-only match. The class dominates the score, so match quality beats
-    /// frecency; within a class, the fuzzy detail and a log-scaled frecency
-    /// bonus order the rows (a site you visit often floats up). An empty query
-    /// returns the most-frecent pages.
-    fn query(&self, query: &str, limit: u32) -> rusqlite::Result<Vec<HistorySuggestion>> {
-        let query = query.trim();
-        if query.is_empty() {
-            return self.top_frecent(limit);
-        }
-
-        let now = now();
-        let normalized = strip_scheme_www(&query.to_lowercase());
-        let mut scored: Vec<(i32, i64, i64, HistorySuggestion)> = Vec::new();
-
-        for c in self.candidates(SCAN_LIMIT)? {
-            let display = display_url(&c.url);
-            let host = strip_www(&c.host);
-            let title_m = (!c.title.is_empty())
-                .then(|| fuzzy::fuzzy_match(query, &c.title))
-                .flatten();
-            let url_m = fuzzy::fuzzy_match(query, &display);
-            let host_m = fuzzy::fuzzy_match(query, host);
-            let is_prefix =
-                !normalized.is_empty() && display.to_lowercase().starts_with(&normalized);
-
-            // Pick the class (and its in-class detail score) by match quality.
-            let (base, detail) = if is_prefix {
-                (CLASS_PREFIX, url_m.as_ref().map_or(0, |m| m.score))
-            } else if let Some(m) = &host_m {
-                (CLASS_HOST, m.score)
-            } else if let Some(m) = &url_m {
-                (CLASS_URL, m.score)
-            } else if let Some(m) = &title_m {
-                (CLASS_TITLE, m.score)
-            } else {
-                continue; // no field matched - drop it
-            };
-
-            let score = base + detail + frecency_bonus(c.visit_count, c.last_visit, now)
-                - specificity_penalty(&display, c.visit_count);
-            scored.push((
-                score,
-                c.visit_count,
-                c.last_visit,
-                HistorySuggestion {
-                    url: c.url,
-                    title: c.title,
-                    host: c.host,
-                    display_url: display,
-                    title_matches: title_m.map(|m| m.indices).unwrap_or_default(),
-                    url_matches: url_m.map(|m| m.indices).unwrap_or_default(),
-                },
-            ));
-        }
-
-        // Score desc, then frecency signals as a stable tie-break.
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(b.2.cmp(&a.2)));
-        Ok(scored
-            .into_iter()
-            .take(limit as usize)
-            .map(|(_, _, _, s)| s)
-            .collect())
-    }
-
-    /// The `cap` most-frecent history rows, for fuzzy scoring or (empty-query)
-    /// direct display.
-    fn candidates(&self, cap: u32) -> rusqlite::Result<Vec<Candidate>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT url, title, host, visit_count, last_visit FROM history
-             ORDER BY visit_count DESC, last_visit DESC
-             LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![cap], |row| {
-            Ok(Candidate {
-                url: row.get(0)?,
-                title: row.get(1)?,
-                host: row.get(2)?,
-                visit_count: row.get(3)?,
-                last_visit: row.get(4)?,
-            })
-        })?;
-        rows.collect()
-    }
-
-    /// The `limit` most-frecent pages, as suggestions with no highlight ranges
-    /// (there is no query to highlight). Sorted by frecency - visit frequency
-    /// weighted by recency - so the zero-state omnibox surfaces pages the user
-    /// actually returns to, not merely the highest raw visit count.
-    fn top_frecent(&self, limit: u32) -> rusqlite::Result<Vec<HistorySuggestion>> {
-        let now = now();
-        let mut rows = self.candidates(SCAN_LIMIT)?;
-        rows.sort_by(|a, b| {
-            let fa = frecency_bonus(a.visit_count, a.last_visit, now);
-            let fb = frecency_bonus(b.visit_count, b.last_visit, now);
-            fb.cmp(&fa)
-                .then(b.last_visit.cmp(&a.last_visit))
-                .then(b.visit_count.cmp(&a.visit_count))
-        });
-        Ok(rows
-            .into_iter()
-            .take(limit as usize)
-            .map(|c| HistorySuggestion {
-                display_url: display_url(&c.url),
-                url: c.url,
-                title: c.title,
-                host: c.host,
-                title_matches: Vec::new(),
-                url_matches: Vec::new(),
-            })
-            .collect())
     }
 
     /// Up to `limit` history rows (skipping the first `offset`) matching `query`
@@ -319,6 +277,13 @@ const SCHEMA: &str = "
         host        TEXT NOT NULL,
         visit_count INTEGER NOT NULL DEFAULT 0,
         last_visit  INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS input_history (
+        input     TEXT NOT NULL,
+        url       TEXT NOT NULL,
+        use_count REAL NOT NULL,
+        last_used INTEGER NOT NULL,
+        PRIMARY KEY (input, url)
     );
     CREATE TABLE IF NOT EXISTS favicons (
         host    TEXT PRIMARY KEY,
@@ -379,7 +344,7 @@ fn strip_www(host: &str) -> &str {
 
 /// Strip a leading scheme and `www.` from an already-lowercased query, so typing
 /// `https://git` or `www.git` still prefix-matches a stored `github.com`.
-fn strip_scheme_www(query: &str) -> String {
+pub(crate) fn strip_scheme_www(query: &str) -> String {
     let mut s = query;
     for scheme in ["https://", "http://"] {
         if let Some(rest) = s.strip_prefix(scheme) {
@@ -388,35 +353,6 @@ fn strip_scheme_www(query: &str) -> String {
         }
     }
     strip_www(s).to_string()
-}
-
-/// Penalty for URLs deeper than the bare host - keeps `youtube.com` above
-/// `youtube.com/watch?v=…` within the same match class. Waived once a deep URL
-/// is visited often enough that it is clearly the user's habitual destination.
-fn specificity_penalty(display: &str, visit_count: i64) -> i32 {
-    const FREQUENT_THRESHOLD: i64 = 15;
-    if visit_count >= FREQUENT_THRESHOLD {
-        return 0;
-    }
-    let segments = display.split('/').count().saturating_sub(1);
-    (segments as i32) * 250
-}
-
-/// A frecency bonus: visit frequency weighted by how recently the page was seen,
-/// log-scaled so a heavily-visited site lifts above a rarely-visited one without
-/// ever overpowering match quality (the class bases dominate). Recency buckets
-/// mirror the coarse weighting browsers use.
-fn frecency_bonus(visit_count: i64, last_visit: i64, now: i64) -> i32 {
-    let age_days = (now - last_visit).max(0) / 86_400;
-    let weight = match age_days {
-        0..=3 => 100,
-        4..=13 => 70,
-        14..=30 => 50,
-        31..=90 => 30,
-        _ => 10,
-    };
-    let frecency = visit_count.max(0) as f64 * weight as f64;
-    ((frecency + 1.0).ln() * 40.0) as i32
 }
 
 fn now() -> i64 {
@@ -462,6 +398,18 @@ pub fn record_visit(url: &str) {
     with_store(|h| h.record_visit(url));
 }
 
+/// Pages and learned picks for the omnibox ranker (empty if the store is
+/// unavailable).
+pub fn omnibox_inputs() -> (Vec<OmniboxPage>, Vec<Shortcut>) {
+    with_store(|h| Ok((h.omnibox_candidates(SCAN_LIMIT)?, h.shortcuts()?))).unwrap_or_default()
+}
+
+/// Learn that typing `input` led the user to `url`; `typed` also counts it as
+/// a typed URL. See [`History::note_choice`].
+pub fn note_choice(input: &str, url: &str, typed: bool) {
+    with_store(|h| h.note_choice(input, url, typed));
+}
+
 /// Set the title for an already-recorded page.
 pub fn update_title(url: &str, title: &str) {
     with_store(|h| h.update_title(url, title));
@@ -490,12 +438,6 @@ pub fn store_session_favicon(host: &str, png: &[u8]) {
 pub fn store_favicon(host: &str, png: &[u8]) {
     store_session_favicon(host, png);
     with_store(|h| h.store_favicon(host, png));
-}
-
-/// Frecency-ranked suggestions for a typed query (empty vec if the store is
-/// absent or the query fails).
-pub fn query(query: &str, limit: u32) -> Vec<HistorySuggestion> {
-    with_store(|h| h.query(query, limit)).unwrap_or_default()
 }
 
 /// History-page rows for `query`, most-recent first (empty vec if the store is
@@ -534,6 +476,33 @@ mod tests {
     }
 
     #[test]
+    fn note_choice_learns_and_counts_typed_urls() {
+        let h = store();
+        h.record_visit("https://github.com/").unwrap();
+        h.note_choice("gi", "https://github.com/", true).unwrap();
+        h.note_choice("GI ", "https://github.com/", true).unwrap();
+        let pages = h.omnibox_candidates(10).unwrap();
+        assert_eq!(pages[0].typed_count, 2);
+        let shortcuts = h.shortcuts().unwrap();
+        assert_eq!(shortcuts.len(), 1);
+        assert_eq!(shortcuts[0].input, "gi");
+        assert!((shortcuts[0].use_count - 1.9).abs() < 1e-9);
+        // A typed URL with no visit yet still gets a row to count on.
+        h.note_choice("", "https://new.example/", true).unwrap();
+        assert!(h
+            .omnibox_candidates(10)
+            .unwrap()
+            .iter()
+            .any(|p| p.url == "https://new.example/"));
+    }
+
+    #[test]
+    fn decay_halves_in_about_four_weeks() {
+        let d = decay(10.0, 0, 28 * 86_400);
+        assert!((4.8..5.0).contains(&d), "{d}");
+    }
+
+    #[test]
     fn host_of_parses_http_and_https() {
         assert_eq!(
             host_of("https://example.com/path"),
@@ -557,21 +526,9 @@ mod tests {
         h.record_visit("https://a.com/").unwrap();
         h.record_visit("https://b.com/").unwrap();
         h.record_visit("https://b.com/").unwrap(); // b visited twice
-        let out = h.query("", 10).unwrap();
+        let out = h.omnibox_candidates(10).unwrap();
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].url, "https://b.com/"); // higher visit_count ranks first
-    }
-
-    #[test]
-    fn query_matches_url_and_title_case_insensitively() {
-        let h = store();
-        let url = "https://github.com/rust-lang/rust";
-        h.record_visit(url).unwrap();
-        h.update_title(url, "The Rust Language").unwrap();
-        assert_eq!(h.query("github", 10).unwrap().len(), 1); // url match
-        assert_eq!(h.query("GITHUB", 10).unwrap().len(), 1); // case-insensitive
-        assert_eq!(h.query("language", 10).unwrap().len(), 1); // title match
-        assert!(h.query("python", 10).unwrap().is_empty());
     }
 
     #[test]
@@ -579,7 +536,7 @@ mod tests {
         let h = store();
         h.record_visit("about:blank").unwrap();
         h.record_visit("data:text/html,x").unwrap();
-        assert!(h.query("", 10).unwrap().is_empty());
+        assert!(h.omnibox_candidates(10).unwrap().is_empty());
     }
 
     #[test]
@@ -590,85 +547,6 @@ mod tests {
         assert_eq!(h.favicon("example.com").unwrap(), Some(vec![1, 2, 3]));
         h.store_favicon("example.com", &[4, 5]).unwrap();
         assert_eq!(h.favicon("example.com").unwrap(), Some(vec![4, 5]));
-    }
-
-    #[test]
-    fn punctuation_query_does_not_match_everything() {
-        let h = store();
-        h.record_visit("https://ab.com/").unwrap();
-        // A typed '%' is not a subsequence of the candidate, so it matches
-        // nothing (the old LIKE matcher had to escape it to avoid wildcarding).
-        assert!(h.query("%", 10).unwrap().is_empty());
-    }
-
-    #[test]
-    fn fuzzy_matches_non_substring_subsequence() {
-        let h = store();
-        h.record_visit("https://github.com/").unwrap();
-        // "gh" is a subsequence but not a substring of "github.com" - the old
-        // LIKE matcher missed it; the fuzzy matcher finds it.
-        let out = h.query("gh", 10).unwrap();
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].host, "github.com");
-    }
-
-    #[test]
-    fn host_prefix_outranks_deeper_match() {
-        let h = store();
-        // A rarely-visited host-prefix match vs a frequently-visited page where
-        // the query appears only deep in the path.
-        h.record_visit("https://github.com/").unwrap();
-        for _ in 0..5 {
-            h.record_visit("https://stackoverflow.com/questions/git-rebase")
-                .unwrap();
-        }
-        let out = h.query("git", 10).unwrap();
-        assert_eq!(out[0].host, "github.com"); // match class beats frecency
-    }
-
-    #[test]
-    fn origin_url_outranks_deep_path_within_a_class() {
-        let h = store();
-        for _ in 0..3 {
-            h.record_visit("https://www.youtube.com/watch?v=abc123")
-                .unwrap();
-        }
-        h.record_visit("https://www.youtube.com/").unwrap();
-        let out = h.query("you", 10).unwrap();
-        assert_eq!(out[0].display_url, "youtube.com");
-    }
-
-    #[test]
-    fn heavily_visited_deep_url_can_beat_origin() {
-        let h = store();
-        h.record_visit("https://www.youtube.com/").unwrap();
-        for _ in 0..30 {
-            h.record_visit("https://www.youtube.com/watch?v=daily")
-                .unwrap();
-        }
-        let out = h.query("you", 10).unwrap();
-        assert_eq!(out[0].display_url, "youtube.com/watch?v=daily");
-    }
-
-    #[test]
-    fn frecency_orders_within_a_class() {
-        let h = store();
-        h.record_visit("https://git-scm.com/").unwrap();
-        for _ in 0..5 {
-            h.record_visit("https://github.com/").unwrap();
-        }
-        // Both are host-prefix matches for "git"; the more-visited one wins.
-        let out = h.query("git", 10).unwrap();
-        assert_eq!(out[0].host, "github.com");
-    }
-
-    #[test]
-    fn returns_display_url_and_match_indices() {
-        let h = store();
-        h.record_visit("https://github.com/").unwrap();
-        let out = h.query("git", 10).unwrap();
-        assert_eq!(out[0].display_url, "github.com"); // scheme + trailing slash gone
-        assert_eq!(out[0].url_matches, vec![0, 1, 2]); // "git" highlighted
     }
 
     #[test]

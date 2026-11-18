@@ -1316,6 +1316,19 @@ pub fn request_open_little(url: &str) {
     emit(Event::OpenLittleRequested, 0, Some(url));
 }
 
+/// Every sidebar tab as `(id, url, title)`, for the omnibox's switch-to-tab
+/// rows (ADR-0071). Little-window tabs are not offered.
+pub fn omnibox_tabs() -> Vec<(TabId, String, String)> {
+    with_store(|store| {
+        store
+            .tabs
+            .iter()
+            .map(|t| (t.id, t.url.clone(), t.title.clone()))
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
 /// Record which little window is key (`None` when a normal or private window
 /// takes focus).
 pub fn set_focused_little(id: Option<TabId>) {

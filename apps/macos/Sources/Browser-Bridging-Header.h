@@ -58,6 +58,13 @@ char *browser_structure_json(void);
 // browser_string_free.
 char *browser_surface_send(int32_t input, int32_t arg, int32_t window, const char *url);
 
+// Omnibox ranker (ADR-0071). request JSON {"text","prevent_inline","remote",
+// "previous_default","async_pass"}; returns {"rows":[...],"has_default","inline"}.
+// rows[0] is what Enter runs when has_default. Free with browser_string_free.
+char *browser_omnibox_query(const char *request);
+// Learn that typing input led to url; typed = the user typed or accepted it inline.
+void browser_omnibox_note_choice(const char *input, const char *url, bool typed);
+
 // Little windows (P1-45): a tab in its own small window, outside the sidebar.
 // Content events arrive on window 0; the snapshot lists them in little_tabs.
 int32_t browser_little_tab_create(void *parent_view, int32_t width, int32_t height,
@@ -267,7 +274,7 @@ void browser_settings_set_private_vault_prompt_seen(bool seen);
 // Frecency-ranked history suggestions for `query`, as a JSON array string of
 // {"url","title","host"} objects. Heap-allocated by Rust - free with
 // browser_string_free (declared above).
-char *browser_query_suggestions(const char *query);
+
 
 // Fuzzy-match `query` against `text` using the core omnibox scorer. Returns a
 // JSON object {"score":…,"indices":[…]} on success, or the literal "null" when

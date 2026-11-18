@@ -17,7 +17,7 @@ production-keychain = ["browser-core/production-keychain"]
 
 [dependencies]
 browser-core = { path = "../core" }
-# Serialize the suggestion payload for `browser_query_suggestions`.
+# Serialize JSON payloads (structure snapshot, omnibox rows, ...).
 serde_json = { workspace = true }
 # Wipe the master-password copy read across the FFI boundary (see `cstr_secret`).
 zeroize = { workspace = true }
