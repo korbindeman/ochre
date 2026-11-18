@@ -1,6 +1,6 @@
 # ADR-0066: Stay on CEF; no native-webview engine backend
 
-- **Status:** Superseded by ADR-0069
+- **Status:** Superseded by ADR-0071
 - **Date:** 2026-11-18
 
 ## Context
