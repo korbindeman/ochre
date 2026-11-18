@@ -29,19 +29,9 @@ fn check_invariants(store: &TabStore) -> Result<(), String> {
         if !store.spaces.iter().any(|s| s.id == t.space) {
             return Err(format!("tab {} in missing space {}", t.id, t.space));
         }
-        if t.favorite && t.pinned {
-            return Err(format!("tab {} is both favorite and pinned", t.id));
-        }
-        if t.favorite && t.folder.is_some() {
-            return Err(format!("favorite {} sits in folder {:?}", t.id, t.folder));
-        }
-        if t.folder.is_some() && !t.pinned {
-            return Err(format!(
-                "tab {} in folder {:?} but not pinned",
-                t.id, t.folder
-            ));
-        }
-        if let Some(fid) = t.folder {
+        // Kind exclusivity (favorite vs pinned, folder implies pinned, saved URL
+        // iff saved) is now enforced by `Placement`; only cross-references remain.
+        if let Some(fid) = t.folder() {
             match store.folders.iter().find(|f| f.id == fid) {
                 None => return Err(format!("tab {} in missing folder {fid}", t.id)),
                 Some(f) if f.space != t.space => {
@@ -52,13 +42,6 @@ fn check_invariants(store: &TabStore) -> Result<(), String> {
                 }
                 Some(_) => {}
             }
-        }
-        let saved_kind = t.pinned || t.favorite;
-        if saved_kind && t.saved_url.is_none() {
-            return Err(format!("saved tab {} has no saved URL", t.id));
-        }
-        if !saved_kind && t.saved_url.is_some() {
-            return Err(format!("open tab {} still carries a saved URL", t.id));
         }
     }
     if store.favorite_count() > MAX_VISIBLE_FAVORITES {
@@ -425,7 +408,7 @@ fn navigating_a_suspended_visible_tab_keeps_the_url() {
         assert_eq!(suspended_url(7).as_deref(), Some("https://typed.example/"));
         let tab_ok = with_store(|s| {
             let t = s.tab(7).expect("tab");
-            !t.nav_pending && t.saved_url.as_deref() == Some("https://home.example/")
+            !t.nav_pending && t.saved_url() == Some("https://home.example/")
         });
         assert_eq!(tab_ok, Some(true), "pending served; pinned URL unchanged");
     });

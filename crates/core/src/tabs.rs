@@ -105,22 +105,107 @@ static SESSION_PATH: Mutex<Option<String>> = Mutex::new(None);
 /// those removals would wipe the session the user expects back next launch.
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
+/// A sidebar section, without the saved URL: the destination a mutation names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Section {
+    /// The per-Space working set ("today"). Ephemeral.
+    Open,
+    /// Saved in its Space, loose (`None`) or filed in a folder of that Space.
+    Pinned(Option<FolderId>),
+    /// The global icon strip (ADR-0032).
+    Favorite,
+}
+
+impl Section {
+    /// Normalize the host's `(favorite, pinned, folder)` flags: the strip wins,
+    /// and a folder implies pinned (folders hold persistent tabs).
+    fn from_flags(favorite: bool, pinned: bool, folder: Option<FolderId>) -> Self {
+        if favorite {
+            Self::Favorite
+        } else if pinned || folder.is_some() {
+            Self::Pinned(folder)
+        } else {
+            Self::Open
+        }
+    }
+}
+
+/// Where a tab lives, with the durable URL that saved sections carry
+/// (ADR-0056). One value instead of four fields, so a pinned favorite, a
+/// favorite in a folder, an open tab with a saved URL, or a saved tab without
+/// one cannot be built (P1-43).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Placement {
+    Open,
+    Pinned {
+        folder: Option<FolderId>,
+        saved_url: String,
+    },
+    /// Permanent: a user close only deselects the icon; it is never hidden
+    /// (ADR-0038).
+    Favorite {
+        saved_url: String,
+    },
+}
+
+impl Placement {
+    /// Place into `section`, keeping `saved` as the durable URL when there is
+    /// one and capturing `url` otherwise. `Open` drops it.
+    fn new(section: Section, saved: Option<String>, url: &str) -> Self {
+        let saved_url = || saved.unwrap_or_else(|| url.to_string());
+        match section {
+            Section::Open => Self::Open,
+            Section::Pinned(folder) => Self::Pinned {
+                folder,
+                saved_url: saved_url(),
+            },
+            Section::Favorite => Self::Favorite {
+                saved_url: saved_url(),
+            },
+        }
+    }
+
+    fn section(&self) -> Section {
+        match self {
+            Self::Open => Section::Open,
+            Self::Pinned { folder, .. } => Section::Pinned(*folder),
+            Self::Favorite { .. } => Section::Favorite,
+        }
+    }
+
+    fn saved_url(&self) -> Option<&str> {
+        match self {
+            Self::Open => None,
+            Self::Pinned { saved_url, .. } | Self::Favorite { saved_url } => Some(saved_url),
+        }
+    }
+
+    fn pinned(&self) -> bool {
+        matches!(self, Self::Pinned { .. })
+    }
+
+    fn favorite(&self) -> bool {
+        matches!(self, Self::Favorite { .. })
+    }
+
+    fn folder(&self) -> Option<FolderId> {
+        match self {
+            Self::Pinned { folder, .. } => *folder,
+            _ => None,
+        }
+    }
+}
+
 struct Tab {
     id: TabId,
     space: SpaceId,
-    /// `Some` only when `pinned` - folders hold persistent tabs.
-    folder: Option<FolderId>,
-    pinned: bool,
-    /// Arc-style pinned icon strip (ADR-0032). `favorite ⇒ !pinned`. Permanent:
-    /// a user close only deselects the icon; it is never hidden (ADR-0038).
-    favorite: bool,
+    /// Section plus durable URL. `url` below is the live page and may
+    /// temporarily differ from a saved tab's URL.
+    placement: Placement,
     /// The live CEF browser, or `None` for a *suspended* tab - restored from
     /// the persisted session and hydrated (via [`attach_browser`]) the first
     /// time it is shown.
     browser: Option<Browser>,
-    /// Durable identity for a saved tab or favorite (ADR-0056). `url` remains
-    /// the live page and may temporarily differ. Open tabs have no saved URL.
-    saved_url: Option<String>,
     url: String,
     title: String,
     loading: bool,
@@ -139,20 +224,33 @@ struct Tab {
 }
 
 impl Tab {
-    fn ensure_saved_url(&mut self) {
-        if self.saved_url.is_none() {
-            self.saved_url = Some(self.url.clone());
-        }
+    fn pinned(&self) -> bool {
+        self.placement.pinned()
     }
 
-    fn clear_saved_url(&mut self) {
-        self.saved_url = None;
+    fn favorite(&self) -> bool {
+        self.placement.favorite()
+    }
+
+    fn folder(&self) -> Option<FolderId> {
+        self.placement.folder()
+    }
+
+    fn saved_url(&self) -> Option<&str> {
+        self.placement.saved_url()
+    }
+
+    /// Move into `section`. A saved tab keeps its durable URL across saved
+    /// sections; an open tab being saved captures its live URL.
+    fn place(&mut self, section: Section) {
+        let saved = self.saved_url().map(str::to_string);
+        self.placement = Placement::new(section, saved, &self.url);
     }
 
     /// Restore the live page identity to the pinned URL. Returns the URL only
     /// when a navigation is required for a resident browser.
     fn revert_to_saved_url(&mut self) -> Option<String> {
-        let saved_url = self.saved_url.clone()?;
+        let saved_url = self.saved_url()?.to_string();
         if self.url == saved_url {
             return None;
         }
@@ -173,10 +271,7 @@ impl Tab {
 struct ClosedTab {
     id: TabId,
     space: SpaceId,
-    folder: Option<FolderId>,
-    pinned: bool,
-    favorite: bool,
-    saved_url: Option<String>,
+    placement: Placement,
     url: String,
     title: String,
     /// The tab that immediately followed it in its section at close time, so
@@ -277,29 +372,20 @@ impl TabStore {
     fn can_be_active_in(&self, space: SpaceId, id: TabId) -> bool {
         self.tabs
             .iter()
-            .any(|t| t.id == id && (t.space == space || t.favorite))
+            .any(|t| t.id == id && (t.space == space || t.favorite()))
     }
 
     /// Whether `t` belongs to the same sidebar section as the destination triple.
     /// Favorites are global - their section ignores `space`.
-    fn same_section(
-        t: &Tab,
-        space: SpaceId,
-        favorite: bool,
-        pinned: bool,
-        folder: Option<FolderId>,
-    ) -> bool {
-        if favorite {
-            return t.favorite == favorite && t.pinned == pinned && t.folder == folder;
-        }
-        t.space == space && t.favorite == favorite && t.pinned == pinned && t.folder == folder
+    fn same_section(t: &Tab, space: SpaceId, section: Section) -> bool {
+        t.placement.section() == section && (section == Section::Favorite || t.space == space)
     }
 
     /// Whether `id` is an open (ephemeral) tab - the only kind brought onto the
     /// canvas automatically after a close/hide. Saved tabs and favorites stay in
     /// the sidebar until the user selects them.
     fn is_open_tab(&self, id: TabId) -> bool {
-        self.tab(id).is_some_and(|t| !t.pinned && !t.favorite)
+        self.tab(id).is_some_and(|t| !t.pinned() && !t.favorite())
     }
 
     /// Open-tab ids in sidebar order for `space`.
@@ -344,7 +430,7 @@ impl TabStore {
             self.append_folder_sidebar(&child.id, space, ids);
         }
         for t in &self.tabs {
-            if t.folder == Some(*folder_id) {
+            if t.folder() == Some(*folder_id) {
                 ids.push(t.id);
             }
         }
@@ -356,7 +442,7 @@ impl TabStore {
     fn sidebar_tab_order(&self, space: SpaceId) -> Vec<TabId> {
         let mut ids = Vec::new();
         for t in &self.tabs {
-            if t.favorite {
+            if t.favorite() {
                 ids.push(t.id);
             }
         }
@@ -368,12 +454,12 @@ impl TabStore {
             self.append_folder_sidebar(&folder.id, space, &mut ids);
         }
         for t in &self.tabs {
-            if t.space == space && t.pinned && !t.favorite && t.folder.is_none() {
+            if t.space == space && t.pinned() && !t.favorite() && t.folder().is_none() {
                 ids.push(t.id);
             }
         }
         for t in &self.tabs {
-            if t.space == space && !t.pinned && !t.favorite {
+            if t.space == space && !t.pinned() && !t.favorite() {
                 ids.push(t.id);
             }
         }
@@ -401,7 +487,7 @@ impl TabStore {
     /// open tab; inactive pins are reset in place.
     fn hide_saved(&mut self, id: TabId) -> Option<Browser> {
         let pos = self.tabs.iter().position(|t| t.id == id)?;
-        if !self.tabs[pos].pinned || self.tabs[pos].favorite {
+        if !self.tabs[pos].pinned() || self.tabs[pos].favorite() {
             return None;
         }
         let space = self.tabs[pos].space;
@@ -420,20 +506,20 @@ impl TabStore {
     }
 
     fn favorite_count(&self) -> usize {
-        self.tabs.iter().filter(|t| t.favorite).count()
+        self.tabs.iter().filter(|t| t.favorite()).count()
     }
 
     fn replace_pinned_url(&mut self, id: TabId) -> bool {
         let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) else {
             return false;
         };
-        if !tab.pinned && !tab.favorite {
+        if !tab.pinned() && !tab.favorite() {
             return false;
         }
-        if tab.saved_url.as_deref() == Some(tab.url.as_str()) {
+        if tab.saved_url() == Some(tab.url.as_str()) {
             return false;
         }
-        tab.saved_url = Some(tab.url.clone());
+        tab.placement = Placement::new(tab.placement.section(), Some(tab.url.clone()), "");
         true
     }
 
@@ -443,7 +529,7 @@ impl TabStore {
         if self.favorite_count() < MAX_VISIBLE_FAVORITES {
             return true;
         }
-        self.tab(id).is_some_and(|t| t.favorite)
+        self.tab(id).is_some_and(|t| t.favorite())
     }
 
     /// Make `id` the active tab. A favorite shows on the *current* space's canvas
@@ -453,7 +539,7 @@ impl TabStore {
         let Some(tab) = self.tab(id) else {
             return;
         };
-        let space = if tab.favorite {
+        let space = if tab.favorite() {
             self.active_space
         } else {
             tab.space
@@ -469,7 +555,7 @@ impl TabStore {
     /// global, so a close acts on the space the user is in, not the favorite's
     /// home space. No-op unless `id` is active in the current space.
     fn deselect_favorite(&mut self, id: TabId) -> Option<(Browser, String)> {
-        if !self.tab(id).is_some_and(|t| t.favorite) {
+        if !self.tab(id).is_some_and(|t| t.favorite()) {
             return None;
         }
         let space = self.active_space;
@@ -538,7 +624,7 @@ impl TabStore {
         for tab in self
             .tabs
             .iter_mut()
-            .filter(|t| t.space == from && t.favorite)
+            .filter(|t| t.space == from && t.favorite())
         {
             tab.space = to;
         }
@@ -566,10 +652,7 @@ impl TabStore {
         let captured = self.tab(id).map(|tab| ClosedTab {
             id: tab.id,
             space: tab.space,
-            folder: tab.folder,
-            pinned: tab.pinned,
-            favorite: tab.favorite,
-            saved_url: tab.saved_url.clone(),
+            placement: tab.placement.clone(),
             url: tab.url.clone(),
             title: tab.title.clone(),
             // The next tab in this tab's own section (same space / favorite /
@@ -579,7 +662,7 @@ impl TabStore {
                 .iter()
                 .skip_while(|t| t.id != id)
                 .skip(1)
-                .find(|t| Self::same_section(t, tab.space, tab.favorite, tab.pinned, tab.folder))
+                .find(|t| Self::same_section(t, tab.space, tab.placement.section()))
                 .map(|t| t.id),
         });
         if let Some(captured) = captured {
@@ -610,26 +693,29 @@ impl TabStore {
         } else {
             self.active_space
         };
-        let folder = closed.folder.filter(|fid| {
-            self.folders
-                .iter()
-                .any(|f| f.id == *fid && f.space == space)
-        });
-        let favorite = closed.favorite;
-        let pinned = closed.pinned || folder.is_some();
+        // A folder deleted since the close leaves the tab loose in its Space.
+        let mut placement = closed.placement;
+        if let Placement::Pinned { folder, .. } = &mut placement {
+            *folder = folder.filter(|fid| {
+                self.folders
+                    .iter()
+                    .any(|f| f.id == *fid && f.space == space)
+            });
+        }
+        let section = placement.section();
         // Slot before the old sibling only if it still exists in the same
         // section; otherwise append to the section's end (mirrors relocate_tab).
         let index = closed
             .before
             .and_then(|anchor| {
-                self.tabs.iter().position(|t| {
-                    t.id == anchor && Self::same_section(t, space, favorite, pinned, folder)
-                })
+                self.tabs
+                    .iter()
+                    .position(|t| t.id == anchor && Self::same_section(t, space, section))
             })
             .unwrap_or_else(|| {
                 self.tabs
                     .iter()
-                    .rposition(|t| Self::same_section(t, space, favorite, pinned, folder))
+                    .rposition(|t| Self::same_section(t, space, section))
                     .map_or(self.tabs.len(), |p| p + 1)
             });
         self.tabs.insert(
@@ -637,11 +723,8 @@ impl TabStore {
             Tab {
                 id: closed.id,
                 space,
-                folder,
-                pinned,
-                favorite,
+                placement,
                 browser: None,
-                saved_url: closed.saved_url,
                 url: closed.url,
                 title: closed.title,
                 loading: false,
@@ -682,38 +765,23 @@ impl TabStore {
         if favorite && !self.can_show_favorite(id) {
             return;
         }
-        let leaving_strip = self.tabs[from].favorite && !favorite;
+        let leaving_strip = self.tabs[from].favorite() && !favorite;
         // A favorite dragged out of the strip lands in the Space being viewed.
         let space = if leaving_strip {
             self.active_space
         } else {
             self.tabs[from].space
         };
-        let (favorite, pinned, folder) = if favorite {
-            (true, false, None)
-        } else {
-            match folder {
-                Some(fid) if self.folders.iter().any(|f| f.id == fid && f.space == space) => {
-                    (false, true, Some(fid)) // folders hold persistent tabs
-                }
-                Some(_) => return, // folder isn't in this tab's space - reject
-                None => (false, pinned, None),
+        let section = Section::from_flags(favorite, pinned, folder);
+        if let Section::Pinned(Some(fid)) = section {
+            if !self.folders.iter().any(|f| f.id == fid && f.space == space) {
+                return; // folder isn't in this tab's space - reject
             }
-        };
-        let was_saved = self.tabs[from].saved_url.is_some();
+        }
         {
             let tab = &mut self.tabs[from];
             tab.space = space;
-            tab.favorite = favorite;
-            tab.pinned = pinned;
-            tab.folder = folder;
-            if favorite || pinned {
-                if !was_saved {
-                    tab.ensure_saved_url();
-                }
-            } else {
-                tab.clear_saved_url();
-            }
+            tab.place(section);
         }
         // Pull the tab out, then re-insert it. Indices below are computed against
         // the post-removal Vec so they land where intended.
@@ -727,7 +795,7 @@ impl TabStore {
             // destination section's last member, i.e. the section's end.
             self.tabs
                 .iter()
-                .rposition(|t| Self::same_section(t, space, favorite, pinned, folder))
+                .rposition(|t| Self::same_section(t, space, section))
                 .map_or(self.tabs.len(), |p| p + 1)
         });
         self.tabs.insert(index, tab);
@@ -811,16 +879,12 @@ impl TabStore {
                 let folder = t
                     .folder
                     .filter(|fid| folders.iter().any(|f| f.id == *fid && f.space == t.space));
-                let favorite = t.favorite;
-                let is_saved = favorite || t.pinned || folder.is_some();
+                let section = Section::from_flags(t.favorite, t.pinned, folder);
                 Tab {
                     id: t.id,
                     space: t.space,
-                    pinned: (t.pinned || folder.is_some()) && !favorite,
-                    folder: if favorite { None } else { folder },
-                    favorite,
+                    placement: Placement::new(section, None, &t.url),
                     browser: None,
-                    saved_url: is_saved.then(|| t.url.clone()),
                     url: t.url,
                     title: t.title,
                     loading: false,
@@ -901,13 +965,13 @@ impl TabStore {
                 .map(|t| SavedTab {
                     id: t.id,
                     space: t.space,
-                    folder: t.folder,
-                    pinned: t.pinned,
-                    favorite: t.favorite,
+                    folder: t.folder(),
+                    pinned: t.pinned(),
+                    favorite: t.favorite(),
                     // A pin persists its durable identity, never a temporary
                     // excursion. Open tabs persist their live URL as before.
-                    url: t.saved_url.clone().unwrap_or_else(|| t.url.clone()),
-                    title: if t.saved_url.as_deref().is_some_and(|url| url != t.url) {
+                    url: t.saved_url().unwrap_or(&t.url).to_string(),
+                    title: if t.saved_url().is_some_and(|url| url != t.url) {
                         String::new()
                     } else {
                         t.title.clone()
@@ -1100,11 +1164,8 @@ pub fn register_tab(browser: Browser, url: &str) -> TabId {
         store.tabs.push(Tab {
             id,
             space,
-            folder: None,
-            pinned: false,
-            favorite: false,
+            placement: Placement::Open,
             browser: Some(browser),
-            saved_url: None,
             url: url.to_string(),
             title: String::new(),
             loading: false,
@@ -1158,7 +1219,7 @@ pub fn navigate_suspended_visible(url: &str) -> bool {
 
 /// Whether `id` is a favorite (resident strip - never auto-suspended, ADR-0032).
 pub fn is_favorite(id: TabId) -> bool {
-    with_store(|store| store.tab(id).is_some_and(|t| t.favorite)).unwrap_or(false)
+    with_store(|store| store.tab(id).is_some_and(|t| t.favorite())).unwrap_or(false)
 }
 
 /// Hydrated, non-favorite tabs in `space` that are not `keep_visible`.
@@ -1181,7 +1242,7 @@ pub fn hydrated_background_candidates(
             .iter()
             .filter(|t| {
                 t.browser.is_some()
-                    && !t.favorite
+                    && !t.favorite()
                     && keep_visible != Some(t.id)
                     && space.is_none_or(|s| t.space == s)
             })
@@ -1221,7 +1282,7 @@ pub fn suspend_tab(id: TabId) -> bool {
             return None;
         }
         let tab = store.tabs.iter_mut().find(|t| t.id == id)?;
-        if tab.browser.is_none() || tab.favorite {
+        if tab.browser.is_none() || tab.favorite() {
             return None;
         }
         let browser = tab.browser.take();
@@ -1386,9 +1447,9 @@ pub fn move_visible_tab(delta: i32) -> bool {
         let Some(tab) = store.tab(id) else {
             return false;
         };
-        let favorite = tab.favorite;
-        let pinned = tab.pinned;
-        let folder = tab.folder;
+        let favorite = tab.favorite();
+        let pinned = tab.pinned();
+        let folder = tab.folder();
         let before = if delta < 0 {
             Some(order[target_idx as usize])
         } else {
@@ -1424,9 +1485,9 @@ pub fn delete_tab(id: TabId) {
 /// removed, and torn down.
 pub fn close_tab(id: TabId) {
     let (browser, favorite_reset, pinned) = structural(|store| {
-        if store.tab(id).is_some_and(|t| t.favorite) {
+        if store.tab(id).is_some_and(|t| t.favorite()) {
             (None, store.deselect_favorite(id), false)
-        } else if store.tab(id).is_some_and(|t| t.pinned) {
+        } else if store.tab(id).is_some_and(|t| t.pinned()) {
             (store.hide_saved(id), None, true)
         } else {
             (store.remove_tab_recording(id), None, false)
@@ -1481,16 +1542,13 @@ pub fn set_pinned(id: TabId, pinned: bool) {
     structural(|store| {
         let mut left_strip = false;
         if let Some(tab) = store.tabs.iter_mut().find(|t| t.id == id) {
-            tab.pinned = pinned;
             if pinned {
-                left_strip = tab.favorite;
-                tab.favorite = false;
-                tab.ensure_saved_url();
-            } else {
-                tab.folder = None;
-                if !tab.favorite {
-                    tab.clear_saved_url();
+                left_strip = tab.favorite();
+                if !tab.pinned() {
+                    tab.place(Section::Pinned(None));
                 }
+            } else if tab.pinned() {
+                tab.place(Section::Open);
             }
         }
         if left_strip {
@@ -1508,14 +1566,11 @@ pub fn set_favorite(id: TabId, favorite: bool) {
         }
         let mut left_strip = false;
         if let Some(tab) = store.tabs.iter_mut().find(|t| t.id == id) {
-            left_strip = tab.favorite && !favorite;
-            tab.favorite = favorite;
+            left_strip = tab.favorite() && !favorite;
             if favorite {
-                tab.pinned = false;
-                tab.folder = None;
-                tab.ensure_saved_url();
-            } else if !tab.pinned {
-                tab.clear_saved_url();
+                tab.place(Section::Favorite);
+            } else if left_strip {
+                tab.place(Section::Open);
             }
         }
         if left_strip {
@@ -1541,24 +1596,10 @@ pub fn move_to_folder(id: TabId, folder: Option<FolderId>) {
             store.relocate_tab(id, false, true, folder, None);
             return;
         }
-        let Some(space) = store.tab(id).map(|t| t.space) else {
-            return;
-        };
-        let ok = folder.is_none_or(|fid| {
-            store
-                .folders
-                .iter()
-                .any(|f| f.id == fid && f.space == space)
-        });
-        if !ok {
-            return;
-        }
+        // Out of a folder: stays pinned, loose in its Space.
         if let Some(tab) = store.tabs.iter_mut().find(|t| t.id == id) {
-            tab.folder = folder;
-            if folder.is_some() {
-                tab.pinned = true;
-                tab.favorite = false;
-                tab.ensure_saved_url();
+            if tab.folder().is_some() {
+                tab.place(Section::Pinned(None));
             }
         }
     });
@@ -1651,7 +1692,9 @@ pub fn clear_ephemeral_tabs(keep: &[TabId]) {
         let victims: Vec<(TabId, Option<Browser>)> = store
             .tabs
             .iter()
-            .filter(|t| t.space == space && !t.pinned && !t.favorite && !keep_set.contains(&t.id))
+            .filter(|t| {
+                t.space == space && !t.pinned() && !t.favorite() && !keep_set.contains(&t.id)
+            })
             .map(|t| (t.id, t.browser.clone()))
             .collect();
         for (id, _) in &victims {
@@ -1677,8 +1720,8 @@ pub fn delete_folder(id: FolderId) {
             .iter()
             .find(|f| f.id == id)
             .and_then(|f| f.parent);
-        for tab in store.tabs.iter_mut().filter(|t| t.folder == Some(id)) {
-            tab.folder = None; // stays pinned
+        for tab in store.tabs.iter_mut().filter(|t| t.folder() == Some(id)) {
+            tab.place(Section::Pinned(None)); // stays pinned
         }
         for child in store.folders.iter_mut().filter(|f| f.parent == Some(id)) {
             child.parent = parent;
@@ -1994,26 +2037,19 @@ fn push_imported_tab(
 ) {
     let id = store.next_tab;
     store.next_tab += 1;
-    let (favorite, pinned, folder) = if favorite {
-        (true, false, None)
-    } else {
-        (false, pinned || folder.is_some(), folder)
-    };
+    let section = Section::from_flags(favorite, pinned, folder);
     let index = store
         .tabs
         .iter()
-        .rposition(|t| TabStore::same_section(t, space, favorite, pinned, folder))
+        .rposition(|t| TabStore::same_section(t, space, section))
         .map_or(store.tabs.len(), |p| p + 1);
     store.tabs.insert(
         index,
         Tab {
             id,
             space,
-            folder,
-            pinned,
-            favorite,
+            placement: Placement::new(section, None, &tab.url),
             browser: None,
-            saved_url: (favorite || pinned).then(|| tab.url.clone()),
             url: tab.url.clone(),
             title: tab.title.clone(),
             loading: false,
@@ -2054,15 +2090,11 @@ pub fn folder_to_space(folder_id: FolderId) -> SpaceId {
         for tab in store
             .tabs
             .iter_mut()
-            .filter(|t| t.folder.is_some_and(|fid| subtree.contains(&fid)))
+            .filter(|t| t.folder().is_some_and(|fid| subtree.contains(&fid)))
         {
             tab.space = sid;
-            if tab.folder == Some(folder_id) {
-                tab.folder = None;
-            }
-            tab.pinned = true;
-            tab.favorite = false;
-            tab.ensure_saved_url();
+            let folder = tab.folder().filter(|fid| *fid != folder_id);
+            tab.place(Section::Pinned(folder));
             first.get_or_insert(tab.id);
         }
         for folder in store.folders.iter_mut().filter(|f| subtree.contains(&f.id)) {
@@ -2128,18 +2160,15 @@ pub fn space_to_folder(space_id: SpaceId) -> FolderId {
         let ephemeral: Vec<Browser> = store
             .tabs
             .iter()
-            .filter(|t| t.space == space_id && !t.pinned)
+            .filter(|t| t.space == space_id && !t.pinned())
             .filter_map(|t| t.browser.clone())
             .collect();
-        store.tabs.retain(|t| t.space != space_id || t.pinned);
+        store.tabs.retain(|t| t.space != space_id || t.pinned());
         // The remaining source tabs are all pinned; flatten them into the new
         // folder in the target space.
         for tab in store.tabs.iter_mut().filter(|t| t.space == space_id) {
             tab.space = target;
-            tab.folder = Some(folder_id);
-            tab.pinned = true;
-            tab.favorite = false;
-            tab.ensure_saved_url();
+            tab.place(Section::Pinned(Some(folder_id)));
         }
         store.folders.retain(|f| f.space != space_id);
         store.spaces.retain(|s| s.id != space_id);
@@ -2375,10 +2404,10 @@ pub fn snapshot() -> Snapshot {
             .map(|t| TabView {
                 id: t.id,
                 space: t.space,
-                folder: t.folder,
-                pinned: t.pinned,
-                favorite: t.favorite,
-                saved_url: t.saved_url.clone(),
+                folder: t.folder(),
+                pinned: t.pinned(),
+                favorite: t.favorite(),
+                saved_url: t.saved_url().map(str::to_string),
                 hydrated: t.browser.is_some(),
                 url: t.url.clone(),
                 title: t.title.clone(),
@@ -2498,8 +2527,8 @@ mod tests {
         assert_eq!(store.active_space, 1); // fell back to the first space
         assert!(store.folders.is_empty()); // dangling folder dropped
         assert_eq!(store.tabs.len(), 2); // orphaned-space tab dropped
-        assert!(store.tabs.iter().all(|t| t.folder.is_none())); // refs cleared
-                                                                // Space active fell back to its first tab.
+        assert!(store.tabs.iter().all(|t| t.folder().is_none())); // refs cleared
+                                                                  // Space active fell back to its first tab.
         assert_eq!(store.visible_tab(), Some(4));
     }
 
@@ -2511,8 +2540,8 @@ mod tests {
             vec![(2, 1)],
             vec![(3, 1, Some(2), false)], // saved unpinned but in a folder
         ));
-        assert!(store.tabs[0].pinned);
-        assert_eq!(store.tabs[0].folder, Some(2));
+        assert!(store.tabs[0].pinned());
+        assert_eq!(store.tabs[0].folder(), Some(2));
     }
 
     /// The write-through + shutdown mask, against the real global store: a
@@ -2603,7 +2632,7 @@ mod tests {
         let _ = store.deselect_favorite(4);
 
         assert_eq!(store.tabs[0].url, "https://t4.example/");
-        assert!(store.tabs[0].favorite);
+        assert!(store.tabs[0].favorite());
         assert_eq!(store.visible_tab(), None);
     }
 
@@ -2634,7 +2663,7 @@ mod tests {
         store
             .tabs
             .iter()
-            .filter(|t| t.space == 1 && !t.pinned && !t.favorite && t.folder.is_none())
+            .filter(|t| t.space == 1 && !t.pinned() && !t.favorite() && t.folder().is_none())
             .map(|t| t.id)
             .collect()
     }
@@ -2643,7 +2672,7 @@ mod tests {
         store
             .tabs
             .iter()
-            .filter(|t| t.space == 1 && t.favorite)
+            .filter(|t| t.space == 1 && t.favorite())
             .map(|t| t.id)
             .collect()
     }
@@ -2679,9 +2708,9 @@ mod tests {
         // Drag today tab 2 onto folder 5: auto-pins and joins the folder.
         store.relocate_tab(2, false, false, Some(5), None);
         let t = store.tabs.iter().find(|t| t.id == 2).unwrap();
-        assert!(t.pinned);
-        assert_eq!(t.folder, Some(5));
-        assert_eq!(t.saved_url.as_deref(), Some("https://t2.example/"));
+        assert!(t.pinned());
+        assert_eq!(t.folder(), Some(5));
+        assert_eq!(t.saved_url(), Some("https://t2.example/"));
         assert!(today_ids(&store).is_empty());
     }
 
@@ -2699,9 +2728,9 @@ mod tests {
         // Drag the folder tab down into the today section (no anchor → its end).
         store.relocate_tab(2, false, false, None, None);
         let t = store.tabs.iter().find(|t| t.id == 2).unwrap();
-        assert!(!t.pinned);
-        assert_eq!(t.folder, None);
-        assert_eq!(t.saved_url, None);
+        assert!(!t.pinned());
+        assert_eq!(t.folder(), None);
+        assert_eq!(t.saved_url(), None);
         assert_eq!(today_ids(&store), vec![3, 2]);
     }
 
@@ -2738,11 +2767,11 @@ mod tests {
         let folder_tabs: Vec<TabId> = store
             .tabs
             .iter()
-            .filter(|t| t.folder == Some(folder_id))
+            .filter(|t| t.folder() == Some(folder_id))
             .map(|t| t.id)
             .collect();
         assert_eq!(folder_tabs, vec![2, 4]);
-        assert!(store.tabs.iter().find(|t| t.id == 2).unwrap().pinned);
+        assert!(store.tabs.iter().find(|t| t.id == 2).unwrap().pinned());
         assert_eq!(today_ids(&store), Vec::<TabId>::new());
     }
 
@@ -2779,7 +2808,7 @@ mod tests {
         let victims: Vec<TabId> = store
             .tabs
             .iter()
-            .filter(|t| t.space == 1 && !t.pinned && !keep.contains(&t.id))
+            .filter(|t| t.space == 1 && !t.pinned() && !keep.contains(&t.id))
             .map(|t| t.id)
             .collect();
         for id in victims {
@@ -2806,7 +2835,7 @@ mod tests {
         let victims: Vec<TabId> = store
             .tabs
             .iter()
-            .filter(|t| t.space == 1 && !t.pinned && !keep.contains(&t.id))
+            .filter(|t| t.space == 1 && !t.pinned() && !keep.contains(&t.id))
             .map(|t| t.id)
             .collect();
         for id in victims {
@@ -2827,8 +2856,8 @@ mod tests {
         ));
         store.relocate_tab(3, false, false, Some(5), None);
         let t = store.tabs.iter().find(|t| t.id == 3).unwrap();
-        assert!(!t.pinned); // unchanged - the cross-space folder was rejected
-        assert_eq!(t.folder, None);
+        assert!(!t.pinned()); // unchanged - the cross-space folder was rejected
+        assert_eq!(t.folder(), None);
     }
 
     // ─── Reopen closed tab (⌘⇧T) ────────────────────────────────────────────
@@ -2869,8 +2898,8 @@ mod tests {
         assert!(store.tabs.is_empty());
         assert_eq!(store.reopen_closed(), Some(2));
         let t = store.tabs.iter().find(|t| t.id == 2).unwrap();
-        assert!(t.pinned);
-        assert_eq!(t.folder, Some(5));
+        assert!(t.pinned());
+        assert_eq!(t.folder(), Some(5));
         assert!(t.browser.is_none()); // comes back suspended, hydrated on show
     }
 
@@ -2890,8 +2919,8 @@ mod tests {
         assert_eq!(store.reopen_closed(), Some(3));
         let t = store.tabs.iter().find(|t| t.id == 3).unwrap();
         assert_eq!(t.space, store.active_space); // fell back to the active space
-        assert_eq!(t.folder, None); // folder gone → dropped to loose pinned
-        assert!(t.pinned); // still pinned, just without a folder
+        assert_eq!(t.folder(), None); // folder gone → dropped to loose pinned
+        assert!(t.pinned()); // still pinned, just without a folder
         assert_eq!(store.visible_tab(), Some(3));
     }
 
@@ -2905,7 +2934,7 @@ mod tests {
         ));
         assert!(store.hide_saved(1).is_none()); // suspended - no browser to hand back
         let t = store.tabs.iter().find(|t| t.id == 1).unwrap();
-        assert!(t.pinned);
+        assert!(t.pinned());
         assert_eq!(store.visible_tab(), Some(2));
     }
 
@@ -2918,7 +2947,7 @@ mod tests {
             vec![(1, 1, None, true)],
         ));
         assert!(store.hide_saved(1).is_none());
-        assert!(store.tabs.iter().any(|t| t.id == 1 && t.pinned));
+        assert!(store.tabs.iter().any(|t| t.id == 1 && t.pinned()));
         assert_eq!(store.visible_tab(), None);
     }
 
@@ -2931,7 +2960,7 @@ mod tests {
             vec![(1, 1, None, true), (2, 1, None, true)],
         ));
         assert!(store.hide_saved(1).is_none());
-        assert!(store.tabs.iter().any(|t| t.id == 2 && t.pinned));
+        assert!(store.tabs.iter().any(|t| t.id == 2 && t.pinned()));
         assert_eq!(store.visible_tab(), None);
     }
 
@@ -2944,7 +2973,7 @@ mod tests {
             vec![(1, 1, None, true), (2, 1, None, false)],
         ));
         store.remove_tab_recording(2);
-        assert!(store.tabs.iter().any(|t| t.id == 1 && t.pinned));
+        assert!(store.tabs.iter().any(|t| t.id == 1 && t.pinned()));
         assert_eq!(store.visible_tab(), None);
     }
 
@@ -2961,7 +2990,7 @@ mod tests {
         assert!(store.hide_saved(1).is_none());
         assert_eq!(store.visible_tab(), Some(2));
         let pinned = store.tab(1).unwrap();
-        assert!(pinned.pinned);
+        assert!(pinned.pinned());
         assert_eq!(pinned.url, "https://t1.example/");
         assert!(store.closed.is_empty());
 
@@ -2986,10 +3015,15 @@ mod tests {
             vec![],
             vec![(1, 1, None, false), (2, 1, None, false)],
         ));
-        store.tabs.iter_mut().find(|t| t.id == 2).unwrap().favorite = true;
+        store
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == 2)
+            .unwrap()
+            .place(Section::Favorite);
         store.remove_tab_recording(2);
         assert_eq!(store.tabs.len(), 1);
-        assert!(!store.tabs[0].favorite);
+        assert!(!store.tabs[0].favorite());
     }
 
     #[test]
@@ -3000,14 +3034,19 @@ mod tests {
             vec![],
             vec![(1, 1, None, false), (2, 1, None, false)],
         ));
-        store.tabs.iter_mut().find(|t| t.id == 2).unwrap().favorite = true;
+        store
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == 2)
+            .unwrap()
+            .place(Section::Favorite);
         store.set_space_active(1, Some(2));
         let _ = store.deselect_favorite(2);
         // The tab, its favorite flag, and its icon all persist - only the
         // active pointer moved back to the canvas (ADR-0038).
         assert_eq!(store.tabs.len(), 2);
         let t = store.tabs.iter().find(|t| t.id == 2).unwrap();
-        assert!(t.favorite);
+        assert!(t.favorite());
         assert_ne!(store.visible_tab(), Some(2));
         assert_eq!(favorite_ids(&store), vec![2]);
     }
@@ -3027,7 +3066,12 @@ mod tests {
                 (3, 2, None, false),
             ],
         ));
-        store.tabs.iter_mut().find(|t| t.id == 2).unwrap().favorite = true;
+        store
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == 2)
+            .unwrap()
+            .place(Section::Favorite);
         store
     }
 
@@ -3055,7 +3099,7 @@ mod tests {
         let _ = store.deselect_favorite(2);
         assert_ne!(store.visible_tab(), Some(2)); // dropped from space 2's canvas
         assert_eq!(store.visible_tab(), Some(3));
-        assert!(store.tabs.iter().any(|t| t.id == 2 && t.favorite)); // icon stays
+        assert!(store.tabs.iter().any(|t| t.id == 2 && t.favorite())); // icon stays
     }
 
     #[test]
@@ -3088,8 +3132,8 @@ mod tests {
         ));
         store.relocate_tab(3, true, false, None, None);
         let t = store.tabs.iter().find(|t| t.id == 3).unwrap();
-        assert!(t.favorite);
-        assert!(!t.pinned);
+        assert!(t.favorite());
+        assert!(!t.pinned());
         assert_eq!(favorite_ids(&store), vec![3]);
         assert_eq!(today_ids(&store), vec![2]);
     }
@@ -3101,11 +3145,8 @@ mod tests {
             store.tabs.push(Tab {
                 id,
                 space: 1,
-                folder: None,
-                pinned: false,
-                favorite: false,
+                placement: Placement::Open,
                 browser: None,
-                saved_url: None,
                 url: String::new(),
                 title: String::new(),
                 loading: false,
@@ -3120,7 +3161,7 @@ mod tests {
         }
         assert_eq!(favorite_ids(&store).len(), MAX_VISIBLE_FAVORITES);
         store.relocate_tab(7, true, false, None, None);
-        assert!(!store.tabs.iter().find(|t| t.id == 7).unwrap().favorite);
+        assert!(!store.tabs.iter().find(|t| t.id == 7).unwrap().favorite());
         // Reordering at the cap still works.
         store.relocate_tab(3, true, false, None, Some(1));
         assert_eq!(favorite_ids(&store).len(), MAX_VISIBLE_FAVORITES);
@@ -3128,7 +3169,7 @@ mod tests {
         store.relocate_tab(1, false, false, None, None);
         assert_eq!(store.favorite_count(), 5);
         store.relocate_tab(7, true, false, None, None);
-        assert!(store.tabs.iter().find(|t| t.id == 7).unwrap().favorite);
+        assert!(store.tabs.iter().find(|t| t.id == 7).unwrap().favorite());
     }
 
     #[test]
@@ -3139,11 +3180,8 @@ mod tests {
             store.tabs.push(Tab {
                 id: id as TabId,
                 space: 1,
-                folder: None,
-                pinned: false,
-                favorite: false,
+                placement: Placement::Open,
                 browser: None,
-                saved_url: None,
                 url: String::new(),
                 title: String::new(),
                 loading: false,
@@ -3173,8 +3211,8 @@ mod tests {
                 (3, 2, None, false),
             ],
         ));
-        store.tabs[0].favorite = true;
-        store.tabs[1].favorite = true;
+        store.tabs[0].place(Section::Favorite);
+        store.tabs[1].place(Section::Favorite);
         assert_eq!(store.sidebar_tab_order(2), vec![1, 2, 3]);
     }
 
@@ -3193,8 +3231,7 @@ mod tests {
         ));
         // Favorites are modeled with `favorite: true` in from_saved - override.
         let mut store = store;
-        store.tabs[0].favorite = true;
-        store.tabs[0].pinned = false;
+        store.tabs[0].place(Section::Favorite);
         assert_eq!(store.sidebar_tab_order(1), vec![1, 2, 3, 4]);
     }
 
@@ -3218,7 +3255,7 @@ mod tests {
         let target_idx = from_idx as i32 + 1;
         let tab = store.tab(id).unwrap();
         let before = order.get(target_idx as usize + 1).copied();
-        store.relocate_tab(id, tab.favorite, tab.pinned, tab.folder, before);
+        store.relocate_tab(id, tab.favorite(), tab.pinned(), tab.folder(), before);
         assert_eq!(store.sidebar_tab_order(1), vec![1, 3, 2]);
     }
 }
