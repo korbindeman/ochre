@@ -23,11 +23,11 @@ collect_from_crashes_dir() {
     local f
     for f in "${dir}"/*-panic.json "${dir}"/*-signal.json \
              "${dir}"/*-swift.json "${dir}"/*-system.json; do
-        [[ -f "${f}" ]] && candidates+=("${f}")
+        if [[ -f "${f}" ]]; then candidates+=("${f}"); fi
     done
     if [[ -d "${dir}/ips" ]]; then
         for f in "${dir}/ips"/*.ips; do
-            [[ -f "${f}" ]] && candidates+=("${f}")
+            if [[ -f "${f}" ]]; then candidates+=("${f}"); fi
         done
     fi
 }
@@ -49,7 +49,7 @@ done < <(python3 "${ROOT}/scripts/product.py" ips-prefixes)
 if [[ -d "${diag}" ]]; then
     for prefix in "${ips_prefixes[@]}"; do
         for f in "${diag}/${prefix}"-*.ips "${diag}/Retired/${prefix}"-*.ips; do
-            [[ -f "${f}" ]] && candidates+=("${f}")
+            if [[ -f "${f}" ]]; then candidates+=("${f}"); fi
         done
     done
 fi
