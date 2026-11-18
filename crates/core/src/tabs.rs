@@ -1560,7 +1560,9 @@ pub fn select_adjacent_space(delta: i32) -> bool {
             .find(|s| s.id == id)
             .and_then(|s| s.active)
             .filter(|tid| store.can_be_active_in(id, *tid));
-        let active = remembered.or_else(|| store.first_tab_in(id));
+        // A Space with nothing remembered shows the empty page (Arc); never
+        // auto-open one of its tabs.
+        let active = remembered;
         store.set_space_active(id, active);
         true
     })
@@ -1937,7 +1939,9 @@ pub fn select_space(id: SpaceId) {
             .find(|s| s.id == id)
             .and_then(|s| s.active)
             .filter(|tid| store.can_be_active_in(id, *tid));
-        let active = remembered.or_else(|| store.first_tab_in(id));
+        // A Space with nothing remembered shows the empty page (Arc); never
+        // auto-open one of its tabs.
+        let active = remembered;
         store.set_space_active(id, active);
     });
 }
@@ -1985,8 +1989,7 @@ pub fn delete_space(id: SpaceId) {
                 .iter()
                 .find(|s| s.id == new_space)
                 .and_then(|s| s.active)
-                .filter(|tid| store.tabs.iter().any(|t| t.id == *tid))
-                .or_else(|| store.first_tab_in(new_space));
+                .filter(|tid| store.can_be_active_in(new_space, *tid));
             store.set_space_active(new_space, active);
         }
         store.repair_dangling_actives();
@@ -2067,9 +2070,8 @@ pub fn apply_arc_import(
                 tabs_added += 1;
             }
             if replace {
+                // Every imported Space starts on the empty page (Arc).
                 store.active_space = fav_space;
-                let active = store.first_tab_in(fav_space);
-                store.set_space_active(fav_space, active);
             } else {
                 store.active_space = previous_active;
             }
@@ -2761,6 +2763,35 @@ mod tests {
                 state.spaces.iter().all(|s| s.name != "gone"),
                 "post-shutdown mutation must not be persisted"
             );
+            std::fs::remove_dir_all(&dir).ok();
+        });
+    }
+
+    /// User report 2026-11-18: after an import each Space opened its first
+    /// tab. A Space with nothing remembered shows the empty page (Arc), both
+    /// right after a replace import and when switching to it.
+    #[test]
+    fn spaces_start_on_the_empty_page_after_import_and_switch() {
+        with_global_store_test_lock(|| {
+            let dir = std::env::temp_dir().join("browser-tabs-test-empty-space");
+            std::fs::create_dir_all(&dir).unwrap();
+            test_reset_store(dir.join("session.json").to_str().unwrap());
+            let json = include_bytes!("../tests/fixtures/arc_sidebar_minimal.json");
+            let parsed = crate::import::parse_arc_sidebar(json).unwrap();
+            apply_arc_import(&parsed, true).expect("import applies");
+
+            let actives: Vec<_> =
+                with_store(|s| s.spaces.iter().map(|sp| sp.active).collect()).unwrap();
+            assert!(actives.iter().all(Option::is_none), "{actives:?}");
+            assert_eq!(with_store(|s| s.visible_tab()).unwrap(), None);
+
+            let spaces: Vec<_> = with_store(|s| s.spaces.iter().map(|sp| sp.id).collect()).unwrap();
+            for id in &spaces {
+                select_space(*id);
+                assert_eq!(with_store(|s| s.visible_tab()).unwrap(), None);
+            }
+            assert!(select_adjacent_space(-1) || spaces.len() < 2);
+            assert_eq!(with_store(|s| s.visible_tab()).unwrap(), None);
             std::fs::remove_dir_all(&dir).ok();
         });
     }
