@@ -1,4 +1,4 @@
-//! WKWebView spike for ADR-0071 (backlog P0-5). Throwaway measurement code, not product code.
+//! WKWebView spike for ADR-0072 (backlog P0-5). Throwaway measurement code, not product code.
 //!
 //! Subcommands:
 //! - `convert <list.txt> <out-dir>`: compile EasyList-syntax text to WebKit content-rule JSON with
@@ -169,7 +169,7 @@ fn leaks(results_path: &str, list_path: &str) {
 // ---------- hostname proxy ----------
 
 /// Minimal HTTP CONNECT proxy. Refuses tunnels to blocked hosts (suffix match), relays the rest.
-/// Sees only the hostname: no TLS interception, by design (ADR-0071).
+/// Sees only the hostname: no TLS interception, by design (ADR-0072).
 fn start_proxy(hosts: HashSet<String>, counter: Arc<AtomicUsize>, log: Arc<Mutex<Vec<String>>>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

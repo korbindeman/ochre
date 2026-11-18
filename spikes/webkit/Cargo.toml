@@ -1,4 +1,4 @@
-# Throwaway WKWebView spike for ADR-0071 / backlog P0-5. Its own workspace so the
+# Throwaway WKWebView spike for ADR-0072 / backlog P0-5. Its own workspace so the
 # main build (`just verify`) never compiles it. Delete once the go/no-go is made.
 [package]
 name = "webkit-spike"

@@ -1,4 +1,4 @@
-# ADR-0071: Move to system webviews behind a Rust engine trait, gated on a WKWebView spike
+# ADR-0072: Move to system webviews behind a Rust engine trait, gated on a WKWebView spike
 
 - **Status:** Accepted
 - **Date:** 2026-11-18

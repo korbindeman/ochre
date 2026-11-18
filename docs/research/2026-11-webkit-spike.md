@@ -1,4 +1,4 @@
-# WKWebView spike (P0-5, ADR-0071)
+# WKWebView spike (P0-5, ADR-0072)
 
 Date: 2026-11-18. Code: `spikes/webkit/` (throwaway, own Cargo workspace, not in `just verify`).
 macOS 27.0, unsigned binary, fresh non-persistent website data store, logged out everywhere.
