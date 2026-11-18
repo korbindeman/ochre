@@ -390,3 +390,43 @@ proptest! {
         })?;
     }
 }
+
+/// A URL typed while the visible tab is suspended must not be dropped: the
+/// tab records it, and hydration (which reads `suspended_url`) loads it.
+#[test]
+fn navigating_a_suspended_visible_tab_keeps_the_url() {
+    with_global_store_test_lock(|| {
+        let dir = std::env::temp_dir().join(format!("ochre-tabs-nav-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        test_reset_store(&dir.join("session.json").to_string_lossy());
+        let state = SavedState {
+            active_space: 1,
+            spaces: vec![SavedSpace {
+                id: 1,
+                name: "s".into(),
+                icon: "✨".into(),
+                pinned_expanded: true,
+                active: Some(7),
+            }],
+            folders: vec![],
+            tabs: vec![SavedTab {
+                id: 7,
+                space: 1,
+                folder: None,
+                pinned: true,
+                favorite: false,
+                url: "https://home.example/".into(),
+                title: "home".into(),
+            }],
+        };
+        *STORE.lock().expect("store lock") = Some(TabStore::from_saved(state));
+
+        assert!(navigate_suspended_visible("https://typed.example/"));
+        assert_eq!(suspended_url(7).as_deref(), Some("https://typed.example/"));
+        let tab_ok = with_store(|s| {
+            let t = s.tab(7).expect("tab");
+            !t.nav_pending && t.saved_url.as_deref() == Some("https://home.example/")
+        });
+        assert_eq!(tab_ok, Some(true), "pending served; pinned URL unchanged");
+    });
+}

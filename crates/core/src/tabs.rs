@@ -131,6 +131,11 @@ struct Tab {
     /// Unix millis when the tab was last shown. `0` = never shown (first to
     /// suspend when over the warm-tab budget). Runtime-only - not persisted.
     last_shown_at: i64,
+    /// A navigation that arrived while the tab was suspended (see
+    /// [`navigate_suspended_visible`]). Cleared when the host reads the URL to
+    /// hydrate; if hydration had already started with the old URL, attaching
+    /// the browser loads it. Runtime-only.
+    nav_pending: bool,
 }
 
 impl Tab {
@@ -643,6 +648,7 @@ impl TabStore {
                 can_go_back: false,
                 can_go_forward: false,
                 last_shown_at: 0,
+                nav_pending: false,
             },
         );
         self.active_space = space;
@@ -821,6 +827,7 @@ impl TabStore {
                     can_go_back: false,
                     can_go_forward: false,
                     last_shown_at: 0,
+                    nav_pending: false,
                 }
             })
             .collect();
@@ -1104,6 +1111,7 @@ pub fn register_tab(browser: Browser, url: &str) -> TabId {
             can_go_back: false,
             can_go_forward: false,
             last_shown_at: unix_ms_now(),
+            nav_pending: false,
         });
         store.set_space_active(space, Some(id));
         id
@@ -1114,13 +1122,38 @@ pub fn register_tab(browser: Browser, url: &str) -> TabId {
 /// The saved URL of a suspended tab - what hydration loads. `None` when `id`
 /// is unknown or the tab already has a browser.
 pub fn suspended_url(id: TabId) -> Option<String> {
-    with_store(|store| {
-        store
-            .tab(id)
-            .filter(|t| t.browser.is_none())
-            .map(|t| t.url.clone())
+    with_store_mut(|store| {
+        let tab = store
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == id && t.browser.is_none())?;
+        // The host hydrates with this URL, so a pending navigation is served.
+        tab.nav_pending = false;
+        Some(tab.url.clone())
     })
-    .flatten()
+}
+
+/// Navigate the visible tab while it has no browser (restored, suspended, or
+/// a favorite awaiting hydration). Without this the URL would be dropped:
+/// there is no frame to load it into yet. Records the URL so hydration loads
+/// it, and emits a structure change so the host hydrates. Returns whether the
+/// visible tab was suspended (and the navigation was taken).
+pub fn navigate_suspended_visible(url: &str) -> bool {
+    structural(|store| {
+        let Some(id) = store.visible_tab() else {
+            return false;
+        };
+        match store.tabs.iter_mut().find(|t| t.id == id) {
+            Some(tab) if tab.browser.is_none() => {
+                tab.url = url.to_string();
+                tab.title.clear();
+                tab.nav_pending = true;
+                true
+            }
+            _ => false,
+        }
+    })
+    .unwrap_or(false)
 }
 
 /// Whether `id` is a favorite (resident strip - never auto-suspended, ADR-0032).
@@ -1215,11 +1248,17 @@ pub fn attach_browser(id: TabId, browser: Browser) {
     let attached = structural(|store| match store.tabs.iter_mut().find(|t| t.id == id) {
         Some(tab) if tab.browser.is_none() => {
             tab.browser = Some(browser.clone());
-            true
+            // Hydration began before a navigation arrived: load it now.
+            let pending = std::mem::take(&mut tab.nav_pending).then(|| tab.url.clone());
+            (true, pending)
         }
-        _ => false,
+        _ => (false, None),
     })
-    .unwrap_or(false);
+    .unwrap_or((false, None));
+    let (attached, pending) = attached;
+    if let Some(url) = pending {
+        load_browser_url(&browser, &url);
+    }
     if attached && with_store(|store| store.visible_tab()) != Some(Some(id)) {
         set_visible(&browser, false);
     }
@@ -1981,6 +2020,7 @@ fn push_imported_tab(
             can_go_back: false,
             can_go_forward: false,
             last_shown_at: 0,
+            nav_pending: false,
         },
     );
 }
@@ -3072,6 +3112,7 @@ mod tests {
                 can_go_back: false,
                 can_go_forward: false,
                 last_shown_at: 0,
+                nav_pending: false,
             });
         }
         for id in 1..=6 {
@@ -3109,6 +3150,7 @@ mod tests {
                 can_go_back: false,
                 can_go_forward: false,
                 last_shown_at: 0,
+                nav_pending: false,
             });
         }
         for id in 1..=n {

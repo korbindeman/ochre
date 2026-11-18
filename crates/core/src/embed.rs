@@ -745,6 +745,11 @@ pub fn active_tab_host() -> String {
 /// Load `url` in the primary browser's main frame. Main thread only.
 pub fn navigate(url: &str) {
     let Some(browser) = main_browser() else {
+        // The visible tab may be suspended (no frame yet); hand the URL to the
+        // store so hydration loads it instead of dropping the navigation.
+        if !private_window::focused_is_private() {
+            tabs::navigate_suspended_visible(url);
+        }
         return;
     };
     let Some(frame) = browser.main_frame() else {
