@@ -129,6 +129,13 @@ close-selftest: gen-macos
     ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
     HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --close-selftest
 
+# Little-window regression (P1-45, ADR-0067): opens a little window, checks
+# it stays out of the sidebar, promotes it with Cmd+O semantics (live page kept),
+# and closes another. Throwaway $HOME so it never touches the real session.
+little-selftest: gen-macos
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
+    HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --little-selftest
+
 # ── Dogfood (release) ───────────────────────────────────────────────
 
 # The artifact `dogfood` installs and the alpha-release CI workflow publishes -

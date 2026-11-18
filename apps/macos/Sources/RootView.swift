@@ -413,6 +413,23 @@ final class RootView: NSView {
         syncViewportURLBar()
     }
 
+    /// Take over a little window's tab view (⌘O, P1-45) so its live page moves
+    /// into this window without reloading. Call before the core promotes the
+    /// tab, so the resulting `StructureChanged` finds the view and shows it.
+    func adoptTabView(_ id: Int32, container: CEFContainerView) {
+        container.removeFromSuperview()
+        let bounds = contentArea.bounds
+        let inset = viewportChromeInsetForLayout()
+        CEFContainerView.viewportChromeInset = inset
+        container.clipsToBounds = inset == 0
+        container.autoresizingMask = [.width, .height]
+        container.frame = webContainerFrame(in: bounds, chromeInset: inset)
+        contentArea.addSubview(container, positioned: .below, relativeTo: viewportURLBarHost)
+        container.isHidden = true
+        container.needsLayout = true
+        tabViews[id] = container
+    }
+
     /// Close tab `id`: route it through CEF's close flow, then detach its child
     /// view so teardown completes (CEF finishes destroying a browser only once
     /// its host view is released - mirroring the window-close path). A favorite

@@ -36,6 +36,8 @@ void browser_crash_report_swift_exception(const char *name, const char *reason);
 //   9  TabThemeColorChanged payload = CSS color string (viewport URL bar tint)
 //  10  FullscreenChanged  id = 1 enter / 0 exit - HTML5 content fullscreen;
 //                         Alloy host must enter/exit OS window fullscreen
+//  11  OpenLittleRequested payload = url - open a little window (a favorite's
+//                         link left its site, P1-45)
 
 // Register (or clear, with NULL) the tab/space event callback. Invoked on the
 // main thread. `payload` is owned by the core and valid only during the call.
@@ -46,6 +48,14 @@ void browser_set_event_callback(void (*callback)(int32_t event_type,
 // The whole tree as a JSON snapshot (see crates/ffi browser_structure_json).
 // Heap-allocated by Rust - free with browser_string_free.
 char *browser_structure_json(void);
+
+// Little windows (P1-45): a tab in its own small window, outside the sidebar.
+// Content events arrive on window 0; the snapshot lists them in little_tabs.
+int32_t browser_little_tab_create(void *parent_view, int32_t width, int32_t height,
+                                  const char *url);
+bool browser_little_tab_promote(int32_t id);
+void browser_little_tab_close(int32_t id);
+void browser_set_focused_little(int32_t id);
 
 // Save a friction report (structure, log tail, note, focused surface) and
 // return its directory for the host to add window.png; NULL on failure.
@@ -237,6 +247,8 @@ void browser_private_destroy_window(int32_t window_id);
 bool browser_private_adblock_site_allowlisted(int32_t window_id);
 void browser_private_adblock_set_site_allowlisted(int32_t window_id, bool allowlisted);
 
+bool browser_settings_external_links_little(void);
+void browser_settings_set_external_links_little(bool enabled);
 bool browser_settings_private_vault_enabled(void);
 void browser_settings_set_private_vault_enabled(bool enabled);
 bool browser_settings_private_vault_prompt_seen(void);

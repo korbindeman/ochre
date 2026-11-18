@@ -85,6 +85,9 @@ pub(crate) enum Event {
     /// HTML5 / browser content fullscreen toggled (Alloy style requires the host
     /// to enter/exit OS window fullscreen). `id` is 1 for enter, 0 for exit.
     FullscreenChanged = 10,
+    /// Host opens a little window loading `payload` (P1-45): a link clicked in
+    /// a favorite left the favorite's site, so the favorite stays itself.
+    OpenLittleRequested = 11,
 }
 
 /// Host callback, invoked on the main (UI) thread. `window_id` is `0` for the
@@ -104,6 +107,10 @@ static SESSION_PATH: Mutex<Option<String>> = Mutex::new(None);
 /// every browser through the same handlers as a user tab-close, and persisting
 /// those removals would wipe the session the user expects back next launch.
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+/// The little window that is key, if any (by its tab id). Commands then target
+/// that tab instead of the main window's visible tab. Set by the host on window
+/// focus; cleared whenever another window takes focus.
+static FOCUSED_LITTLE: Mutex<Option<TabId>> = Mutex::new(None);
 
 /// A sidebar section, without the saved URL: the destination a mutation names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -325,11 +332,34 @@ struct TabStore {
     /// single-tab closes record here; bulk removals (space delete / demote) do
     /// not.
     closed: Vec<ClosedTab>,
+    /// Tabs shown in their own little window (P1-45, ADR-0067). Kept out of
+    /// `tabs` so no sidebar, active-tab, suspension or session logic can see
+    /// them; only id lookups and content updates span both lists. Never
+    /// persisted: a little window is a quick look, not part of the session.
+    little: Vec<Tab>,
 }
 
 impl TabStore {
     fn tab(&self, id: TabId) -> Option<&Tab> {
-        self.tabs.iter().find(|t| t.id == id)
+        self.all_tabs().find(|t| t.id == id)
+    }
+
+    /// Sidebar tabs and little-window tabs, for lookups that must find either.
+    fn all_tabs(&self) -> impl Iterator<Item = &Tab> {
+        self.tabs.iter().chain(&self.little)
+    }
+
+    fn all_tabs_mut(&mut self) -> impl Iterator<Item = &mut Tab> {
+        self.tabs.iter_mut().chain(&mut self.little)
+    }
+
+    /// The tab that single-target commands act on: the focused little window's
+    /// tab when one is key, otherwise the active space's visible tab.
+    fn command_tab(&self) -> Option<TabId> {
+        let little = *FOCUSED_LITTLE.lock().expect("focused little lock poisoned");
+        little
+            .filter(|id| self.little.iter().any(|t| t.id == *id))
+            .or_else(|| self.visible_tab())
     }
 
     fn browser_of(&self, id: TabId) -> Option<Browser> {
@@ -339,8 +369,7 @@ impl TabStore {
     /// Translate a CEF browser identifier to its tab, if that browser is a
     /// registered, hydrated tab (popups / DevTools / suspended tabs → `None`).
     fn tab_id_by_cef(&self, cef_id: i32) -> Option<TabId> {
-        self.tabs
-            .iter()
+        self.all_tabs()
             .find(|t| t.browser.as_ref().is_some_and(|b| b.identifier() == cef_id))
             .map(|t| t.id)
     }
@@ -686,6 +715,25 @@ impl TabStore {
     /// tab falls back to the active space / loose-pinned so it always comes back
     /// somewhere reachable; if its old sibling has since moved or closed, it
     /// lands at its section's end.
+    fn promote_little(&mut self, id: TabId) -> bool {
+        let Some(pos) = self.little.iter().position(|t| t.id == id) else {
+            return false;
+        };
+        let mut tab = self.little.remove(pos);
+        let space = self.active_space;
+        tab.space = space;
+        tab.placement = Placement::Open;
+        tab.last_shown_at = unix_ms_now();
+        let index = self
+            .tabs
+            .iter()
+            .rposition(|t| Self::same_section(t, space, Section::Open))
+            .map_or(self.tabs.len(), |p| p + 1);
+        self.tabs.insert(index, tab);
+        self.set_space_active(space, Some(id));
+        true
+    }
+
     fn reopen_closed(&mut self) -> Option<TabId> {
         let closed = self.closed.pop()?;
         let space = if self.spaces.iter().any(|s| s.id == closed.space) {
@@ -821,6 +869,7 @@ impl TabStore {
             next_folder: 1,
             next_tab: 1,
             closed: Vec::new(),
+            little: Vec::new(),
         }
     }
 
@@ -909,6 +958,7 @@ impl TabStore {
             folders,
             spaces,
             closed: Vec::new(),
+            little: Vec::new(),
         };
         // Validate each space's remembered active tab; a dangling one falls back
         // to the space's first tab so a restored space never points at a tab it
@@ -1178,6 +1228,98 @@ pub fn register_tab(browser: Browser, url: &str) -> TabId {
         id
     })
     .unwrap_or(NONE_ID)
+}
+
+// ─── Little windows (P1-45, ADR-0067) ───────────────────────────────────────
+
+/// Add a freshly-created browser as a little-window tab. It joins no Space and
+/// never becomes the active tab; the host shows it in its own window.
+pub fn register_little_tab(browser: Browser, url: &str) -> TabId {
+    structural(|store| {
+        let id = store.next_tab;
+        store.next_tab += 1;
+        let space = store.active_space;
+        store.little.push(Tab {
+            id,
+            space,
+            placement: Placement::Open,
+            browser: Some(browser),
+            url: url.to_string(),
+            title: String::new(),
+            loading: false,
+            can_go_back: false,
+            can_go_forward: false,
+            last_shown_at: unix_ms_now(),
+            nav_pending: false,
+        });
+        id
+    })
+    .unwrap_or(NONE_ID)
+}
+
+/// Move a little-window tab into the main window (⌘O): it becomes the last
+/// open tab of the active Space and that Space's active tab, keeping its live
+/// browser. Returns whether `id` was a little tab.
+pub fn promote_little_tab(id: TabId) -> bool {
+    structural(|store| store.promote_little(id)).unwrap_or(false)
+}
+
+/// Close a little window's tab. Not recorded for ⌘⇧T: reopen restores into the
+/// sidebar, and a quick look the user dismissed does not belong there.
+pub fn close_little_tab(id: TabId) {
+    let browser = structural(|store| {
+        let pos = store.little.iter().position(|t| t.id == id)?;
+        store.little.remove(pos).browser
+    })
+    .flatten();
+    close_browser(browser);
+}
+
+/// Whether a main-frame navigation in browser `cef_id` should open in a little
+/// window instead of replacing the page: the tab is a favorite, the user
+/// clicked (not a redirect or script), and the target leaves the favorite's
+/// site. Arc parity: favorites stay themselves; the link opens in a peek you
+/// can promote to a sidebar tab. UI thread.
+pub fn favorite_link_leaves_site(cef_id: i32, target: &str, user_gesture: bool) -> bool {
+    if !user_gesture {
+        return false;
+    }
+    with_store(|store| {
+        let id = store.tab_id_by_cef(cef_id)?;
+        let tab = store.tab(id)?;
+        let home = tab.saved_url().filter(|_| tab.favorite())?;
+        Some(leaves_site(home, target))
+    })
+    .flatten()
+    .unwrap_or(false)
+}
+
+/// `target` is a web URL on a different registrable domain (eTLD+1) than
+/// `home`. Non-web targets (about:, javascript:, downloads by scheme) stay put.
+fn leaves_site(home: &str, target: &str) -> bool {
+    let lower = target.trim().to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return false;
+    }
+    let site = |url: &str| {
+        crate::vault::lookup::host_from_uri(url)
+            .and_then(|host| crate::vault::lookup::registrable_domain(&host).or(Some(host)))
+    };
+    match (site(home), site(target)) {
+        (Some(a), Some(b)) => a != b,
+        _ => false,
+    }
+}
+
+/// Ask the host to open `url` in a little window.
+pub fn request_open_little(url: &str) {
+    emit(Event::OpenLittleRequested, 0, Some(url));
+}
+
+/// Record which little window is key (`None` when a normal or private window
+/// takes focus).
+pub fn set_focused_little(id: Option<TabId>) {
+    *FOCUSED_LITTLE.lock().expect("focused little lock poisoned") = id;
 }
 
 /// The saved URL of a suspended tab - what hydration loads. `None` when `id`
@@ -1512,7 +1654,11 @@ pub fn note_closed(cef_id: i32) {
     let id = with_store(|store| store.tab_id_by_cef(cef_id)).flatten();
     if let Some(id) = id {
         structural(|store| {
-            store.remove_tab_recording(id);
+            if store.little.iter().any(|t| t.id == id) {
+                store.little.retain(|t| t.id != id);
+            } else {
+                store.remove_tab_recording(id);
+            }
         });
     }
 }
@@ -2195,8 +2341,7 @@ pub fn space_to_folder(space_id: SpaceId) -> FolderId {
 fn note_content(cef_id: i32, mutate: impl FnOnce(&mut Tab) -> bool) -> Option<TabId> {
     with_store_mut(|store| {
         let tab = store
-            .tabs
-            .iter_mut()
+            .all_tabs_mut()
             .find(|t| t.browser.as_ref().is_some_and(|b| b.identifier() == cef_id))?;
         mutate(tab).then_some(tab.id)
     })
@@ -2245,8 +2390,7 @@ pub fn note_theme_color(cef_id: i32, color: &str) {
 pub fn note_load_state(cef_id: i32, loading: bool, can_go_back: bool, can_go_forward: bool) {
     let result = with_store_mut(|store| {
         let tab = store
-            .tabs
-            .iter_mut()
+            .all_tabs_mut()
             .find(|t| t.browser.as_ref().is_some_and(|b| b.identifier() == cef_id))?;
         let loading_changed = tab.loading != loading;
         let nav_changed = tab.can_go_back != can_go_back || tab.can_go_forward != can_go_forward;
@@ -2293,13 +2437,13 @@ fn with_store_mut<R: Default>(f: impl FnOnce(&mut TabStore) -> R) -> R {
 
 /// The active tab's browser handle, backing the active-tab-targeted FFI verbs.
 pub fn active_browser() -> Option<Browser> {
-    with_store(|store| store.visible_tab().and_then(|id| store.browser_of(id))).flatten()
+    with_store(|store| store.command_tab().and_then(|id| store.browser_of(id))).flatten()
 }
 
 /// The visible tab's host, if any.
 pub fn active_tab_host() -> Option<String> {
     with_store(|store| {
-        let id = store.visible_tab()?;
+        let id = store.command_tab()?;
         let url = store.tab(id)?.url.as_str();
         crate::vault::lookup::host_from_uri(url)
     })
@@ -2333,6 +2477,8 @@ pub struct Snapshot {
     pub spaces: Vec<SpaceView>,
     pub folders: Vec<FolderView>,
     pub tabs: Vec<TabView>,
+    /// Tabs shown in little windows (P1-45); not part of any sidebar section.
+    pub little_tabs: Vec<TabView>,
 }
 
 #[derive(Serialize)]
@@ -2371,6 +2517,25 @@ pub struct TabView {
     pub can_go_forward: bool,
 }
 
+impl TabView {
+    fn of(t: &Tab) -> Self {
+        TabView {
+            id: t.id,
+            space: t.space,
+            folder: t.folder(),
+            pinned: t.pinned(),
+            favorite: t.favorite(),
+            saved_url: t.saved_url().map(str::to_string),
+            hydrated: t.browser.is_some(),
+            url: t.url.clone(),
+            title: t.title.clone(),
+            loading: t.loading,
+            can_go_back: t.can_go_back,
+            can_go_forward: t.can_go_forward,
+        }
+    }
+}
+
 /// A full picture of the current structure, for the host to rebuild its tree on
 /// `StructureChanged` (ADR-0005).
 pub fn snapshot() -> Snapshot {
@@ -2398,24 +2563,8 @@ pub fn snapshot() -> Snapshot {
                 expanded: f.expanded,
             })
             .collect(),
-        tabs: store
-            .tabs
-            .iter()
-            .map(|t| TabView {
-                id: t.id,
-                space: t.space,
-                folder: t.folder(),
-                pinned: t.pinned(),
-                favorite: t.favorite(),
-                saved_url: t.saved_url().map(str::to_string),
-                hydrated: t.browser.is_some(),
-                url: t.url.clone(),
-                title: t.title.clone(),
-                loading: t.loading,
-                can_go_back: t.can_go_back,
-                can_go_forward: t.can_go_forward,
-            })
-            .collect(),
+        tabs: store.tabs.iter().map(TabView::of).collect(),
+        little_tabs: store.little.iter().map(TabView::of).collect(),
     })
     .unwrap_or(Snapshot {
         active_space: 0,
@@ -2423,6 +2572,7 @@ pub fn snapshot() -> Snapshot {
         spaces: Vec::new(),
         folders: Vec::new(),
         tabs: Vec::new(),
+        little_tabs: Vec::new(),
     })
 }
 
@@ -2432,6 +2582,48 @@ mod proptests;
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn favorite_links_leave_site_only_across_registrable_domains() {
+        let home = "https://mail.google.com/mail/u/0/";
+        assert!(!leaves_site(home, "https://accounts.google.com/signin"));
+        assert!(!leaves_site(
+            home,
+            "https://mail.google.com/mail/u/0/#inbox"
+        ));
+        assert!(leaves_site(home, "https://example.com/article"));
+        assert!(leaves_site("https://x.com/home", "https://t.co/abc"));
+        assert!(!leaves_site(home, "about:blank"));
+        assert!(!leaves_site(home, "javascript:void(0)"));
+    }
+
+    #[test]
+    fn promoted_little_tab_becomes_the_active_open_tab() {
+        let mut store = TabStore::from_saved(saved(
+            1,
+            vec![(1, Some(1))],
+            vec![],
+            vec![(1, 1, None, false)],
+        ));
+        store.little.push(Tab {
+            id: 9,
+            space: 1,
+            placement: Placement::Open,
+            browser: None,
+            url: "https://example.com/".into(),
+            title: String::new(),
+            loading: false,
+            can_go_back: false,
+            can_go_forward: false,
+            last_shown_at: 0,
+            nav_pending: false,
+        });
+        assert!(store.promote_little(9));
+        assert!(store.little.is_empty());
+        assert_eq!(store.visible_tab(), Some(9));
+        assert_eq!(store.tabs.last().map(|t| t.id), Some(9));
+        assert!(!store.promote_little(9));
+    }
     use super::*;
 
     // These tests exercise the persistence/restore logic on `TabStore` values

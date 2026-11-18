@@ -67,7 +67,7 @@ All via the `justfile` (delegates to `cargo` / `xcodebuild`):
 | Engine-isolation run | `just run-native-shell` |
 | Assemble the standalone bundle | `just bundle` |
 | macOS SwiftUI app (build only) | `just gen-macos` then `just build-macos` |
-| Standing regressions (selftests) | `just focus-selftest` / `just drag-selftest` / `just close-selftest` / `just redirect-selftest` / `just favicon-selftest` |
+| Standing regressions (selftests) | `just focus-selftest` / `just drag-selftest` / `just close-selftest` / `just redirect-selftest` / `just favicon-selftest` / `just little-selftest` |
 | Release build → install to /Applications | `just build-release` / `just dogfood` |
 | Latest local crash payload | `just crash-latest` (path), `--print` (contents), `--list` (newest few) |
 

@@ -106,7 +106,7 @@ fn normalize_host(host: &str) -> String {
 }
 
 /// The registrable domain (eTLD+1) of a host, via the Public Suffix List.
-fn registrable_domain(host: &str) -> Option<String> {
+pub(crate) fn registrable_domain(host: &str) -> Option<String> {
     psl::domain_str(host).map(|d| d.to_lowercase())
 }
 

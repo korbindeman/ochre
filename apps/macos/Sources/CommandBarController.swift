@@ -69,7 +69,9 @@ final class CommandBarController {
         isVisible ? hide() : show()
     }
 
-    func show() {
+    /// Present the bar. `route` says where a commit lands; `initialQuery`
+    /// prefills the field (selected, address-bar style) for editing a URL.
+    func show(route: Navigation.Route = .newTab, initialQuery: String = "") {
         guard let parent = parentWindow else { return }
         let panel = self.panel ?? makePanel()
         self.panel = panel
@@ -79,7 +81,7 @@ final class CommandBarController {
         // ADR-0014), so commits always open a new tab and the field starts empty.
         suggestions.reset()
         suggestions.showZeroState()
-        Navigation.route = .newTab
+        Navigation.route = route
         presentation.isPresented = false
 
         // Host the SwiftUI content pinned top/left/right at a fixed width, with
@@ -94,7 +96,8 @@ final class CommandBarController {
                     self?.hide()
                 },
                 shadowInset: shadowInset,
-                barWidth: barWidth
+                barWidth: barWidth,
+                initialQuery: initialQuery
             ))
         hosting.translatesAutoresizingMaskIntoConstraints = false
         hosting.sizingOptions = [.intrinsicContentSize]

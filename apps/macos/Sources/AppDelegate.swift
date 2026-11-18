@@ -8,6 +8,8 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var normalController: BrowserWindowController!
     private var privateControllers: [Int32: BrowserWindowController] = [:]
+    /// Open little windows (P1-45). Each owns one tab outside the sidebar.
+    private(set) var littleControllers: [LittleWindowController] = []
     private let commandBar = CommandBarController()
 
     private static let windowWidthKey = BrowserProfile.defaultsKey("windowWidth")
@@ -144,13 +146,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openExternalURLs(urls)
     }
 
-    /// Open each web URL in a new tab and bring the window forward.
+    /// Open each web URL in a little window (the default, P1-45) or a new tab,
+    /// and bring it forward.
     private func openExternalURLs(_ urls: [URL]) {
         let webURLs = urls.filter { url in
             guard let scheme = url.scheme?.lowercased() else { return false }
             return scheme == "http" || scheme == "https"
         }
         guard !webURLs.isEmpty else { return }
+        if browser_settings_external_links_little() {
+            for url in webURLs { openLittleWindow(url: url.absoluteString) }
+            return
+        }
 
         NSApp.activate(ignoringOtherApps: true)
         normalController.window?.makeKeyAndOrderFront(nil)
@@ -167,6 +174,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return privateCtl
         }
         return normalController
+    }
+
+    /// The main (normal) window's controller, for little windows promoting a tab.
+    var mainWindowController: BrowserWindowController? {
+        normalController?.window == nil ? nil : normalController
+    }
+
+    /// The little window that is key, if any.
+    private var keyLittle: LittleWindowController? {
+        guard let key = NSApp.keyWindow else { return nil }
+        return littleControllers.first { $0.window === key }
+    }
+
+    /// Open `url` in a new little window over the main window.
+    func openLittleWindow(url: String) {
+        let controller = LittleWindowController { [weak self] closed in
+            self?.littleControllers.removeAll { $0 === closed }
+        }
+        if controller.open(url: url, over: normalController?.window) {
+            littleControllers.append(controller)
+        }
+    }
+
+    /// File > New Little Window (⌥⌘N): the command bar, committing into a new
+    /// little window.
+    @objc func newLittleWindow() {
+        URLBarModel.shared.endEditing()
+        commandBar.parentWindow = NSApp.keyWindow ?? normalController.window
+        commandBar.show(route: .littleWindow)
+    }
+
+    /// File > Open in Main Window (⌘O): move the key little window's page into
+    /// the main window as the active open tab.
+    @objc func openInMainWindow() {
+        keyLittle?.promote()
     }
 
     func didClosePrivateWindow(_ windowId: Int32) {
@@ -266,7 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func toggleCommandBar() {
         URLBarModel.shared.endEditing()
-        commandBar.parentWindow = focusedController.window
+        commandBar.parentWindow = keyLittle?.window ?? focusedController.window
         commandBar.toggle()
     }
 
@@ -275,6 +317,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// With no active tab there is nothing to edit - fall back to the command bar
     /// for a new tab. Reveal a collapsed sidebar first when the chip lives there.
     @objc func editCurrentURL() {
+        // A little window has no sidebar chip: edit its address in the command
+        // bar, prefilled and committing into the same tab.
+        if let little = keyLittle {
+            commandBar.parentWindow = little.window
+            commandBar.show(route: .currentTab, initialQuery: little.tab?.url ?? "")
+            return
+        }
         guard !BrowserState.shared.isSurfaceOpen else { return }
         guard BrowserState.shared.activeTab != nil else {
             commandBar.toggle()
@@ -673,6 +722,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func closeActiveTab(_ sender: Any?) {
+        // A little window holds one tab: ⌘W closes the window and the tab.
+        if let little = keyLittle {
+            little.close()
+            return
+        }
         // An open app-UI surface (History / Passwords / Settings) intercepts ⌘W -
         // close the surface, not the tab or window beneath it.
         if BrowserState.shared.isSurfaceOpen {
@@ -715,7 +769,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Find-in-page (⌘F / ⌘G / ⇧⌘G). The bar owns the search state; these just
     // open it and step matches. Find Next/Previous are gated in validateMenuItem.
-    @objc func performFind() { findBar.show() }
+    @objc func performFind() {
+        findBar.parentWindow = keyLittle?.window ?? focusedController.window
+        findBar.show()
+    }
     @objc func findNext() { findBar.findNext() }
     @objc func findPrevious() { findBar.findPrevious() }
 
@@ -813,6 +870,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Grey out Back/Forward when there's no history to move to; everything else
     // is always available.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        // In a little window the sidebar's tab actions would hit the main
+        // window's tab instead; only its own actions apply.
+        let littleKey = keyLittle != nil
+        switch menuItem.action {
+        case #selector(openInMainWindow): return littleKey
+        case #selector(toggleActiveTabPinned), #selector(toggleActiveTabFavorite),
+            #selector(replaceActivePinnedURL), #selector(moveTabUp), #selector(moveTabDown),
+            #selector(togglePinnedSection):
+            if littleKey { return false }
+        default: break
+        }
         switch menuItem.action {
         case #selector(goBack): return browser_can_go_back()
         case #selector(goForward): return browser_can_go_forward()

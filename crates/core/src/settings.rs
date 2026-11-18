@@ -73,6 +73,10 @@ struct SettingsState {
     /// Whether the first-run private-window password prompt has been shown.
     #[serde(default)]
     private_vault_prompt_seen: bool,
+    /// Whether links opened from other apps land in a little window instead of
+    /// a sidebar tab (P1-45, Arc default: on).
+    #[serde(default = "default_true")]
+    external_links_little: bool,
     /// Legacy timed setting - read for migration only.
     #[serde(default, skip_serializing)]
     vault_lock_timeout_secs: Option<u64>,
@@ -85,6 +89,7 @@ impl Default for SettingsState {
             vault_unlock_boot_secs: 0,
             private_vault_enabled: false,
             private_vault_prompt_seen: false,
+            external_links_little: true,
             vault_lock_timeout_secs: None,
         }
     }
@@ -95,8 +100,13 @@ static STATE: Mutex<SettingsState> = Mutex::new(SettingsState {
     vault_unlock_boot_secs: 0,
     private_vault_enabled: false,
     private_vault_prompt_seen: false,
+    external_links_little: true,
     vault_lock_timeout_secs: None,
 });
+
+fn default_true() -> bool {
+    true
+}
 
 /// Last system boot time the host forwarded (Unix seconds).
 static SYSTEM_BOOT_SECS: AtomicU64 = AtomicU64::new(0);
@@ -267,6 +277,25 @@ fn save() {
     }
 }
 
+/// Do links from other apps open in a little window (P1-45)?
+pub fn external_links_little() -> bool {
+    STATE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .external_links_little
+}
+
+pub fn set_external_links_little(enabled: bool) {
+    {
+        let mut state = STATE.lock().unwrap_or_else(|p| p.into_inner());
+        if state.external_links_little == enabled {
+            return;
+        }
+        state.external_links_little = enabled;
+    }
+    save();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +328,7 @@ mod tests {
             vault_unlock_boot_secs: 0,
             private_vault_enabled: false,
             private_vault_prompt_seen: false,
+            external_links_little: true,
             vault_lock_timeout_secs: None,
         };
         let back: SettingsState =
@@ -311,12 +341,20 @@ mod tests {
     }
 
     #[test]
+    fn external_links_default_to_little_windows() {
+        let old: SettingsState =
+            serde_json::from_str(r#"{"vault_auto_lock":"on_restart"}"#).unwrap();
+        assert!(old.external_links_little);
+    }
+
+    #[test]
     fn timed_setting_migrates_to_event_policy() {
         let mut state = SettingsState {
             vault_auto_lock: VaultAutoLock::OnBrowserClose,
             vault_unlock_boot_secs: 0,
             private_vault_enabled: false,
             private_vault_prompt_seen: false,
+            external_links_little: true,
             vault_lock_timeout_secs: Some(300),
         };
         migrate_timed_auto_lock(&mut state);
@@ -327,6 +365,7 @@ mod tests {
             vault_unlock_boot_secs: 0,
             private_vault_enabled: false,
             private_vault_prompt_seen: false,
+            external_links_little: true,
             vault_lock_timeout_secs: Some(0),
         };
         migrate_timed_auto_lock(&mut never);

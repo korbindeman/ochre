@@ -324,6 +324,7 @@ pub fn set_event_callback(callback: Option<EventCallback>) {
 /// Tell the core which window owns keyboard/nav commands (`0` = normal).
 pub fn set_focused_window(window_id: WindowId) {
     private_window::set_focused_window(window_id);
+    tabs::set_focused_little(None);
 }
 
 /// Create a windowed Alloy tab as a child of `parent_view`, register it in the
@@ -344,6 +345,41 @@ pub unsafe fn create_tab(parent_view: *mut c_void, width: i32, height: i32, url:
         return -1;
     };
     tabs::register_tab(browser, url)
+}
+
+/// Create a little-window tab (P1-45) rendering into `parent_view`. It joins
+/// no Space; [`promote_little_tab`] later moves it into the main window.
+/// Returns the tab id or `-1`.
+///
+/// # Safety
+/// `parent_view` must be a valid `NSView` pointer that outlives the tab.
+pub unsafe fn create_little_tab(
+    parent_view: *mut c_void,
+    width: i32,
+    height: i32,
+    url: &str,
+) -> TabId {
+    let Some(browser) = create_tab_browser(parent_view, width, height, url) else {
+        return -1;
+    };
+    tabs::register_little_tab(browser, url)
+}
+
+/// Move little-window tab `id` into the main window as the active open tab.
+pub fn promote_little_tab(id: TabId) -> bool {
+    tabs::promote_little_tab(id)
+}
+
+/// Close little-window tab `id` and tear down its browser.
+pub fn close_little_tab(id: TabId) {
+    tabs::close_little_tab(id);
+}
+
+/// A little window became key (`Some`), or another window did (`None`):
+/// single-target commands follow it.
+pub fn set_focused_little(id: Option<TabId>) {
+    private_window::set_focused_window(private_window::NORMAL_WINDOW_ID);
+    tabs::set_focused_little(id);
 }
 
 /// Hydrate a suspended tab restored from the persisted session (ADR-0013):

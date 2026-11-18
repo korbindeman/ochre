@@ -28,6 +28,8 @@ struct CommandBarView: View {
     var shadowInset: CGFloat
     /// Visible width of the glass surface (matches `CommandBarController.barWidth`).
     var barWidth: CGFloat
+    /// Prefilled field text (selected on focus), e.g. the URL being edited.
+    var initialQuery: String = ""
 
     @Namespace private var glassNamespace
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -82,7 +84,12 @@ struct CommandBarView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 20, weight: .regular))
                 .foregroundStyle(.secondary)
-            AutocompleteField(controller: controller, font: .system(size: 22))
+            AutocompleteField(
+                controller: controller,
+                initialQuery: initialQuery,
+                font: .system(size: 22),
+                selectAllOnFocus: !initialQuery.isEmpty
+            )
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, minHeight: 60)

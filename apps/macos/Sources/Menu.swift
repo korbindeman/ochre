@@ -108,10 +108,16 @@ enum MainMenu {
             keyEquivalent: "n")
         newPrivate.keyEquivalentModifierMask = [.command, .shift]
         target(newPrivate, actions)
+        // Little windows (P1-45, ADR-0067): ⌥⌘N as in Arc; New Space moved to ⌃⌘N.
+        let newLittle = menu.addItem(
+            withTitle: "New Little Window",
+            action: #selector(AppDelegate.newLittleWindow), keyEquivalent: "n")
+        newLittle.keyEquivalentModifierMask = [.command, .option]
+        target(newLittle, actions)
         let newSpace = menu.addItem(
             withTitle: "New Space",
             action: #selector(AppDelegate.newSpace), keyEquivalent: "n")
-        newSpace.keyEquivalentModifierMask = [.command, .option]
+        newSpace.keyEquivalentModifierMask = [.command, .control]
         target(newSpace, actions)
         target(
             menu.addItem(
@@ -129,6 +135,10 @@ enum MainMenu {
             menu.addItem(
                 withTitle: "Open Location…",
                 action: #selector(AppDelegate.editCurrentURL), keyEquivalent: "l"), actions)
+        target(
+            menu.addItem(
+                withTitle: "Open in Main Window",
+                action: #selector(AppDelegate.openInMainWindow), keyEquivalent: "o"), actions)
         target(
             menu.addItem(
                 withTitle: "Import from Arc…",

@@ -16,6 +16,14 @@ use super::*;
 /// rule, worded so a failing case says what went wrong.
 fn check_invariants(store: &TabStore) -> Result<(), String> {
     let mut ids = HashSet::new();
+    for t in &store.little {
+        if !ids.insert(t.id) {
+            return Err(format!("duplicate little tab id {}", t.id));
+        }
+        if store.spaces.iter().any(|s| s.active == Some(t.id)) {
+            return Err(format!("little tab {} is a space's active tab", t.id));
+        }
+    }
     for t in &store.tabs {
         if !ids.insert(t.id) {
             return Err(format!("duplicate tab id {}", t.id));
@@ -152,6 +160,10 @@ enum Op {
     FolderToSpace(usize),
     SpaceToFolder(usize),
     Navigate(usize, u8),
+    /// What `register_little_tab` does, minus the CEF browser.
+    OpenLittle,
+    PromoteLittle(usize),
+    CloseLittle(usize),
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -188,6 +200,9 @@ fn op() -> impl Strategy<Value = Op> {
         i().prop_map(Op::FolderToSpace),
         i().prop_map(Op::SpaceToFolder),
         (i(), 0u8..4).prop_map(|(a, n)| Op::Navigate(a, n)),
+        Just(Op::OpenLittle),
+        i().prop_map(Op::PromoteLittle),
+        i().prop_map(Op::CloseLittle),
     ]
 }
 
@@ -259,6 +274,9 @@ fn pick<T: Copy>(items: &[T], i: usize) -> Option<T> {
 
 fn tab_ids() -> Vec<TabId> {
     with_store(|s| s.tabs.iter().map(|t| t.id).collect()).unwrap_or_default()
+}
+fn little_ids() -> Vec<TabId> {
+    with_store(|s| s.little.iter().map(|t| t.id).collect()).unwrap_or_default()
 }
 fn folder_ids() -> Vec<FolderId> {
     with_store(|s| s.folders.iter().map(|f| f.id).collect()).unwrap_or_default()
@@ -344,6 +362,35 @@ fn apply(op: &Op) {
                         tab.url = format!("https://nav{n}.example/");
                     }
                 });
+            }
+        }
+        Op::OpenLittle => {
+            structural(|s| {
+                let id = s.next_tab;
+                s.next_tab += 1;
+                s.little.push(Tab {
+                    id,
+                    space: s.active_space,
+                    placement: Placement::Open,
+                    browser: None,
+                    url: format!("https://little{id}.example/"),
+                    title: String::new(),
+                    loading: false,
+                    can_go_back: false,
+                    can_go_forward: false,
+                    last_shown_at: 0,
+                    nav_pending: false,
+                });
+            });
+        }
+        Op::PromoteLittle(i) => {
+            if let Some(t) = pick(&little_ids(), *i) {
+                promote_little_tab(t);
+            }
+        }
+        Op::CloseLittle(i) => {
+            if let Some(t) = pick(&little_ids(), *i) {
+                close_little_tab(t);
             }
         }
     }

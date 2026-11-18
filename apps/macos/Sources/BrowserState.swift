@@ -98,6 +98,9 @@ final class BrowserState: ObservableObject {
     let isPrivate: Bool
 
     @Published var tabs: [TabItem] = []
+    /// Tabs shown in little windows (P1-45). Never in a sidebar section; the
+    /// little window's toolbar reads its tab from here.
+    @Published var littleTabs: [TabItem] = []
     @Published var spaces: [SpaceItem] = []
     @Published var folders: [FolderItem] = []
     @Published var activeTabId: Int32?
@@ -310,6 +313,9 @@ final class BrowserState: ObservableObject {
             (NSApp.delegate as? AppDelegate)?.openTab(url: url, windowId: windowId)
         case 8:  // TabSuspended - background discard (ADR-0033)
             suspendedTabId = id
+        case 11:  // OpenLittleRequested - payload = url (a favorite's link left its site)
+            guard let url = payload else { return }
+            (NSApp.delegate as? AppDelegate)?.openLittleWindow(url: url)
         case 10:  // FullscreenChanged - id = 1 enter / 0 exit (HTML5 content)
             let want = id != 0
             guard isContentFullscreen != want else { return }
@@ -319,9 +325,12 @@ final class BrowserState: ObservableObject {
     }
 
     private func patch(_ id: Int32, _ mutate: (inout TabItem) -> Void) {
-        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
-        mutate(&tabs[index])
-        tabs = tabs
+        if let index = tabs.firstIndex(where: { $0.id == id }) {
+            mutate(&tabs[index])
+            tabs = tabs
+        } else if let index = littleTabs.firstIndex(where: { $0.id == id }) {
+            mutate(&littleTabs[index])
+        }
     }
 
     /// Rebuild the tree from the core's JSON snapshot, preserving per-tab UI state
@@ -336,8 +345,10 @@ final class BrowserState: ObservableObject {
         let data = Data(String(cString: raw).utf8)
         guard let snap = try? Self.decoder.decode(Snapshot.self, from: data) else { return }
 
-        let priorFavicon = Dictionary(tabs.map { ($0.id, $0.faviconVersion) }) { a, _ in a }
-        let newTabs = snap.tabs.map { dto in
+        let priorFavicon = Dictionary(
+            (tabs + littleTabs).map { ($0.id, $0.faviconVersion) }
+        ) { a, _ in a }
+        let item = { (dto: Snapshot.TabDTO) in
             TabItem(
                 id: dto.id,
                 space: dto.space,
@@ -353,6 +364,8 @@ final class BrowserState: ObservableObject {
                 faviconVersion: priorFavicon[dto.id] ?? 0
             )
         }
+        let newTabs = snap.tabs.map(item)
+        littleTabs = snap.littleTabs.map(item)
         let newSpaces = snap.spaces.map {
             SpaceItem(
                 id: $0.id, name: $0.name, icon: $0.icon,
@@ -721,6 +734,7 @@ private struct Snapshot: Decodable {
     let spaces: [SpaceDTO]
     let folders: [FolderDTO]
     let tabs: [TabDTO]
+    let littleTabs: [TabDTO]
 
     struct SpaceDTO: Decodable {
         let id: Int32
@@ -784,7 +798,8 @@ func browserTabEventCallback(
 /// ⌘T / empty state opens a **new tab**; ⌘L / the URL chip edits the **current
 /// tab** in place. URLs load directly; anything else becomes a web search.
 enum Navigation {
-    enum Route { case newTab, currentTab }
+    /// `littleWindow`: open the commit in a new little window (P1-45).
+    enum Route { case newTab, currentTab, littleWindow }
 
     /// Where the next commit lands - set by the command bar before it opens.
     static var route: Route = .newTab
@@ -800,6 +815,8 @@ enum Navigation {
                     url: url, windowId: BrowserState.current.windowId)
             case .currentTab:
                 url.withCString { browser_navigate($0) }
+            case .littleWindow:
+                (NSApp.delegate as? AppDelegate)?.openLittleWindow(url: url)
             }
         }
     }

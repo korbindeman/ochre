@@ -66,6 +66,17 @@ if CommandLine.arguments.contains("--close-selftest") {
     }
 }
 
+// Little windows (P1-45): open outside the sidebar, ⌘O keeps the live page,
+// close removes the tab. Exits non-zero on any failure.
+var littleSelfTest: LittleSelfTest?
+if CommandLine.arguments.contains("--little-selftest") {
+    littleSelfTest = MainActor.assumeIsolated {
+        let test = LittleSelfTest(app: delegate)
+        DispatchQueue.main.async { MainActor.assumeIsolated { test.run() } }
+        return test
+    }
+}
+
 // New-tab create path: direct openTab + Navigation.open (.newTab) + ⌘T commit.
 var newTabSelfTest: NewTabSelfTest?
 if CommandLine.arguments.contains("--newtab-selftest") {

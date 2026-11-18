@@ -181,6 +181,45 @@ pub extern "C" fn browser_structure_json() -> *mut c_char {
         .unwrap_or(std::ptr::null_mut())
 }
 
+/// Create a little-window tab (P1-45) rendering into `parent_view`, loading
+/// `url`. Returns its tab id (`>= 0`) or `-1`. It is not in any sidebar section;
+/// its content events arrive on window 0 and the snapshot lists it under
+/// `little_tabs`. Main thread only.
+///
+/// # Safety
+/// `parent_view` must be a valid `NSView*` that outlives the tab; `url` must be
+/// NULL or a valid NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_little_tab_create(
+    parent_view: *mut c_void,
+    width: i32,
+    height: i32,
+    url: *const c_char,
+) -> i32 {
+    browser_core::embed::create_little_tab(parent_view, width, height, &cstr(url))
+}
+
+/// Move little-window tab `id` into the main window as the active open tab of
+/// the current Space, keeping its live page. The host moves the tab's view into
+/// the main window first. Returns whether `id` was a little tab.
+#[no_mangle]
+pub extern "C" fn browser_little_tab_promote(id: i32) -> bool {
+    browser_core::embed::promote_little_tab(id)
+}
+
+/// Close little-window tab `id`. The host detaches its view afterwards.
+#[no_mangle]
+pub extern "C" fn browser_little_tab_close(id: i32) {
+    browser_core::embed::close_little_tab(id);
+}
+
+/// The little window showing tab `id` became key (`id < 0`: none). Commands
+/// such as reload, back, find and zoom then act on that tab.
+#[no_mangle]
+pub extern "C" fn browser_set_focused_little(id: i32) {
+    browser_core::embed::set_focused_little((id >= 0).then_some(id));
+}
+
 /// Save a friction report (P1-44): the structure, diagnostics log tail, the
 /// user's `note`, and the `focused` surface, into a new directory under the
 /// support folder. Returns that directory so the host can add `window.png`,
@@ -747,6 +786,17 @@ pub extern "C" fn browser_private_adblock_set_site_allowlisted(window_id: i32, a
         return;
     }
     browser_core::embed::private_set_site_allowlisted(window_id, &host, allowlisted);
+}
+
+/// Whether links from other apps open in a little window (P1-45).
+#[no_mangle]
+pub extern "C" fn browser_settings_external_links_little() -> bool {
+    browser_core::settings::external_links_little()
+}
+
+#[no_mangle]
+pub extern "C" fn browser_settings_set_external_links_little(enabled: bool) {
+    browser_core::settings::set_external_links_little(enabled);
 }
 
 #[no_mangle]

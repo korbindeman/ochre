@@ -168,6 +168,15 @@ private struct GeneralPane: View {
                         .foregroundStyle(.green)
                 }
             }
+            SettingsToggle(
+                title: "Open links from other apps in a little window",
+                isOn: $model.externalLinksLittle
+            ) {
+                model.setExternalLinksLittle($0)
+            }
+            SettingsFootnote(
+                "Press ⌘O in the little window to move the page into your sidebar."
+            )
         }
         SettingsGroup("Search") {
             SettingsControlLabel("Default search engine")
@@ -603,6 +612,7 @@ final class SettingsModel: ObservableObject {
     @Published var isDefaultBrowser = false
     @Published var addressBarPlacement: AddressBarPlacement = .sidebar
     @Published var sidebarPageTintEnabled = false
+    @Published var externalLinksLittle = true
     @Published var arcSidebarURL: URL?
     @Published var arcPreview: ArcImportFlow.Preview?
     @Published var arcImportStatus: String?
@@ -642,6 +652,7 @@ final class SettingsModel: ObservableObject {
         addressBarPlacement =
             BrowserState.shared.isViewportURLBarEnabled ? .page : .sidebar
         sidebarPageTintEnabled = BrowserState.shared.isSidebarPageTintEnabled
+        externalLinksLittle = browser_settings_external_links_little()
         reloadArcImport()
     }
 
@@ -698,6 +709,11 @@ final class SettingsModel: ObservableObject {
             arcImportStatus =
                 ArcImportFlow.importSidebarError(at: url, replace: replace) ?? "Import failed."
         }
+    }
+
+    func setExternalLinksLittle(_ enabled: Bool) {
+        browser_settings_set_external_links_little(enabled)
+        externalLinksLittle = enabled
     }
 
     func setSidebarPageTintEnabled(_ enabled: Bool) {

@@ -57,7 +57,9 @@ final class FindBarController {
         ))
 
         positionPanel()
-        if panel.parent == nil {
+        // The bar follows the window it was opened in (main or little window).
+        if panel.parent !== parent {
+            panel.parent?.removeChildWindow(panel)
             parent.addChildWindow(panel, ordered: .above)
         }
         installKeyMonitor()

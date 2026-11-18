@@ -416,6 +416,44 @@ wrap_request_handler! {
         ) -> Option<ResourceRequestHandler> {
             Some(BrowserResourceRequestHandler::new())
         }
+
+        /// A clicked link in a favorite that leaves its site opens in a little
+        /// window instead, so the favorite stays itself (P1-45, Arc parity).
+        fn on_before_browse(
+            &self,
+            browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            request: Option<&mut Request>,
+            user_gesture: ::std::os::raw::c_int,
+            is_redirect: ::std::os::raw::c_int,
+        ) -> ::std::os::raw::c_int {
+            let (Some(browser), Some(frame), Some(request)) = (browser, frame, request) else {
+                return 0;
+            };
+            if frame.is_main() == 0 || is_redirect != 0 {
+                return 0;
+            }
+            let url = CefString::from(&request.url()).to_string();
+            if !tabs::favorite_link_leaves_site(browser.identifier(), &url, user_gesture != 0) {
+                return 0;
+            }
+            // Never re-enter the host from inside a CEF navigation callback.
+            let mut task = OpenLittleTask::new(url);
+            post_task(ThreadId::UI, Some(&mut task));
+            1
+        }
+    }
+}
+
+wrap_task! {
+    struct OpenLittleTask {
+        url: String,
+    }
+
+    impl Task {
+        fn execute(&self) {
+            tabs::request_open_little(&self.url);
+        }
     }
 }
 

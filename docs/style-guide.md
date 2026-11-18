@@ -132,7 +132,9 @@ Everything is reachable from the keyboard; the command bar is the hub. Shortcuts
 | Open command bar (new tab) | `Cmd+T` |
 | Edit current tab's URL (inline sidebar chip) | `Cmd+L` |
 | New private window | `Cmd+Shift+N` |
-| New space | `Cmd+Opt+N` |
+| New little window (one tab, outside the sidebar) | `Cmd+Opt+N` |
+| Move little window's page into the main window | `Cmd+O` |
+| New space | `Cmd+Ctrl+N` |
 | Close tab | `Cmd+W` |
 | Close window | `Cmd+Shift+W` |
 | Reopen last closed tab | `Cmd+Shift+T` |
