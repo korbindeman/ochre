@@ -167,6 +167,13 @@ emdash-check:
         exit 1; \
     fi
 
+# Privacy usage strings must sit in the main app's Info.plist: TCC attributes a CEF
+# helper's camera/mic/Bluetooth/location request to the app and aborts without them.
+privacy-check:
+    @for k in NSMicrophoneUsageDescription NSCameraUsageDescription NSBluetoothAlwaysUsageDescription NSLocationUsageDescription NSLocationWhenInUseUsageDescription; do \
+        grep -q "^        $k: " apps/macos/project.yml || { echo "error: $k missing from apps/macos/project.yml info.properties (TCC aborts the app without it)"; exit 1; }; \
+    done
+
 # Verify: build + test + lint + style checks, the full CI-style check.
-verify: build test lint fmt-check emdash-check product-check
-    @echo "✓ Workspace verified: build, test, lint, fmt-check, emdash-check, product-check all passed."
+verify: build test lint fmt-check emdash-check product-check privacy-check
+    @echo "✓ Workspace verified: build, test, lint, fmt-check, emdash-check, product-check, privacy-check all passed."

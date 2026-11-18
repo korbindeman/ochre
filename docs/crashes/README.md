@@ -71,3 +71,4 @@ When a crash is understood and fixed:
 | [0002](0002-isarepeat-on-non-key-event.md) | `isARepeat` asked of a non-key `NSApp.currentEvent` aborts ⌘W empty-canvas close | Fixed | 2026-07-09 |
 | [0003](0003-passkey-webauthn-unentitled-abort.md) | Passkey / WebAuthn SIGABRT without platform authenticator entitlements | Fixed | 2026-08-14 |
 | [0004](0004-adhoc-restricted-entitlements-sigkill.md) | Ad-hoc signature with restricted entitlements SIGKILLs at exec | Fixed | 2026-08-17 |
+| [0005](0005-tcc-missing-usage-description-audio-helper.md) | Audio helper SIGABRT: app Info.plist lacked privacy usage strings (TCC) | Fixed | 2026-11-18 |
