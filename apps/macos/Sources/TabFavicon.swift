@@ -14,9 +14,11 @@ struct TabFavicon: View {
     var body: some View {
         Group {
             if tab.isLoading {
+                // The small native spinner is 16x16 pt; scale it to the icon's
+                // size so loading never changes the glyph's footprint.
                 ProgressView()
                     .controlSize(.small)
-                    .scaleEffect(0.6)
+                    .scaleEffect(size / 16)
             } else if let image {
                 Image(nsImage: image)
                     .resizable()
@@ -27,6 +29,7 @@ struct TabFavicon: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .frame(width: size, height: size)
         .task(id: "\(tab.host)#\(tab.faviconVersion)") {
             image =
                 tab.host.isEmpty
