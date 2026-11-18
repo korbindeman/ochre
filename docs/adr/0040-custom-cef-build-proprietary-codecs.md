@@ -1,6 +1,6 @@
 # ADR-0040: Custom CEF build with proprietary codecs (revises the rm §3.2 OS-decoder posture)
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0074
 - **Date:** 2026-07-09
 
 ## Context

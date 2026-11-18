@@ -43,7 +43,7 @@ use std::os::raw::c_char;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use cef::{Browser, CefString, ImplBrowser, ImplBrowserHost, ImplFrame};
+use crate::engine::Browser;
 use serde::Serialize;
 
 use crate::session::{self, SavedFolder, SavedSpace, SavedState, SavedTab};
@@ -1150,21 +1150,10 @@ fn structural<R>(f: impl FnOnce(&mut TabStore) -> R) -> Option<R> {
     Some(result)
 }
 
-/// Tell CEF whether a tab's browser is on-screen. Backgrounded tabs stop
-/// painting (Chromium won't render a hidden browser), which saves work and
-/// sidesteps the occlusion-suspend "blank tab" trap. The visible tab also takes
-/// keyboard focus. Safe on an invalid/closing browser (`host()` returns `None`).
+/// Show or hide a tab's web view. The visible tab also takes keyboard focus.
+/// A no-op for a closed view.
 fn set_visible(browser: &Browser, visible: bool) {
-    let Some(host) = browser.host() else {
-        return;
-    };
-    host.was_hidden(i32::from(!visible));
-    if visible {
-        // P0-1: host-driven focus request on tab-switch. The paired
-        // `[focus] cef on_got_focus` (client.rs) confirms CEF honored it.
-        eprintln!("[focus] host set_focus tab={}", browser.identifier());
-        host.set_focus(1);
-    }
+    browser.set_visible(visible);
 }
 
 /// Push one event to the host. A no-op when no callback is registered.
@@ -2465,11 +2454,10 @@ pub fn active_tab_host() -> Option<String> {
     .flatten()
 }
 
-/// Close a browser through CEF's (force) close flow, tolerating `None` / an
-/// already-invalid host.
+/// Close a tab's web view, tolerating `None` / an already-closed view.
 fn close_browser(browser: Option<Browser>) {
-    if let Some(host) = browser.and_then(|b| b.host()) {
-        host.close_browser(1);
+    if let Some(browser) = browser {
+        browser.close();
     }
 }
 
@@ -2477,10 +2465,7 @@ fn close_browser(browser: Option<Browser>) {
 /// Favorite close uses this after deselection, when the browser is hidden but
 /// must remain warm at its pinned URL.
 fn load_browser_url(browser: &Browser, url: &str) {
-    let Some(frame) = browser.main_frame() else {
-        return;
-    };
-    frame.load_url(Some(&CefString::from(url)));
+    browser.load_url(url);
 }
 
 // ─── Snapshot (ADR-0005) ───────────────────────────────────────────────────

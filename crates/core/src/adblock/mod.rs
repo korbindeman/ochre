@@ -29,7 +29,7 @@ static ENGINE: OnceLock<RwLock<Arc<Engine>>> = OnceLock::new();
 static STATE: Mutex<AdblockState> = Mutex::new(AdblockState::new());
 
 /// Per-tab count of requests blocked since the tab's last main-frame
-/// navigation, keyed by CEF browser identifier. Feeds the sidebar shield.
+/// navigation, keyed by web view id. Feeds the sidebar shield.
 static COUNTS: OnceLock<Mutex<HashMap<i32, u64>>> = OnceLock::new();
 
 /// Persisted `adblock.json` - the global switch and the allowlist of
@@ -121,6 +121,7 @@ pub fn init_demo(extra_rules: &str) {
 /// Build an engine from filter-list text and install it - setting it on first
 /// call (startup) or hot-swapping it (a background list refresh) thereafter.
 fn install_engine(rules: &str) {
+    crate::engine::content_rules::set_lists(rules);
     let engine = Arc::new(engine::build(rules));
     match ENGINE.get() {
         Some(lock) => *lock.write().unwrap_or_else(|p| p.into_inner()) = engine,
@@ -250,6 +251,7 @@ pub fn set_enabled(enabled: bool) {
         state.enabled = enabled;
     }
     save();
+    crate::main_thread::post(crate::engine::content_rules::refresh);
 }
 
 /// Is blocking turned **off** for this host's site (registrable domain)?
@@ -263,7 +265,13 @@ pub fn set_site_allowlisted(host: &str, allowlisted: bool) {
     let changed = state().set_allowlisted(allowlist_key(host), allowlisted);
     if changed {
         save();
+        crate::main_thread::post(crate::engine::content_rules::refresh);
     }
+}
+
+/// The sites (registrable domains) blocking is turned off for.
+pub fn allowlisted_sites() -> Vec<String> {
+    state().allowlist.clone()
 }
 
 // ─── Persistence (mirrors `cdp.rs`) ──────────────────────────────────────────

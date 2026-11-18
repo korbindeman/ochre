@@ -17,19 +17,16 @@ authors = ["Native-Chrome Browser Team"]
 
 [workspace.dependencies]
 # Shared dep versions go here so crates reference them with `dep.workspace = true`.
-# CEF bindings (tauri-apps/cef-rs) - published on crates.io.
-# The -sys crate downloads the prebuilt CEF binary distribution and builds
-# libcef_dll_wrapper via cmake at compile time.
-cef = { version = "148.4.0", default-features = false, features = ["sandbox", "build-util"] }
-cef-dll-sys = "148.4.0"
-
 # macOS Objective-C interop
 objc2 = "0.6.3"
 objc2-foundation = "0.3.2"
 objc2-app-kit = { version = "0.3.2", default-features = false }
+# The web engine: WKWebView (ADR-0072). Default features = the full WebKit API.
+objc2-web-kit = "0.3.2"
+block2 = "0.6"
 
 # History/favicon store. `bundled` compiles SQLite from source (the C toolchain
-# is already present for CEF), so there is no system-libsqlite dependency.
+# is already present), so there is no system-libsqlite dependency.
 rusqlite = { version = "0.40", features = ["bundled"] }
 # Serialization for the FFI suggestion payload.
 serde = { version = "1", features = ["derive"] }
@@ -73,14 +70,14 @@ psl = "2"
 # Correct RFC 4180 CSV parsing for credential import - a hand-rolled `split(',')`
 # would corrupt passwords containing commas/quotes/newlines (ADR-0016 / spec §10).
 csv = "1"
-# Native request-path ad-blocking (Brave's adblock-rust; powers Brave/Firefox) -
-# spec §11 / ADR-0019. `embedded-domain-resolver` off: we register a `psl`-backed
+# Ad-blocking (Brave's adblock-rust). Its lists compile to WebKit content rules
+# (`content-blocking`, ADR-0072); the engine itself serves cosmetic CSS. `embedded-domain-resolver` off: we register a `psl`-backed
 # resolver (reusing the crate already compiled for the vault) instead of pulling
 # in adblock's separate `addr` public-suffix crate. `single-thread` off: the engine
-# is shared across the CEF IO thread and a background list-refresh thread behind
+# is shared across the main thread and a background list-refresh thread behind
 # `RwLock<Arc<Engine>>`, which requires `Engine: Send + Sync` (asserted by the crate
 # only when `single-thread` is disabled).
-adblock = { version = "0.12.5", default-features = false, features = ["full-regex-handling"] }
+adblock = { version = "0.12.5", default-features = false, features = ["full-regex-handling", "content-blocking"] }
 
 [profile.release]
 lto = "thin"

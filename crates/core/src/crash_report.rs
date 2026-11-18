@@ -111,21 +111,10 @@ pub fn install() {
         install_panic_hook();
         install_signal_handlers();
         // Pull in any `.ips` from a previous session that never wrote JSON
-        // (handlers replaced by CEF, stack overflow, SIGKILL, etc.).
+        // (stack overflow, SIGKILL, etc.).
         harvest_system_crash_reports();
         note("crash_report installed");
     });
-}
-
-/// Re-install fatal signal handlers after CEF init.
-///
-/// Chromium installs its own handlers inside `cef_initialize`. Without this
-/// call, in-process SIGSEGV often never reaches our dump path (as with the
-/// AppKit fullscreen-exit crash that left only an Apple `.ips`).
-pub fn reinstall_after_cef() {
-    install();
-    install_signal_handlers();
-    note("crash_report signal handlers reinstalled after CEF");
 }
 
 /// Append a short breadcrumb included in the next panic/swift crash payload.

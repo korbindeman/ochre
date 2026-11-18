@@ -1,6 +1,6 @@
 # ADR-0021: DevTools opens as a separate window, not docked inline
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0074
 - **Date:** 2026-07-07
 
 ## Context

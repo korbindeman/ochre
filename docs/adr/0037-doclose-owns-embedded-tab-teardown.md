@@ -1,6 +1,6 @@
 # ADR-0037: `DoClose` suppresses CEF's parent-window close for host-embedded tabs
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0074
 - **Date:** 2026-07-09
 
 ## Context

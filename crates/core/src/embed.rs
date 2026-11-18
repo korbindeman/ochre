@@ -1,57 +1,22 @@
-//! Embedded mode - host CEF inside a native app that owns the window & run loop.
+//! Embedded mode - the native app owns the windows and the run loop; the core
+//! hosts one `WKWebView` per tab inside a container `NSView` the app hands it
+//! (ADR-0072). The host drives the lifecycle across the FFI boundary:
 //!
-//! Where [`crate::run`] creates its own CEF Views window, embedded mode lets a
-//! native UI (the macOS SwiftUI app) own the `NSWindow` and hand CEF a child
-//! `NSView` to render into (the "Option B" hosting model from the architecture
-//! spike). The browser is a *windowed* Alloy (chromeless) browser: CEF inserts
-//! its own GPU-accelerated `NSView` as a subview of the host-provided parent
-//! view, so Chromium's compositor presents directly - no off-screen rendering,
-//! no frame copies. The host drives the lifecycle across the FFI boundary:
-//!
-//!   1. [`initialize`] - load CEF, run the subprocess check, init CEF.
-//!   2. [`create_browser`] - create an Alloy browser parented to a
-//!      host-provided `NSView`.
-//!   3. [`run_message_loop`] - hand the run loop to CEF.
-//!   4. [`shutdown`] - tear down CEF.
-//!
-//! Helper (renderer/GPU/utility) subprocesses are unchanged: they are the
-//! separate `browser_helper` executable, which routes through [`crate::run`]'s
-//! helper branch.
+//!   1. [`initialize`] - load state, start background services.
+//!   2. [`create_tab`] / [`restore_tab`] - a web view inside a host view.
+//!   3. [`run_message_loop`] - `NSApplication.run`.
+//!   4. [`request_close_all`] / [`shutdown`] - persist and exit.
 
-use std::cell::RefCell;
 use std::ffi::c_void;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
-use cef::args::Args;
-use cef::*;
-// Aliased to disambiguate from the local `run_message_loop`/`shutdown` wrappers.
-use cef::{
-    initialize as cef_initialize, run_message_loop as cef_run_message_loop,
-    shutdown as cef_shutdown,
-};
+use objc2::MainThreadMarker;
+use objc2_app_kit::NSApplication;
 
-use crate::client::BrowserClient;
+use crate::engine::{self, Browser, Profile, Zoom};
 use crate::private_window::{self, WindowId};
 use crate::tabs::{self, EventCallback, TabId};
 use crate::{mac, root_cache_dir};
-
-/// Keeps the CEF framework loaded for the lifetime of the process.
-static LOADER: OnceLock<mac::LibraryLoader> = OnceLock::new();
-
-thread_local! {
-    /// Retain each browser's `Client` for the process lifetime, matching the
-    /// standalone path (which holds its client in the process handler). CEF's
-    /// C API convention is that the callee add-refs what it keeps, but the
-    /// proven-working paths in this codebase all retain the client on our
-    /// side too, so embedded mode does the same. Main-thread only (as is
-    /// `create_browser`), hence `thread_local`.
-    static CLIENTS: RefCell<Vec<Client>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Retain a browser client for the process lifetime (shared by normal + private tabs).
-pub fn retain_client(client: Client) {
-    CLIENTS.with(|clients| clients.borrow_mut().push(client));
-}
 
 /// Host callback for find-in-page results, invoked on the UI (main) thread with
 /// the total match `count`, the 1-based `active_match_ordinal`, and whether this
@@ -83,76 +48,15 @@ pub(crate) fn dispatch_find_result(count: i32, active_match_ordinal: i32, final_
     }
 }
 
-// App for embedded mode. Unlike the standalone `BrowserApp` it has no browser
-// process handler: the host creates browsers itself via [`create_browser`]
-// after [`initialize`] returns (CEF invokes `on_context_initialized` inside
-// `cef_initialize` when CEF runs the message loop on this thread, so the
-// context is ready by then).
-wrap_app! {
-    pub struct EmbedApp;
-
-    impl App {
-        fn on_before_command_line_processing(
-            &self,
-            process_type: Option<&CefString>,
-            command_line: Option<&mut CommandLine>,
-        ) {
-            let Some(command_line) = command_line else {
-                return;
-            };
-
-            // Unsigned dev/dogfood builds use the mock keychain - see
-            // `app::append_mock_keychain_switch` for the rationale.
-            crate::app::append_mock_keychain_switch(command_line);
-
-            // CDP and the WebAuthn guard are browser-process only. Helpers
-            // inherit the browser command line; they must not re-decide
-            // WebAuthn from their own helper signature (ADR-0061).
-            let is_browser_process = process_type
-                .map(|t| t.to_string().is_empty())
-                .unwrap_or(true);
-            crate::app::append_webauthn_guard_switch(command_line, is_browser_process);
-
-            // No Cast UI yet, so keep Chromium's media router off - see
-            // `app::append_disable_cast_discovery_switch` and ADR-0050.
-            crate::app::append_disable_cast_discovery_switch(command_line);
-
-            // CDP automation surface (P0-4): browser process only (helpers ignore
-            // `--remote-debugging-port`), only when the user opted in, loopback-bound.
-            if is_browser_process {
-                for (name, value) in crate::cdp::switches(&crate::cdp::config()) {
-                    command_line.append_switch_with_value(
-                        Some(&CefString::from(name)),
-                        Some(&CefString::from(value.as_str())),
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// Load CEF and initialize it for embedded hosting. Returns `false` on failure.
+/// Initialize the core for embedded hosting. Returns `false` on failure.
 ///
 /// Must be called once, on the main thread, before the host creates any window.
 pub fn initialize() -> bool {
     crate::crash_report::install();
-    let loader = mac::load_cef_framework();
-    let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
-    mac::setup_simple_application();
-    let _ = LOADER.set(loader);
-
-    let args = Args::new();
-    let main_args = args.as_main_args();
-
-    // The host app process is always the browser process (helpers are the
-    // separate `browser_helper` executable), so `execute_process` returns -1.
-    if execute_process(Some(main_args), None, std::ptr::null_mut()) >= 0 {
+    if MainThreadMarker::new().is_none() {
+        eprintln!("[embed] initialize must run on the main thread");
         return false;
     }
-
-    // Read the persisted CDP consent before init - the switch is applied during
-    // `cef_initialize` (in `on_before_command_line_processing`).
-    crate::cdp::load_persisted();
 
     // Bring up the adblock engine (seed synchronously, full lists in the
     // background) before any browser is created, so the request-path filter is
@@ -168,25 +72,7 @@ pub fn initialize() -> bool {
     #[cfg(not(debug_assertions))]
     crate::adblock::init();
 
-    let mut app = EmbedApp::new();
-    let settings = Settings {
-        no_sandbox: !cfg!(feature = "sandbox") as _,
-        root_cache_path: CefString::from(root_cache_dir().as_str()),
-        browser_subprocess_path: CefString::from(helper_subprocess_path().as_str()),
-        ..Default::default()
-    };
-    let ok = cef_initialize(
-        Some(main_args),
-        Some(&settings),
-        Some(&mut app),
-        std::ptr::null_mut(),
-    ) == 1;
-
-    // CEF/Chromium installs its own fatal-signal handlers during initialize.
-    // Reclaim SIGSEGV (etc.) so in-process faults still write a local dump.
-    crate::crash_report::reinstall_after_cef();
-
-    // Open the history/favicon store next to the CEF cache. A failure here is
+    // Open the history/favicon store in the profile folder. A failure here is
     // non-fatal - the browser just runs without autocomplete suggestions.
     crate::history::init(&format!("{}/history.sqlite", root_cache_dir()));
 
@@ -237,76 +123,12 @@ pub fn initialize() -> bool {
 
     // Create the tab/space model, restoring the persisted session (ADR-0013).
     // Restored tabs are suspended - the host hydrates each one (creating its
-    // CEF browser via `restore_tab`) the first time it is shown. With no saved
+    // web view via `restore_tab`) the first time it is shown. With no saved
     // session the app launches to the empty state.
     tabs::init(&format!("{}/session.json", root_cache_dir()));
 
     mac::setup_app_delegate();
-    ok
-}
-
-/// Absolute path to the helper-subprocess executable inside the host app bundle.
-///
-/// With an empty `browser_subprocess_path`, CEF derives the helper location on
-/// macOS from the main bundle name - `Contents/Frameworks/<App> Helper.app`.
-/// The host bundle is `{name}.app` from `product.toml`, but the bundled helper
-/// (reused from the standalone layout) is `browser Helper.app`; that mismatch
-/// resolves only on case-insensitive volumes, so we pin the path explicitly:
-///
-///   `{name}.app/Contents/MacOS/{name}`
-///     → `{name}.app/Contents/Frameworks/browser Helper.app/Contents/MacOS/browser Helper`
-///
-/// The single generic helper serves every subprocess role (the sandbox is off in
-/// dev, so no role-specific entitlement separation is needed yet).
-fn helper_subprocess_path() -> String {
-    let exe = std::env::current_exe().expect("failed to resolve current executable path");
-    let contents = exe
-        .parent() // Contents/MacOS
-        .and_then(std::path::Path::parent) // Contents
-        .expect("host executable is not inside a .app bundle");
-    contents
-        .join("Frameworks/browser Helper.app/Contents/MacOS/browser Helper")
-        .to_string_lossy()
-        .into_owned()
-}
-
-/// Create a windowed Alloy (chromeless) browser as a child of `parent_view`.
-///
-/// CEF inserts its own `NSView` as a subview of `parent_view` and renders into
-/// it directly. The host keeps that subview sized to the container (see the
-/// `layout()` override in the Swift `CEFContainerView`). Must be called on the
-/// main thread after [`initialize`]; creation completes asynchronously once
-/// the message loop is pumping.
-///
-/// # Safety
-/// `parent_view` must be a valid `NSView` pointer that outlives the browser.
-pub unsafe fn create_browser(parent_view: *mut c_void, width: i32, height: i32, url: &str) -> bool {
-    let bounds = Rect {
-        x: 0,
-        y: 0,
-        width: width.max(1),
-        height: height.max(1),
-    };
-    let window_info = WindowInfo {
-        runtime_style: RuntimeStyle::ALLOY,
-        ..Default::default()
-    }
-    .set_as_child(parent_view, &bounds);
-
-    let client = BrowserClient::create(RuntimeStyle::ALLOY);
-    CLIENTS.with(|clients| clients.borrow_mut().push(client.clone()));
-    let mut client = Some(client);
-
-    let settings = BrowserSettings::default();
-    let cef_url = CefString::from(url);
-    browser_host_create_browser(
-        Some(&window_info),
-        client.as_mut(),
-        Some(&cef_url),
-        Some(&settings),
-        None,
-        None,
-    ) == 1
+    true
 }
 
 // ─── Tab commands ────────────────────────────────────────────────────────
@@ -327,16 +149,9 @@ pub fn set_focused_window(window_id: WindowId) {
     tabs::set_focused_little(None);
 }
 
-/// Create a windowed Alloy tab as a child of `parent_view`, register it in the
-/// tab model (active space), and make it active. Returns the new tab's id (CEF's
-/// browser identifier), or a negative value on failure.
-///
-/// Unlike [`create_browser`], this uses CEF's **synchronous** creation path, so
-/// the tab id is known before returning - no async create→event correlation to
-/// get wrong, and popups / DevTools (which are never registered here) can't be
-/// mistaken for tabs. Safe with launch-to-empty: the first tab is created while
-/// the message loop is already pumping and the window is visible. Main thread
-/// only, after [`initialize`].
+/// Create a tab's web view inside `parent_view`, register it in the tab model
+/// (active space), and make it active. Returns the new tab's id, or a negative
+/// value on failure. Main thread only, after [`initialize`].
 ///
 /// # Safety
 /// `parent_view` must be a valid `NSView` pointer that outlives the tab.
@@ -383,7 +198,7 @@ pub fn set_focused_little(id: Option<TabId>) {
 }
 
 /// Hydrate a suspended tab restored from the persisted session (ADR-0013):
-/// create its CEF browser as a child of `parent_view`, loading the tab's saved
+/// create its web view inside `parent_view`, loading the tab's saved
 /// URL. The counterpart of [`create_tab`] for tabs that already exist in the
 /// model and only lack their engine side. Returns `false` when `id` is not a
 /// suspended tab or creation fails. Main thread only, after [`initialize`].
@@ -401,9 +216,7 @@ pub unsafe fn restore_tab(id: TabId, parent_view: *mut c_void, width: i32, heigh
     true
 }
 
-/// Shared synchronous browser creation for [`create_tab`] / [`restore_tab`]:
-/// a windowed Alloy browser parented to `parent_view`, its client retained for
-/// the process lifetime.
+/// Shared web-view creation for [`create_tab`] / [`restore_tab`].
 ///
 /// # Safety
 /// `parent_view` must be a valid `NSView` pointer that outlives the browser.
@@ -413,38 +226,7 @@ unsafe fn create_tab_browser(
     height: i32,
     url: &str,
 ) -> Option<Browser> {
-    let bounds = Rect {
-        x: 0,
-        y: 0,
-        width: width.max(1),
-        height: height.max(1),
-    };
-    let window_info = WindowInfo {
-        runtime_style: RuntimeStyle::ALLOY,
-        ..Default::default()
-    }
-    .set_as_child(parent_view, &bounds);
-
-    let client = BrowserClient::create(RuntimeStyle::ALLOY);
-    CLIENTS.with(|clients| clients.borrow_mut().push(client.clone()));
-    let mut client = Some(client);
-
-    let settings = BrowserSettings::default();
-    let cef_url = CefString::from(url);
-    let browser = browser_host_create_browser_sync(
-        Some(&window_info),
-        client.as_mut(),
-        Some(&cef_url),
-        Some(&settings),
-        None,
-        None,
-    );
-    // Tab browsers live inside the host's window - suppress CEF's default
-    // close-the-parent-window for them (ADR-0037).
-    if let Some(browser) = &browser {
-        crate::client::note_embedded_tab(browser);
-    }
-    browser
+    engine::create(parent_view, width, height, url, Profile::Normal)
 }
 
 /// Make tab `id` the active tab (of its space). The host reacts to the resulting
@@ -453,27 +235,13 @@ pub fn select_tab(id: TabId) {
     tabs::select_tab(id);
 }
 
-/// Exit HTML5 / browser content fullscreen on the active tab, if any.
-///
-/// Alloy style: call this when the *window* leaves OS fullscreen while content
-/// is still in browser fullscreen (green traffic light, or a host-driven exit).
-/// `will_cause_resize` is true because exiting window fullscreen resizes the
-/// view. Main thread only.
+/// Leave element fullscreen / picture-in-picture on the active tab, if any.
+/// WebKit runs element fullscreen in its own window, so the host window never
+/// has to follow. Main thread only.
 pub fn exit_fullscreen() {
-    let Some(browser) = main_browser() else {
-        return;
-    };
-    let Some(host) = browser.host() else {
-        return;
-    };
-    if host.is_fullscreen() == 0 {
-        return;
+    if let Some(browser) = main_browser() {
+        browser.exit_fullscreen();
     }
-    eprintln!(
-        "[fullscreen] host exit_fullscreen tab={}",
-        browser.identifier()
-    );
-    host.exit_fullscreen(1);
 }
 
 /// Give keyboard focus to the active tab's web view, if any.
@@ -486,17 +254,9 @@ pub fn exit_fullscreen() {
 /// tab-switch focus path (`tabs::set_visible`). No-op in the empty state (no
 /// active browser). Main thread only.
 pub fn focus_active_tab() {
-    let Some(browser) = main_browser() else {
-        return;
-    };
-    let Some(host) = browser.host() else {
-        return;
-    };
-    eprintln!(
-        "[focus] host set_focus (overlay close) tab={}",
-        browser.identifier()
-    );
-    host.set_focus(1);
+    if let Some(browser) = main_browser() {
+        browser.focus();
+    }
 }
 
 /// Fill the active tab's login form from vault login `id` - the button-driven
@@ -521,12 +281,8 @@ pub fn vault_fill_active_tab(id: &str) {
         Some(browser) => browser,
         None => return,
     };
-    let host = match browser.host() {
-        Some(host) => host,
-        None => return,
-    };
     let expr = crate::vault::autofill::fill_expression(detail.username.as_deref(), &password);
-    crate::inject::evaluate_main_world(&host, &expr);
+    crate::inject::evaluate_main_world(&browser, &expr);
     // The credential is now in the page - that's a use, so it rides to the top of
     // this site's list next time (the service applies the private-window rule).
     crate::vault::service::note_used(id);
@@ -696,12 +452,16 @@ pub fn space_to_folder(id: i32) -> i32 {
 
 /// Hand the run loop to CEF. Blocks until [`quit`] / all browsers close.
 pub fn run_message_loop() {
-    cef_run_message_loop();
+    if let Some(mtm) = MainThreadMarker::new() {
+        NSApplication::sharedApplication(mtm).run();
+    }
 }
 
-/// Ask CEF to exit its message loop.
+/// End the app (the last window closed, or quit finished draining).
 pub fn quit() {
-    quit_message_loop();
+    if let Some(mtm) = MainThreadMarker::new() {
+        NSApplication::sharedApplication(mtm).terminate(None);
+    }
 }
 
 /// The active tab's browser handle, if any. All the single-target verbs below
@@ -788,10 +548,7 @@ pub fn navigate(url: &str) {
         }
         return;
     };
-    let Some(frame) = browser.main_frame() else {
-        return;
-    };
-    frame.load_url(Some(&CefString::from(url)));
+    browser.load_url(url);
 }
 
 /// Navigate the primary browser back one history entry. Main thread only.
@@ -826,33 +583,31 @@ pub fn reload_ignore_cache() {
 /// Main thread only.
 pub fn stop_load() {
     if let Some(browser) = main_browser() {
-        browser.stop_load();
+        browser.stop();
     }
 }
 
 /// Whether the primary browser can navigate back. Main thread only.
 pub fn can_go_back() -> bool {
-    main_browser().is_some_and(|browser| browser.can_go_back() != 0)
+    main_browser().is_some_and(|browser| browser.can_go_back())
 }
 
 /// Whether the primary browser can navigate forward. Main thread only.
 pub fn can_go_forward() -> bool {
-    main_browser().is_some_and(|browser| browser.can_go_forward() != 0)
+    main_browser().is_some_and(|browser| browser.can_go_forward())
 }
 
 /// The primary browser's current main-frame URL, if a browser is alive. Used by
 /// the host to prefill the command bar for edit-in-place (⌘L). Main thread only.
 pub fn current_url() -> Option<String> {
-    let browser = main_browser()?;
-    let frame = browser.main_frame()?;
-    Some(CefString::from(&frame.url()).to_string())
+    main_browser()?.url()
 }
 
 // ─── Adblock, targeting the active tab (ADR-0020) ────────────────────────────
 //
 // The sidebar shield and the "this site" toggle act on the active tab - the one
 // whose URL the sidebar chip already shows - so these resolve the tab here
-// rather than translating core tab ids to CEF ids across the FFI. Main thread.
+// rather than translating core tab ids to engine ids across the FFI. Main thread.
 
 /// The active tab's host, for per-site allowlist matching (registrable-domain
 /// resolution happens in [`crate::adblock`]).
@@ -902,34 +657,30 @@ pub fn consent_active_rejected_count() -> u64 {
     })
 }
 
-/// Step the primary browser's zoom in / out / back to default. CEF owns the zoom
-/// stepping (matching Chromium), so the host just names the command. Main thread.
+/// Step the primary browser's zoom in / out / back to default (Chrome's
+/// ladder). Main thread.
 pub fn zoom_in() {
-    zoom(ZoomCommand::IN);
+    zoom(Zoom::In);
 }
 
 pub fn zoom_out() {
-    zoom(ZoomCommand::OUT);
+    zoom(Zoom::Out);
 }
 
 pub fn zoom_reset() {
-    zoom(ZoomCommand::RESET);
+    zoom(Zoom::Reset);
 }
 
-fn zoom(command: ZoomCommand) {
-    if let Some(host) = main_browser().and_then(|browser| browser.host()) {
-        host.zoom(command);
+fn zoom(command: Zoom) {
+    if let Some(browser) = main_browser() {
+        browser.zoom(command);
     }
 }
 
-/// Toggle DevTools for the active tab: open it in its own window, or close it if
-/// already open. Backs the ⌘⌥I menu item; F12 is handled engine-side in the
-/// keyboard handler. Both funnel through [`crate::client::toggle_dev_tools`] so
-/// the shortcuts behave identically. DevTools opens as a separate window - inline
-/// docking isn't feasible under CEF 149's Chrome bootstrap (ADR-0021). Main thread only.
+/// Toggle Web Inspector for the active tab (⌘⌥I). Main thread only.
 pub fn toggle_dev_tools() {
     if let Some(browser) = main_browser() {
-        crate::client::toggle_dev_tools(&browser);
+        browser.toggle_inspector();
     }
 }
 
@@ -938,140 +689,41 @@ pub fn toggle_dev_tools() {
 /// term (`true`); `forward` picks the direction. Results arrive asynchronously
 /// via the registered [`FindResultCallback`]. Main thread only.
 pub fn find(search_text: &str, forward: bool, match_case: bool, find_next: bool) {
-    if let Some(host) = main_browser().and_then(|browser| browser.host()) {
-        host.find(
-            Some(&CefString::from(search_text)),
-            forward as i32,
-            match_case as i32,
-            find_next as i32,
-        );
+    if let Some(browser) = main_browser() {
+        browser.find(search_text, forward, match_case, find_next);
     }
 }
 
 /// End the current find-in-page session, optionally clearing the match selection
 /// on the page. Main thread only.
 pub fn stop_finding(clear_selection: bool) {
-    if let Some(host) = main_browser().and_then(|browser| browser.host()) {
-        host.stop_finding(clear_selection as i32);
+    if let Some(browser) = main_browser() {
+        browser.stop_finding(clear_selection);
     }
 }
 
-/// Route a host window close through CEF's browser-close flow.
-///
-/// Returns `true` if a close was initiated - the host must veto its window
-/// close and wait: CEF re-requests the window close once the browser allows
-/// it, and `BrowserHandler::on_before_close` quits the message loop when the
-/// last browser is gone. Returns `false` if closing is already underway (or
-/// there are no browsers) - the host should let the window close.
-///
-/// On that final close the host must also release the `NSView` it handed to
-/// [`create_browser`]: CEF completes browser destruction (and thus
-/// `on_before_close`) only when its child view deallocates.
-/// Close one window's browsers. `window_id` `0` = the normal window; `>= 1` =
-/// private. Returns `true` if a close was initiated (host must veto and wait).
+/// Close one window's web views. `window_id` `0` = the normal window (which
+/// quits the app, see [`request_close_all`]); `>= 1` = a private window.
+/// Returns `true` if the host must veto its window close and wait; WebKit views
+/// close synchronously, so this is always `false`.
 pub fn request_close_window(window_id: WindowId) -> bool {
     if window_id == private_window::NORMAL_WINDOW_ID {
-        return request_close_normal_window(false);
-    }
-    request_close_private_window(window_id)
-}
-
-fn request_close_private_window(window_id: WindowId) -> bool {
-    let browsers = private_window::browsers_in_window(window_id);
-    for browser in browsers {
-        if let Some(host) = browser.host() {
-            host.close_browser(1);
-        }
+        return request_close_all();
     }
     private_window::destroy_window(window_id);
-    maybe_quit_after_last_window();
     false
 }
 
-fn request_close_normal_window(app_quit: bool) -> bool {
-    if app_quit {
-        // Freeze session persistence so the browsers CEF is about to drain
-        // aren't recorded as user tab-closes (ADR-0013).
-        tabs::begin_shutdown();
-    }
-    let Some(handler) = crate::client::BrowserHandler::instance() else {
-        return false;
-    };
-    {
-        let mut h = handler.lock().expect("Failed to lock handler");
-        if h.is_closing() {
-            return false;
-        }
-        let normal_count = h
-            .matching_browsers(|id| !private_window::is_private_cef(id))
-            .len();
-        if normal_count == 0 {
-            drop(h);
-            if app_quit {
-                maybe_quit_after_last_window();
-            }
-            return false;
-        }
-        if app_quit {
-            h.mark_closing();
-        }
-    }
-    close_browsers(|cef_id| !private_window::is_private_cef(cef_id));
-    app_quit
-}
-
-fn close_browsers(pred: impl Fn(i32) -> bool) {
-    let Some(handler) = crate::client::BrowserHandler::instance() else {
-        return;
-    };
-    let browsers = handler
-        .lock()
-        .expect("Failed to lock handler")
-        .matching_browsers(pred);
-    for browser in browsers {
-        if let Some(host) = browser.host() {
-            host.close_browser(1);
-        }
-    }
-}
-
-/// App quit (⌘Q / last-window close): drain every browser, then exit.
+/// App quit (⌘Q / main-window close): freeze session persistence so the
+/// teardown isn't recorded as user tab closes (ADR-0013), close everything,
+/// and let the host terminate. Always returns `false` (nothing to wait for).
 pub fn request_close_all() -> bool {
     tabs::begin_shutdown();
-    let Some(handler) = crate::client::BrowserHandler::instance() else {
-        return false;
-    };
-    {
-        let mut h = handler.lock().expect("Failed to lock handler");
-        if h.is_closing() {
-            return false;
-        }
-        if h.browser_count() == 0 && private_window::window_count() == 0 {
-            drop(h);
-            quit();
-            return false;
-        }
-        h.mark_closing();
-    }
     for id in private_window::all_window_ids() {
         private_window::destroy_window(id);
     }
-    crate::client::BrowserHandler::close_all_browsers(&handler, true);
-    true
-}
-
-fn maybe_quit_after_last_window() {
-    let Some(handler) = crate::client::BrowserHandler::instance() else {
-        quit();
-        return;
-    };
-    let count = handler
-        .lock()
-        .expect("Failed to lock handler")
-        .browser_count();
-    if count == 0 && private_window::window_count() == 0 {
-        quit();
-    }
+    engine::close_all();
+    false
 }
 
 /// Default Arc `StorableSidebar.json` path on macOS, if it exists.
@@ -1089,7 +741,6 @@ pub fn import_arc(path: &str, replace: bool) -> Result<crate::import::ApplyResul
     crate::import::import_arc_sidebar(path, replace)
 }
 
-/// Tear down CEF. Call after [`run_message_loop`] returns.
-pub fn shutdown() {
-    cef_shutdown();
-}
+/// Process teardown after [`run_message_loop`] returns. Nothing to release:
+/// WebKit's processes exit with ours.
+pub fn shutdown() {}

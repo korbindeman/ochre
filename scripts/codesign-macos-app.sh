@@ -9,8 +9,8 @@
 # in the keychain. Team ID: $BROWSER_TEAM_ID, else the (TEAMID) suffix on the
 # identity name.
 #
-# Host entitlements (ADR-0070): restricted entitlements (keychain-access-groups,
-# com.apple.developer.web-browser*) need an embedded provisioning profile, or
+# Host entitlements (ADR-0070): restricted entitlements
+# (com.apple.developer.web-browser*) need an embedded provisioning profile, or
 # AMFI SIGKILLs the app at launch. codesign itself never rejects them, so the
 # choice is made up front:
 #   $BROWSER_PROVISIONING_PROFILE set -> embed it, sign Browser.production.entitlements
@@ -65,8 +65,6 @@ subst_ents() {
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-subst_ents "$MACOS/Browser.helper.entitlements" "$TMP/helper.entitlements"
-subst_ents "$MACOS/Browser.signed.entitlements" "$TMP/signed.entitlements"
 subst_ents "$MACOS/Browser.production.entitlements" "$TMP/production.entitlements"
 subst_ents "$MACOS/Browser.release.entitlements" "$TMP/release.entitlements"
 
@@ -87,33 +85,11 @@ sign() {
 }
 
 FRAMEWORKS="$APP/Contents/Frameworks"
-CEF_FW="$FRAMEWORKS/Chromium Embedded Framework.framework"
-CEF_BIN="Chromium Embedded Framework"
 
-echo "[codesign] Chromium Embedded Framework (libraries, then binary, then bundle)"
-if [[ -d "$CEF_FW/Versions/A/Libraries" ]]; then
-  shopt -s nullglob
-  for lib in "$CEF_FW/Versions/A/Libraries/"*; do
-    [[ -f "$lib" ]] || continue
-    sign "$lib"
-  done
-  shopt -u nullglob
-fi
-if [[ -f "$CEF_FW/Versions/A/$CEF_BIN" ]]; then
-  sign "$CEF_FW/Versions/A/$CEF_BIN"
-fi
-sign "$CEF_FW"
-
+# The engine is the system's WebKit (ADR-0072): the only nested code is the
+# Rust core dylib, signed first, then the host.
 echo "[codesign] libbrowser_ffi.dylib"
-sign "$FRAMEWORKS/libbrowser_ffi.dylib" --entitlements "$TMP/helper.entitlements"
-
-echo "[codesign] helper apps"
-shopt -s nullglob
-for helper in "$FRAMEWORKS"/browser\ Helper*.app; do
-  echo "[codesign]   $(basename "$helper")"
-  sign "$helper" --entitlements "$TMP/helper.entitlements"
-done
-shopt -u nullglob
+sign "$FRAMEWORKS/libbrowser_ffi.dylib"
 
 echo "[codesign] host app"
 PROFILE="${BROWSER_PROVISIONING_PROFILE:-}"
@@ -133,7 +109,7 @@ fi
 
 # Guard (ADR-0070): restricted keys without a profile launch-kill the app.
 ents="$(codesign -d --entitlements :- "$APP" 2>/dev/null || true)"
-if grep -Eq "keychain-access-groups|com\.apple\.developer\." <<<"$ents" \
+if grep -Eq "com\.apple\.developer\." <<<"$ents" \
   && [[ ! -f "$APP/Contents/embedded.provisionprofile" ]]; then
   echo "[codesign] error: restricted entitlements signed without a provisioning profile; AMFI would kill the app at launch" >&2
   exit 1

@@ -51,19 +51,16 @@ targets:
         # Link against the Rust C-ABI dylib (built by the pre-build script).
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Browser-Bridging-Header.h
         OTHER_LDFLAGS: -lbrowser_ffi
-        # Resolve @rpath/libbrowser_ffi.dylib + the CEF framework from the bundle.
+        # Resolve @rpath/libbrowser_ffi.dylib from the bundle.
         LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Automatic
-        # Do not point this at Browser.entitlements while the identity is
-        # ad-hoc: keychain-access-groups is restricted and AMFI SIGKILLs
-        # (CRASH-0004 / ADR-0062). Developer ID dogfood applies
-        # Browser.signed.entitlements / Browser.production.entitlements in
-        # scripts/codesign-macos-app.sh after xcodebuild (ADR-0061).
-        # Dev: post-build injects CEF and ad-hoc-signs the dylib + helpers
-        # only. Hardened runtime is off because Chromium's V8 JIT needs it
-        # disabled until production entitlements land with real signing;
-        # Xcode itself skips signing (CODE_SIGNING_ALLOWED: NO).
+        # Release builds are Developer ID signed after xcodebuild by
+        # scripts/codesign-macos-app.sh (ADR-0070); never ad-hoc-sign the
+        # restricted Browser.production.entitlements (AMFI kills the app).
+        # Dev: post-build embeds and ad-hoc-signs the Rust dylib only; Xcode
+        # itself skips signing (CODE_SIGNING_ALLOWED: NO). Release signing and
+        # hardened runtime are applied by scripts/codesign-macos-app.sh.
         ENABLE_HARDENED_RUNTIME: NO
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGNING_ALLOWED: NO
@@ -80,9 +77,9 @@ targets:
           SWIFT_OPTIMIZATION_LEVEL: -O
     preBuildScripts:
       - path: ../../scripts/prebuild-macos.sh
-        name: "Build Rust core & CEF bundle"
+        name: "Build Rust core"
         basedOnDependencyAnalysis: false
     postBuildScripts:
       - path: ../../scripts/bundle-macos-app.sh
-        name: "Inject CEF framework & ad-hoc sign"
+        name: "Embed Rust core & ad-hoc sign"
         basedOnDependencyAnalysis: false

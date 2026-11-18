@@ -1,10 +1,9 @@
-# Alpha release - build the macOS .app with proprietary codecs, Developer ID
+# Alpha release - build the macOS .app (system WebKit, ADR-0072), Developer ID
 # sign and notarize it, and publish a public pre-release with signed update
-# artifacts. See docs/adr/0040 (codec build), 0042 (codec split), 0052
-# (updater), 0063 (friends get signed builds) and 0070 (release path).
+# artifacts. See docs/adr/0052 (updater), 0063 (friends get signed builds) and
+# 0070 (release path).
 #
 # Repo secrets (one-time setup, see docs/release.md):
-#   CEF_ARTIFACT_TOKEN           read Contents on the private korbindeman/ochre_cef
 #   DEVELOPER_ID_P12_BASE64      Developer ID Application cert + key, base64 .p12
 #   DEVELOPER_ID_P12_PASSWORD    its export password
 #   NOTARY_KEY_ID / NOTARY_ISSUER_ID / NOTARY_KEY   App Store Connect API key (.p8 contents)
@@ -105,26 +104,10 @@ jobs:
           grep MARKETING_VERSION apps/macos/project.yml
           grep '^version' crates/core/Cargo.toml
 
-      # Pulls the codec-enabled CEF from the private ochre_cef release matching the
-      # cef-dll-sys pin in Cargo.lock. Hard-fail if unavailable: a silently
-      # codec-less "alpha" would defeat the point of the release.
-      - name: Fetch codec-enabled CEF
-        env:
-          GH_TOKEN: ${{ secrets.CEF_ARTIFACT_TOKEN }}
-        run: |
-          cef="$(scripts/fetch-cef.sh)"
-          if [ -z "$cef" ]; then
-            echo "::error::Codec-enabled CEF not available. Check the CEF_ARTIFACT_TOKEN secret (needs read Contents on korbindeman/ochre_cef) and that a release matching the Cargo.lock pin exists."
-            exit 1
-          fi
-          echo "CEF_PATH=$cef" >> "$GITHUB_ENV"
-          echo "Using $cef"
-
       - name: Resolve product name
         id: product
         run: echo "name=$(python3 scripts/product.py name)" >> "$GITHUB_OUTPUT"
 
-      # CEF_PATH is already exported above, so with-work-gate.sh won't re-resolve it.
       - name: Build and sign app (Release)
         run: |
           just build-release
@@ -139,17 +122,6 @@ jobs:
           NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
           NOTARY_REQUIRED: "1"
         run: scripts/notarize-macos-app.sh "apps/macos/build.noindex/Build/Products/Release/${{ steps.product.outputs.name }}.app"
-
-      - name: Verify the build actually has proprietary codecs
-        run: |
-          name="${{ steps.product.outputs.name }}"
-          fw="apps/macos/build.noindex/Build/Products/Release/${name}.app/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"
-          if grep -q -a "h264_annex_b_to_avc_bitstream_converter" "$fw"; then
-            echo "H.264 code present in the shipped framework"
-          else
-            echo "::error::Shipped framework has no H.264 code - this is a codec-less build."
-            exit 1
-          fi
 
       # ditto (not zip) so the .app's frameworks, symlinks, signature and
       # stapled ticket survive archiving intact. Also produce the updater archive
@@ -206,7 +178,8 @@ jobs:
           the sidebar offers **Update & Restart**.
 
           ### Notes
-          Includes proprietary codecs (H.264/AAC), so mainstream MP4 video plays.
+          Built on macOS's own WebKit (the engine behind Safari), so Apple keeps the
+          engine patched through macOS updates.
           EOF
           sed -i '' "s/__PRODUCT__/${name}/g" "$RUNNER_TEMP/release-notes.md"
 

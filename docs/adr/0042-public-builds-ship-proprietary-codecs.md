@@ -1,6 +1,6 @@
 # ADR-0042: Public browser builds ship proprietary codecs - a conscious pre-launch risk, codec-less as the one-flag retreat
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0074
 - **Date:** 2026-07-09
 - **Supplements:** ADR-0040 (which decided the *build* posture; this decides the *distribution* posture)
 

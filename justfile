@@ -54,41 +54,14 @@ fmt:
 
 # ── Run ─────────────────────────────────────────────────────────────
 
-# On macOS this builds the SwiftUI app (embedded CEF via FFI) - the actual
-# product - and execs the binary directly (not via `open`) so CEF's + the core's
+# On macOS this builds the SwiftUI app (WebKit via the Rust core, ADR-0072) - the
+# actual product - and execs the binary directly (not via `open`) so the core's
 # stdout/stderr stay in the terminal.
 #
 # Run the native development app for the current platform.
 run: gen-macos
     ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build.noindex build'
     ./apps/macos/build.noindex/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}}
-
-# A pure-Rust AppKit NSWindow hosting the embedded browser (native_shell.rs) - the
-# same embed.rs hosting path the SwiftUI app uses, minus SwiftUI + FFI. Reach for
-# it to answer "is a blank page / CEF issue in the engine or the Swift layer?" CEF
-# must run from a .app bundle, so this assembles target/bundle/browser.app first.
-#
-# Engine-isolation bisection tool (embedded CEF, no SwiftUI).
-run-native-shell: bundle
-    ./target/bundle/browser.app/Contents/MacOS/browser --native-shell
-
-# Assemble target/bundle/browser.app (builds browser + browser_helper).
-bundle:
-    ./scripts/with-work-gate.sh cargo run --bin bundle
-
-# Subresource-redirect regression (ADR-0028): assembles the bundle and drives an
-# embedded browser at a hermetic in-process server whose <img> loads through a
-# same-origin 302, asserting the redirect is followed. Chromium 149 regressed this
-# (broke the Google avatar) so we pin CEF 148; re-run this after ANY CEF bump.
-# Exits non-zero on failure. Throwaway $HOME dodges Chromium's process singleton.
-redirect-selftest: bundle
-    HOME="$(mktemp -d)" ./target/bundle/browser.app/Contents/MacOS/browser --redirect-selftest
-
-# Favicon-capture regression: hermetic loopback page (SVG + ICO) asserts the
-# engine stores a transparent raster favicon in history.sqlite. Re-run after
-# favicon-pipeline or CEF changes.
-favicon-selftest: bundle
-    HOME="$(mktemp -d)" ./target/bundle/browser.app/Contents/MacOS/browser --favicon-selftest
 
 # ── macOS app (SwiftUI) ─────────────────────────────────────────────
 # Requires XcodeGen + Xcode Command Line Tools.
@@ -104,8 +77,8 @@ build-macos: gen-macos
 # P0-1 focus-routing regression (ADR-0018): builds the app and runs the in-process
 # synthetic-input focus self-test, which drives page ↔ command-bar ↔ tab-switch ↔
 # ⌘L transitions and asserts the page reclaims keyboard focus each time. Exits
-# non-zero on any failure. Runs under a throwaway $HOME so it never collides with
-# a running instance on Chromium's process singleton.
+# non-zero on any failure. Runs under a throwaway $HOME so it never touches your
+# real profile.
 focus-selftest: gen-macos
     ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build.noindex build'
     HOME="$(mktemp -d)" ./apps/macos/build.noindex/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --focus-selftest
@@ -114,17 +87,16 @@ focus-selftest: gen-macos
 # drag self-test, which drives reorder / save / folder / favorite / cancel drags
 # through the gesture pipeline against live row frames and asserts the core's
 # resulting structure after each. Exits non-zero on any failure. Throwaway $HOME
-# so it never collides with a running instance on Chromium's process singleton.
+# so it never touches your real profile.
 drag-selftest: gen-macos
     ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build.noindex build'
     HOME="$(mktemp -d)" ./apps/macos/build.noindex/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --drag-selftest
 
 # P1-30 ⌘W close-path regression (ADR-0037): builds the app and runs the
 # in-process close self-test, which drives ⌘W through the menu against an
-# ordinary tab, an active saved tab (the suspend path that raced CEF's
-# DoClose→performClose:), and the empty canvas, asserting the window only
+# ordinary tab, an active saved tab (the suspend path), and the empty canvas, asserting the window only
 # closes from the empty canvas. Exits non-zero on any failure. Throwaway $HOME
-# so it never collides with a running instance on Chromium's process singleton.
+# so it never touches your real profile.
 close-selftest: gen-macos
     ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build.noindex build'
     HOME="$(mktemp -d)" ./apps/macos/build.noindex/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --close-selftest
@@ -181,8 +153,8 @@ emdash-check:
         exit 1; \
     fi
 
-# Privacy usage strings must sit in the main app's Info.plist: TCC attributes a CEF
-# helper's camera/mic/Bluetooth/location request to the app and aborts without them.
+# Privacy usage strings must sit in the main app's Info.plist: TCC attributes a web
+# content process's camera/mic/Bluetooth/location request to the app and aborts without them.
 privacy-check:
     @for k in NSMicrophoneUsageDescription NSCameraUsageDescription NSBluetoothAlwaysUsageDescription NSLocationUsageDescription NSLocationWhenInUseUsageDescription; do \
         grep -q "^        $k: " apps/macos/project.yml || { echo "error: $k missing from apps/macos/project.yml info.properties (TCC aborts the app without it)"; exit 1; }; \

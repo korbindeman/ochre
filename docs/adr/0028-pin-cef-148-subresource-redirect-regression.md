@@ -1,6 +1,6 @@
 # ADR-0028: Pin CEF to the 148 line - Chromium 149 drops subresource redirects (`ERR_INVALID_ARGUMENT`)
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0074
 - **Date:** 2026-07-07
 
 ## Context

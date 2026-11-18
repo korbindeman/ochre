@@ -26,8 +26,10 @@ final class CloseSelfTest {
     private unowned let app: AppDelegate
 
     /// Network-free fixture pages so the harness never depends on connectivity.
-    private let fixtureURL = "data:text/html,<h1>close-selftest</h1>"
-    private let temporaryURL = "data:text/html,<h1>temporary-navigation</h1>"
+    // Already in the percent-encoded form WebKit reports back as the page URL,
+    // so the saved-URL vs current-URL comparisons below are exact.
+    private let fixtureURL = "data:text/html,%3Ch1%3Eclose-selftest%3C/h1%3E"
+    private let temporaryURL = "data:text/html,%3Ch1%3Etemporary-navigation%3C/h1%3E"
 
     /// Time between steps - long enough for a structure change to round-trip
     /// the core *and* for CEF's async browser-close pipeline (renderer

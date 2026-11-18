@@ -379,10 +379,6 @@ char *browser_vault_update_login(const char *id, const char *name, const char *u
 // Delete login `id`. Blocks. JSON envelope.
 char *browser_vault_delete_login(const char *id);
 
-// ─── CDP automation surface (P0-4) ──────────────────────────────────────────
-// Enable/disable the consent-gated CDP surface; persisted, takes effect next launch.
-void browser_cdp_set_enabled(bool enabled);
-bool browser_cdp_is_enabled(void);
 
 // ─── Adblock (ADR-0020, spec §11) ───────────────────────────────────────────
 // Native request-path ad-blocking. The global switch and the per-site allowlist

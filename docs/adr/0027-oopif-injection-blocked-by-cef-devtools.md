@@ -1,6 +1,6 @@
 # ADR-0027: Cross-origin iframe (OOPIF) injection is blocked by CEF's DevTools observer
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0074
 - **Date:** 2026-07-07
 
 ## Context

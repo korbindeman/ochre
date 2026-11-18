@@ -1358,21 +1358,6 @@ pub unsafe extern "C" fn browser_vault_delete_login(id: *const c_char) -> *mut c
     vault_ok_or_err(browser_core::vault::service::delete_login(&cstr(id)))
 }
 
-// --- CDP automation surface (P0-4) ---
-
-/// Enable/disable the consent-gated CDP surface. Persisted; **takes effect on the
-/// next launch** (the debugging port is a Chromium startup switch).
-#[no_mangle]
-pub extern "C" fn browser_cdp_set_enabled(enabled: bool) {
-    browser_core::cdp::set_enabled(enabled);
-}
-
-/// Whether CDP is enabled (the persisted choice / what the next launch will do).
-#[no_mangle]
-pub extern "C" fn browser_cdp_is_enabled() -> bool {
-    browser_core::cdp::is_enabled()
-}
-
 // --- Adblock (ADR-0020, spec §11) ---
 
 /// Whether ad-blocking is globally enabled (on by default).

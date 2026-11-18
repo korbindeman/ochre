@@ -1,6 +1,6 @@
 # ADR-0061: Device passkeys use the OS platform authenticator; vault passkeys later
 
-- **Status:** Accepted (ad-hoc keychain-access-groups stamp superseded by ADR-0062)
+- **Status:** Superseded by ADR-0074
 - **Date:** 2026-08-14
 
 ## Context

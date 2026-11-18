@@ -10,11 +10,6 @@ name = "browser_ffi"
 # cdylib: linked by the SwiftUI app. rlib: usable by other Rust crates/tests.
 crate-type = ["cdylib", "rlib"]
 
-[features]
-# Forwarded to browser-core. Enable only for Developer-ID-signed builds
-# (stable keychain ACL). See `app::append_mock_keychain_switch`.
-production-keychain = ["browser-core/production-keychain"]
-
 [dependencies]
 browser-core = { path = "../core" }
 # Serialize JSON payloads (structure snapshot, omnibox rows, ...).

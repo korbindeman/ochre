@@ -16,7 +16,6 @@
 //! (ADR-0030). In `System` mode the resolved scheme follows the last forwarded
 //! value; in `Light`/`Dark` it is fixed and the OS value is ignored.
 
-use cef::{request_context_get_global_context, ColorVariant, ImplRequestContext};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -105,7 +104,7 @@ pub fn set_system_dark(is_dark: bool) {
 }
 
 /// Load the persisted preference into the global. Absent/corrupt ⇒ default
-/// (System). Call once at startup, after `cef_initialize`, before the first
+/// (System). Call once at startup, before the first
 /// browser. Does not apply - the host drives the first apply via
 /// [`set_system_dark`] once it knows the OS appearance.
 pub fn load_persisted() {
@@ -114,30 +113,15 @@ pub fn load_persisted() {
     }
 }
 
-/// Whether the effective (resolved) scheme is dark, given the preference and the
-/// last forwarded OS appearance.
-fn resolved_dark() -> bool {
-    match preference() {
-        ThemePreference::Light => false,
-        ThemePreference::Dark => true,
-        ThemePreference::System => SYSTEM_DARK.load(Ordering::Relaxed),
-    }
-}
-
-/// Push the resolved scheme onto the global request context. All browsers share
-/// it, so this themes every tab live (no reload). Main thread / UI thread only -
-/// request-context operations must run there.
+/// Push the scheme onto every web view (live, no reload). `System` lets each
+/// view follow its window, which follows the OS. Main thread only.
 fn apply() {
-    let variant = if resolved_dark() {
-        ColorVariant::DARK
-    } else {
-        ColorVariant::LIGHT
+    let forced = match preference() {
+        ThemePreference::Light => Some(false),
+        ThemePreference::Dark => Some(true),
+        ThemePreference::System => None,
     };
-    if let Some(context) = request_context_get_global_context() {
-        // `user_color` (2nd arg) seeds the generated-palette variants only; for
-        // LIGHT/DARK it is ignored, so 0.
-        context.set_chrome_color_scheme(variant, 0);
-    }
+    crate::engine::set_dark(forced);
 }
 
 fn state_path() -> String {

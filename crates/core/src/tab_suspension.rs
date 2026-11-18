@@ -1,4 +1,4 @@
-//! Runtime tab suspension policy - when to discard a background tab's CEF browser.
+//! Runtime tab suspension policy - when to discard a background tab's web view.
 //!
 //! ADR-0013's lazy hydration handles *restore-at-launch*; this module handles
 //! *discard-while-running*: free renderer memory for tabs the user is not on,
@@ -10,8 +10,6 @@
 //! on a fixed timer.
 
 use std::sync::{LazyLock, Mutex};
-
-use cef::*;
 
 use crate::tabs::{self, TabId};
 
@@ -61,8 +59,7 @@ fn reconcile_warm_budget() {
 }
 
 fn schedule_reconcile() {
-    // Unit tests drive the tab store without CEF loaded; posting a CEF task
-    // there dereferences an unloaded library.
+    // Unit tests drive the tab store with no main run loop to service posts.
     if cfg!(test) {
         return;
     }
@@ -73,29 +70,17 @@ fn schedule_reconcile() {
         *guard += 1;
         *guard
     };
-    let mut task = ReconcileWarmBudgetTask::new(generation);
-    post_delayed_task(ThreadId::UI, Some(&mut task), RECONCILE_GRACE_MS);
-}
-
-wrap_task! {
-    struct ReconcileWarmBudgetTask {
-        generation: u64,
-    }
-
-    impl Task {
-        fn execute(&self) {
-            debug_assert_ne!(currently_on(ThreadId::UI), 0);
-            let still_valid = {
-                let guard = PENDING_RECONCILE
-                    .lock()
-                    .expect("suspend reconcile lock poisoned");
-                *guard == self.generation
-            };
-            if still_valid {
-                reconcile_warm_budget();
-            }
+    crate::main_thread::post_delayed(RECONCILE_GRACE_MS, move || {
+        let still_valid = {
+            let guard = PENDING_RECONCILE
+                .lock()
+                .expect("suspend reconcile lock poisoned");
+            *guard == generation
+        };
+        if still_valid {
+            reconcile_warm_budget();
         }
-    }
+    });
 }
 
 #[cfg(test)]

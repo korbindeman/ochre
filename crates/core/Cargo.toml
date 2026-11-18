@@ -1,7 +1,7 @@
 [package]
 name = "browser-core"
 version = "0.1.0"
-description = "Core engine: tabs, spaces, adblock, vault, CDP surface (§17 architecture spec)"
+description = "Core: WebKit engine wrapper, tabs, spaces, adblock, vault (ADR-0072)"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -10,44 +10,15 @@ authors.workspace = true
 name = "browser_core"
 crate-type = ["rlib", "cdylib"]
 
-[[bin]]
-name = "browser"
-path = "src/bin/browser.rs"
-
-[[bin]]
-name = "browser_helper"
-path = "src/bin/browser_helper.rs"
-
-# Dev-only: builds `browser` + `browser_helper` and assembles the standalone
-# `browser.app` (CEF must run from a bundle). See `src/bin/bundle.rs`.
-[[bin]]
-name = "bundle"
-path = "src/bin/bundle.rs"
-
 [features]
-# The CEF macOS sandbox needs a signed bundle plus `Sandbox::initialize` wiring
-# in each process; that's a later (signing/entitlements) milestone. The spike
-# runs unsandboxed (`Settings::no_sandbox`), which is the standard CEF dev
-# configuration. Enable with `--features sandbox` once that wiring lands.
 default = []
-sandbox = ["cef/sandbox"]
-# Use Chromium's real macOS keychain for cookie/password encryption and passkeys.
-# Off by default: unsigned/ad-hoc dev and dogfood builds use the in-memory mock
-# keychain instead (see `app::append_mock_keychain_switch`). Enable only for
-# signed production CI builds once Apple signing lands (backlog P0-2).
-production-keychain = []
 # Pulls the RSA/rand deps the ignored live-server harness needs to register a
 # fresh Vaultwarden account (see `tests/vault_live.rs`). Off by default so normal
 # `cargo test` / `just verify` never compiles them.
 live-tests = ["dep:rsa", "dep:rand"]
 
-[package.metadata.cef.bundle]
-helper_name = "browser_helper"
-resources_path = "resources"
-
 [dependencies]
-cef = { workspace = true }
-# Used only by the `bundle` binary to construct the app's `BundleInfo`.
+# Release version comparison for auto-update (ADR-0052).
 semver = "1"
 # History + favicon store (see `src/history.rs`).
 rusqlite = { workspace = true }
@@ -78,7 +49,7 @@ libc = { workspace = true }
 psl = { workspace = true }
 # Credential-import CSV parsing (ADR-0016, spec §10).
 csv = { workspace = true }
-# Native request-path ad-blocking on the CEF resource path (ADR-0019, spec §11).
+# Ad-blocking lists, compiled to WebKit content rules (ADR-0072).
 adblock = { workspace = true }
 # URL parsing for the favicon SSRF guard (scheme/host extraction; see `client/favicon.rs`).
 url = { workspace = true }
@@ -98,14 +69,29 @@ rand = { version = "0.8", optional = true }
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true }
 objc2-app-kit = { workspace = true, features = [
+    "NSAlert",
+    "NSAppearance",
     "NSApplication",
+    "NSButton",
+    "NSColor",
+    "NSControl",
     "NSEvent",
     "NSGraphics",
+    "NSImage",
+    "NSOpenPanel",
+    "NSPanel",
     "NSResponder",
+    "NSSavePanel",
+    "NSText",
+    "NSTextField",
     "NSUserInterfaceValidation",
     "NSView",
     "NSWindow",
+    "NSWorkspace",
+    "block2",
 ] }
+objc2-web-kit = { workspace = true }
+block2 = { workspace = true }
 
 [build-dependencies]
 anyhow = { workspace = true }

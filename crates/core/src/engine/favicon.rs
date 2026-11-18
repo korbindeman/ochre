@@ -1,10 +1,9 @@
 //! Favicon download and caching for the sidebar tab list.
 //!
-//! CEF's `download_image` often yields empty `CefImage` handles for favicon
-//! responses (ICO/SVG) even on HTTP 200, so we fetch the ranked candidate URLs
-//! directly and store PNG bytes NSImage can decode. Sites without `<link
-//! rel="icon">` (e.g. apple.com) never fire `on_favicon_urlchange`; a load-end
-//! fallback probes the usual well-known paths.
+//! WebKit has no favicon API, so when a page finishes loading we read its
+//! declared `<link rel="icon">` URLs with a script in an isolated world, rank
+//! them, fetch the best candidate directly, and store PNG bytes NSImage can
+//! decode. Pages without declared icons fall back to the well-known paths.
 //!
 //! ## Fetching runs off the UI thread, behind an SSRF guard
 //!
@@ -14,24 +13,27 @@
 //!   1. **SSRF.** A page can declare an icon at an internal host
 //!      (`http://169.254.169.254/...`, `http://127.0.0.1:8080/admin`, a LAN
 //!      router). Because this fetch runs in the privileged browser process via
-//!      `ureq` (outside CEF's network stack, so it bypasses adblock/proxy), an
+//!      `ureq` (outside WebKit's network stack, so it bypasses content rules), an
 //!      unguarded fetch is a blind cross-origin request into the LAN / cloud
 //!      metadata / loopback services. [`fetch_url_allowed`] blocks that: only
 //!      `http`/`https`, and a cross-origin target must resolve entirely to
 //!      publicly-routable addresses. A page fetching *its own* origin (same
 //!      host) is always allowed, so a local-dev page on loopback still gets its
 //!      favicon. The guard re-runs on every redirect hop.
-//!   2. **UI-thread stall.** The fetch is blocking HTTP; running it on the CEF
-//!      UI thread lets a slow/tarpit server freeze the browser. [`start_favicon_download`]
+//!   2. **UI-thread stall.** The fetch is blocking HTTP; running it on the main
+//!      thread lets a slow/tarpit server freeze the browser. [`start_favicon_download`]
 //!      runs the download on a worker thread with explicit timeouts and marshals
-//!      the store + notify back to the UI thread via `post_task`.
+//!      the store + notify back to the main thread via `main_thread::post`.
 
 use std::io::{Cursor, Read};
 use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::time::Duration;
 
-use cef::*;
 use image::{ImageEncoder, ImageReader};
+use objc2::runtime::AnyObject;
+use objc2::MainThreadMarker;
+use objc2_foundation::{NSArray, NSError, NSString};
+use objc2_web_kit::{WKContentWorld, WKWebView};
 use resvg::tiny_skia::{self, Pixmap};
 use resvg::usvg::{self, Tree};
 use url::Url;
@@ -47,25 +49,6 @@ const FAVICON_TOTAL_TIMEOUT: Duration = Duration::from_secs(15);
 const FAVICON_MAX_REDIRECTS: usize = 4;
 /// Cap on downloaded favicon bytes.
 const FAVICON_MAX_BYTES: u64 = 256 * 1024;
-
-/// Borrow every icon URL from a CEF string list without consuming it.
-fn collect_icon_urls(list: &mut CefStringList) -> Vec<String> {
-    let raw: *mut sys::_cef_string_list_t = list.into();
-    if raw.is_null() {
-        return Vec::new();
-    }
-    unsafe {
-        let size = sys::cef_string_list_size(raw);
-        let mut urls = Vec::with_capacity(size);
-        for i in 0..size {
-            let mut value = std::mem::zeroed();
-            if sys::cef_string_list_value(raw, i, &mut value) != 0 {
-                urls.push(CefString::from(std::ptr::from_ref(&value)).to_string());
-            }
-        }
-        urls
-    }
-}
 
 /// Higher scores win. SVG is last resort - rasterize when no raster is available.
 fn icon_format_score(url: &str) -> u8 {
@@ -137,7 +120,7 @@ fn fallback_icon_urls(page_url: &str, page_host: &str) -> Vec<String> {
 
 /// Ordered, deduplicated favicon candidates: raster from the page first, then the
 /// site-root ICO (matching scheme + port), then SVG.
-pub(super) fn rank_icon_urls(urls: &[String], page_url: &str, page_host: &str) -> Vec<String> {
+pub(crate) fn rank_icon_urls(urls: &[String], page_url: &str, page_host: &str) -> Vec<String> {
     let mut ranked: Vec<(u8, String)> = urls
         .iter()
         .map(|url| (icon_format_score(url), url.clone()))
@@ -171,15 +154,6 @@ pub(super) fn rank_icon_urls(urls: &[String], page_url: &str, page_host: &str) -
         }
     }
     out
-}
-
-/// Ranked favicon candidates from CEF's `on_favicon_urlchange` list.
-pub(super) fn rank_icon_urls_from_list(
-    list: &mut CefStringList,
-    page_url: &str,
-    page_host: &str,
-) -> Vec<String> {
-    rank_icon_urls(&collect_icon_urls(list), page_url, page_host)
 }
 
 /// True if `ip` is a publicly-routable address safe to fetch from a
@@ -389,27 +363,20 @@ fn store_favicon_for_browser(cef_id: i32, host: &str, bytes: &[u8]) {
 /// thread (it emits a `tabs::Event` that the native layer marshals to its main
 /// actor).
 fn store_and_note(cef_id: i32, host: &str, bytes: &[u8]) {
-    debug_assert_ne!(currently_on(ThreadId::UI), 0);
     store_favicon_for_browser(cef_id, host, bytes);
     if !crate::private_window::note_favicon(cef_id, host) {
         tabs::note_favicon(cef_id, host);
     }
 }
 
-/// Hand the captured favicon to the UI thread, hopping via `post_task` when the
-/// caller is a background download worker.
+/// Hand the captured favicon to the main thread (callers are download workers).
 fn deliver_favicon(cef_id: i32, host: String, bytes: Vec<u8>) {
-    if currently_on(ThreadId::UI) != 0 {
-        store_and_note(cef_id, &host, &bytes);
-        return;
-    }
-    let mut task = DeliverFaviconTask::new(cef_id, host, bytes);
-    post_task(ThreadId::UI, Some(&mut task));
+    crate::main_thread::post(move || store_and_note(cef_id, &host, &bytes));
 }
 
 /// Download ranked candidates on a worker thread (blocking HTTP must stay off
-/// the CEF UI thread), stopping at the first that yields storable icon bytes.
-pub(super) fn start_favicon_download(cef_id: i32, host: String, candidates: Vec<String>) {
+/// the main thread), stopping at the first that yields storable icon bytes.
+pub(crate) fn start_favicon_download(cef_id: i32, host: String, candidates: Vec<String>) {
     std::thread::spawn(move || {
         let agent = favicon_agent();
         for url in &candidates {
@@ -430,7 +397,7 @@ pub(super) fn start_favicon_download(cef_id: i32, host: String, candidates: Vec<
 }
 
 /// Try to capture a favicon from declared page URLs and well-known fallbacks.
-pub(super) fn fetch_favicon(cef_id: i32, page_url: &str, declared_urls: &[String]) {
+pub(crate) fn fetch_favicon(cef_id: i32, page_url: &str, declared_urls: &[String]) {
     let Some(host) = history::host_of(page_url) else {
         return;
     };
@@ -441,28 +408,48 @@ pub(super) fn fetch_favicon(cef_id: i32, page_url: &str, declared_urls: &[String
     start_favicon_download(cef_id, host, candidates);
 }
 
-/// Load-end fallback: skip when a favicon is already cached for this host.
-pub(super) fn fetch_favicon_if_missing(cef_id: i32, page_url: &str) {
-    let Some(host) = history::host_of(page_url) else {
+/// Script (isolated world) that lists the page's declared icon URLs.
+const DECLARED_ICONS_JS: &str = "Array.from(document.querySelectorAll('link[rel~=\\'icon\\'],link[rel=\\'apple-touch-icon\\']')).map(function(l){return l.href}).filter(Boolean)";
+
+/// After a main-frame load: read the declared icons and fetch the best one,
+/// unless this host already has a cached favicon.
+pub(crate) fn collect_from_page(cef_id: i32, view: &WKWebView) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    // SAFETY: main thread (navigation-delegate callback).
+    let Some(page_url) = unsafe { view.URL() }
+        .and_then(|u| u.absoluteString())
+        .map(|s| s.to_string())
+    else {
+        return;
+    };
+    let Some(host) = history::host_of(&page_url) else {
         return;
     };
     if history::favicon(&host).is_some() {
         return;
     }
-    fetch_favicon(cef_id, page_url, &[]);
-}
-
-wrap_task! {
-    struct DeliverFaviconTask {
-        cef_id: i32,
-        host: String,
-        bytes: Vec<u8>,
-    }
-
-    impl Task {
-        fn execute(&self) {
-            store_and_note(self.cef_id, &self.host, &self.bytes);
-        }
+    let done = block2::RcBlock::new(move |result: *mut AnyObject, _err: *mut NSError| {
+        let declared: Vec<String> = unsafe { result.as_ref() }
+            .and_then(|r| r.downcast_ref::<NSArray>())
+            .map(|array| {
+                array
+                    .iter()
+                    .filter_map(|item| item.downcast_ref::<NSString>().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        fetch_favicon(cef_id, &page_url, &declared);
+    });
+    // SAFETY: main thread; the client world keeps page scripts out.
+    unsafe {
+        view.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
+            &NSString::from_str(DECLARED_ICONS_JS),
+            None,
+            &WKContentWorld::defaultClientWorld(mtm),
+            Some(&done),
+        );
     }
 }
 

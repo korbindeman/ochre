@@ -1,7 +1,8 @@
-//! Private (incognito) windows - ephemeral tab sets in isolated CEF profiles.
+//! Private (incognito) windows - ephemeral tab sets in isolated WebKit profiles.
 //!
-//! Each private window owns a flat list of tabs backed by a dedicated
-//! [`cef::RequestContext`] with an empty `cache_path` (in-memory / off-the-record).
+//! Each private window owns a flat list of tabs backed by its own
+//! non-persistent `WKWebsiteDataStore` ([`crate::engine::Profile::Private`]):
+//! cookies and storage live in memory and vanish with the window.
 //! Nothing is written to history, session restore, or the persisted adblock
 //! allowlist. Per-site shield overrides live only in the window's RAM.
 
@@ -9,15 +10,9 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::sync::{Mutex, OnceLock};
 
-use cef::CefString;
-use cef::{
-    browser_host_create_browser_sync, request_context_create_context, Browser, BrowserSettings,
-    ImplBrowser, ImplBrowserHost, Rect, RequestContext, RequestContextSettings, RuntimeStyle,
-    WindowInfo,
-};
 use serde::Serialize;
 
-use crate::client::BrowserClient;
+use crate::engine::{Browser, Profile};
 use crate::tabs::{Event, EventCallback, TabId, NONE_ID};
 
 pub type WindowId = i32;
@@ -51,7 +46,6 @@ struct PrivateTab {
 
 pub struct PrivateWindow {
     id: WindowId,
-    context: RequestContext,
     tabs: Vec<PrivateTab>,
     active_tab: Option<TabId>,
     /// Ephemeral per-site adblock allowlist (registrable domains).
@@ -98,14 +92,6 @@ fn emit(window_id: WindowId, event: Event, tab_id: i32, payload: Option<&str>) {
     }
 }
 
-fn create_incognito_context() -> RequestContext {
-    let settings = RequestContextSettings {
-        cache_path: CefString::from(""),
-        ..Default::default()
-    };
-    request_context_create_context(Some(&settings), None).expect("incognito request context")
-}
-
 /// Allocate a new private window (incognito profile + empty tab list). Returns its
 /// id (`>= 1`). Does not create a tab yet.
 pub fn create_window() -> WindowId {
@@ -117,7 +103,6 @@ pub fn create_window() -> WindowId {
     };
     let window = PrivateWindow {
         id,
-        context: create_incognito_context(),
         tabs: Vec::new(),
         active_tab: None,
         allowlist: Vec::new(),
@@ -182,7 +167,7 @@ fn allowlist_key(host: &str) -> String {
     }
 }
 
-/// Ephemeral allowlist for a CEF browser id, if it belongs to a private tab.
+/// Ephemeral allowlist for a web view id, if it belongs to a private tab.
 pub fn ephemeral_allowlist_for_cef(cef_id: i32) -> Option<Vec<String>> {
     let guard = windows().lock().unwrap_or_else(|p| p.into_inner());
     for window in guard.values() {
@@ -254,40 +239,8 @@ unsafe fn create_tab_browser(
     height: i32,
     url: &str,
 ) -> Option<Browser> {
-    let context = with_window(window_id, |w| w.context.clone())?;
-    let bounds = Rect {
-        x: 0,
-        y: 0,
-        width: width.max(1),
-        height: height.max(1),
-    };
-    let window_info = WindowInfo {
-        runtime_style: RuntimeStyle::ALLOY,
-        ..Default::default()
-    }
-    .set_as_child(parent_view, &bounds);
-
-    let client = BrowserClient::create(RuntimeStyle::ALLOY);
-    crate::embed::retain_client(client.clone());
-    let mut client = Some(client);
-
-    let settings = BrowserSettings::default();
-    let cef_url = CefString::from(url);
-    let mut context = Some(context);
-    let browser = browser_host_create_browser_sync(
-        Some(&window_info),
-        client.as_mut(),
-        Some(&cef_url),
-        Some(&settings),
-        None,
-        context.as_mut(),
-    );
-    // Private tabs live inside the host's window too - suppress CEF's default
-    // close-the-parent-window for them (ADR-0037).
-    if let Some(browser) = &browser {
-        crate::client::note_embedded_tab(browser);
-    }
-    browser
+    with_window(window_id, |_| ())?;
+    crate::engine::create(parent_view, width, height, url, Profile::Private(window_id))
 }
 
 fn register_tab(window_id: WindowId, browser: Browser, url: &str) -> TabId {
@@ -404,13 +357,7 @@ fn reconcile_visibility(window_id: WindowId) {
 }
 
 fn set_visible(browser: &Browser, visible: bool) {
-    let Some(host) = browser.host() else {
-        return;
-    };
-    host.was_hidden(i32::from(!visible));
-    if visible {
-        host.set_focus(1);
-    }
+    browser.set_visible(visible);
 }
 
 pub fn close_tab(window_id: WindowId, id: TabId) {
@@ -424,10 +371,7 @@ pub fn close_tab(window_id: WindowId, id: TabId) {
     })
     .flatten();
     if let Some(browser) = browser {
-        if let Some(host) = browser.host() {
-            host.close_browser(1);
-        }
-        crate::adblock::forget_tab(browser.identifier());
+        browser.close();
     }
     emit(window_id, Event::StructureChanged, 0, None);
 }
@@ -439,15 +383,13 @@ pub fn destroy_window(window_id: WindowId) {
     })
     .unwrap_or_default();
     for browser in tabs.into_iter().flatten() {
-        if let Some(host) = browser.host() {
-            host.close_browser(1);
-        }
-        crate::adblock::forget_tab(browser.identifier());
+        browser.close();
     }
     windows()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .remove(&window_id);
+    crate::engine::drop_private_profile(window_id);
     if focused_window() == window_id {
         set_focused_window(NORMAL_WINDOW_ID);
     }
@@ -699,6 +641,12 @@ pub fn set_site_allowlisted(window_id: WindowId, host: &str, allowlisted: bool) 
             _ => {}
         }
     });
+    crate::main_thread::post(crate::engine::content_rules::refresh);
+}
+
+/// A private window's ephemeral allowlist (registrable domains).
+pub fn ephemeral_allowlist(window_id: WindowId) -> Vec<String> {
+    with_window(window_id, |w| w.allowlist.clone()).unwrap_or_default()
 }
 
 /// Live browsers in a private window - for close-on-window-exit.

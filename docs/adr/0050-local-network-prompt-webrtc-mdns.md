@@ -1,6 +1,6 @@
 # ADR-0050: Local-network prompt root cause (WebRTC mDNS); Cast discovery disabled as intent
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0074
 - **Date:** 2026-07-16
 
 ## Context

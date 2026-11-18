@@ -1,6 +1,6 @@
 # ADR-0020: Native ad-blocking - request-path engine, seed-plus-hot-swap lists, per-site shield UI
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0074
 - **Date:** 2026-07-07
 
 ## Context
