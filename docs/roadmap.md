@@ -390,6 +390,9 @@ per-tab CEF memory policy.
   (Fill/Copy for the current site), the detection-independent manual path where Copy always works (P2-34, done;
   ADR-0029). Two situations stay gated: cross-origin **iframe** logins ("Sign in with X" embeds) need the
   render-process path (P2-24, ADR-0027), and the native **save-password banner** needs the M2 chrome (P2-23).
+- **Familiar on sight:** a **Classic layout** (ADR-0073) beside the Arc sidebar - a Safari-compact single row
+  where the active tab is the address field, with Spaces, favorites, pinned tabs and folders kept. Behavior stays
+  Arc's; only the layout changes. Lowers the switching wall for Chrome/Safari users without a second model.
 - **Native-absorb (§3.1):** ad/tracker block matured; native dark/reader mode; **Tweaks** - Snip (element
   remover) + per-site CSS, with the userscript (Script) tier in beta (spec §20).
 

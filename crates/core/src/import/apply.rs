@@ -10,6 +10,8 @@ pub struct ApplyResult {
     pub tabs: usize,
     pub favorites: usize,
     pub skipped_duplicates: usize,
+    /// History pages merged from Arc's `History` file (new or changed).
+    pub history: usize,
 }
 
 #[derive(Debug)]

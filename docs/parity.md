@@ -75,6 +75,8 @@ command/event a frontend must bind) so they can't silently drift from the code -
 | Window-control placement (traffic lights inset / caption buttons) | Idiom | ✅ | ⬜ | ⬜ | style §3 · ADR-0012 |
 | Sidebar URL chip (current-tab address; click / ⌘L → edit inline in the sidebar) | Inv | ✅ | ⬜ | ⬜ | style §6 · ADR-0014 |
 | Viewport address bar - page theme-color chrome (always when in-page mode; scroll-gated matched fill) | Idiom | 🚧 (viewport bar landed; interaction polish + theme-color chrome → P1-28) | ⬜ | ⬜ | P1-28 · `theme_color.rs` |
+| Layout setting: Sidebar \| Classic (global, core-stored) | Inv | 🚧 (core + FFI landed P2-56; picker in P2-57) | ⬜ | ⬜ | style §3 · ADR-0073 |
+| Classic compact row: active tab is the address field; Space picker; icon tabs; folder menus; overflow scroll | Inv | ⬜ (P2-57..P2-60) | ⬜ | ⬜ | style §3 · ADR-0073 |
 | Sidebar page-aware tint (optional setting; per-tab color, no scroll gating) | Idiom | ✅ (Settings → Appearance → Match page color; off by default) | ⬜ | ⬜ | P2-37 · `theme_color.rs` |
 
 ## Tabs

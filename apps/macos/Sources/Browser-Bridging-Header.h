@@ -265,6 +265,8 @@ void browser_private_adblock_set_site_allowlisted(int32_t window_id, bool allowl
 
 bool browser_settings_external_links_little(void);
 void browser_settings_set_external_links_little(bool enabled);
+int32_t browser_settings_layout(void);
+void browser_settings_set_layout(int32_t layout);
 bool browser_settings_private_vault_enabled(void);
 void browser_settings_set_private_vault_enabled(bool enabled);
 bool browser_settings_private_vault_prompt_seen(void);

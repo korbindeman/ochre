@@ -258,12 +258,113 @@ impl History {
         Ok(n > 0)
     }
 
+    /// Merge pages imported from another browser. Counts and recency take the
+    /// larger of the two sides, so importing the same file again changes
+    /// nothing; a local title wins over an imported one. Returns how many pages
+    /// were new or changed.
+    fn merge_imported(&mut self, pages: &[ImportedPage]) -> rusqlite::Result<usize> {
+        let tx = self.conn.transaction()?;
+        let mut changed = 0;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO history (url, title, host, visit_count, last_visit, typed_count)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(url) DO UPDATE SET
+                     title       = CASE WHEN title = '' THEN excluded.title ELSE title END,
+                     visit_count = MAX(visit_count, excluded.visit_count),
+                     last_visit  = MAX(last_visit, excluded.last_visit),
+                     typed_count = MAX(typed_count, excluded.typed_count)
+                 WHERE visit_count < excluded.visit_count
+                    OR last_visit  < excluded.last_visit
+                    OR typed_count < excluded.typed_count
+                    OR (title = '' AND excluded.title <> '')",
+            )?;
+            for page in pages {
+                let Some(host) = host_of(&page.url) else {
+                    continue;
+                };
+                changed += stmt.execute(params![
+                    page.url,
+                    page.title,
+                    host,
+                    page.visit_count,
+                    page.last_visit,
+                    page.typed_count
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
     /// Delete history rows last visited at or after `since` (Unix seconds);
     /// `since == 0` clears all history. Returns the number of rows removed.
     fn clear_since(&self, since: i64) -> rusqlite::Result<usize> {
         self.conn
             .execute("DELETE FROM history WHERE last_visit >= ?1", params![since])
     }
+}
+
+/// A page read from another browser's history, ready to merge.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportedPage {
+    pub url: String,
+    pub title: String,
+    pub visit_count: i64,
+    pub typed_count: i64,
+    /// Unix seconds.
+    pub last_visit: i64,
+}
+
+/// Seconds between the Windows epoch (1601), which Chromium's timestamps
+/// count from, and the Unix epoch.
+const CHROMIUM_EPOCH_OFFSET: i64 = 11_644_473_600;
+
+/// Read the visible http(s) pages from a Chromium-format `History` database
+/// (Arc, Chrome, Brave, Edge). The browser may be running and holding the
+/// file, so this reads a private copy (with its rollback journal, if any)
+/// and never touches the original.
+pub fn read_chromium_history(path: &std::path::Path) -> Result<Vec<ImportedPage>, String> {
+    let dir = std::env::temp_dir().join(format!(
+        "browser-history-import-{}-{}",
+        std::process::id(),
+        now()
+    ));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not make a temp folder: {e}"))?;
+    let result = (|| {
+        let copy = dir.join("History");
+        std::fs::copy(path, &copy)
+            .map_err(|e| format!("could not copy {}: {e}", path.display()))?;
+        let journal = path.with_file_name("History-journal");
+        if journal.exists() {
+            // Best effort: a hot journal lets SQLite roll the copy back to
+            // its last consistent state.
+            let _ = std::fs::copy(&journal, dir.join("History-journal"));
+        }
+        let conn = Connection::open(&copy).map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT url, title, visit_count, typed_count, last_visit_time FROM urls
+                 WHERE hidden = 0 AND (url LIKE 'http://%' OR url LIKE 'https://%')",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                let micros: i64 = row.get(4)?;
+                Ok(ImportedPage {
+                    url: row.get(0)?,
+                    title: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    visit_count: row.get(2)?,
+                    typed_count: row.get(3)?,
+                    last_visit: (micros / 1_000_000 - CHROMIUM_EPOCH_OFFSET).max(0),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
 }
 
 /// `PRAGMA journal_mode=WAL` rides in the batch so it applies on every open;
@@ -408,6 +509,19 @@ pub fn omnibox_inputs() -> (Vec<OmniboxPage>, Vec<Shortcut>) {
 /// a typed URL. See [`History::note_choice`].
 pub fn note_choice(input: &str, url: &str, typed: bool) {
     with_store(|h| h.note_choice(input, url, typed));
+}
+
+/// Merge pages from another browser into history; returns how many were new
+/// or changed (0 if the store is unavailable).
+pub fn import_pages(pages: &[ImportedPage]) -> usize {
+    let Some(store) = STORE.get() else { return 0 };
+    let Ok(mut store) = store.lock() else {
+        return 0;
+    };
+    store.merge_imported(pages).unwrap_or_else(|err| {
+        eprintln!("[history] import failed: {err}");
+        0
+    })
 }
 
 /// Set the title for an already-recorded page.
@@ -628,5 +742,72 @@ mod tests {
         // Zero clears everything remaining.
         assert_eq!(h.clear_since(0).unwrap(), 1);
         assert!(h.list("", 10, 0).unwrap().is_empty());
+    }
+
+    /// A Chromium `History` file merges in once: visible http(s) pages only,
+    /// timestamps converted from 1601 microseconds, typed counts kept, local
+    /// counts and titles never lowered, and a second import changes nothing.
+    #[test]
+    fn chromium_history_imports_once_and_never_lowers_local_counts() {
+        let dir =
+            std::env::temp_dir().join(format!("browser-chromium-history-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("History");
+        let _ = std::fs::remove_file(&path);
+        let unix = 1_700_000_000i64;
+        let chromium = (unix + CHROMIUM_EPOCH_OFFSET) * 1_000_000;
+        {
+            let src = Connection::open(&path).unwrap();
+            src.execute_batch(
+                "CREATE TABLE urls (id INTEGER PRIMARY KEY, url LONGVARCHAR, title LONGVARCHAR,
+                     visit_count INTEGER NOT NULL DEFAULT 0, typed_count INTEGER NOT NULL DEFAULT 0,
+                     last_visit_time INTEGER NOT NULL, hidden INTEGER NOT NULL DEFAULT 0);",
+            )
+            .unwrap();
+            for (url, title, visits, typed, hidden) in [
+                ("https://github.com/", "GitHub", 40, 12, 0),
+                ("https://docs.rs/serde", "serde", 3, 0, 0),
+                ("https://hidden.example/", "", 1, 0, 1),
+                ("chrome://settings/", "Settings", 9, 9, 0),
+                ("https://local.example/", "Imported title", 2, 0, 0),
+            ] {
+                src.execute(
+                    "INSERT INTO urls (url, title, visit_count, typed_count, last_visit_time, hidden)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![url, title, visits, typed, chromium, hidden],
+                )
+                .unwrap();
+            }
+        }
+
+        let pages = read_chromium_history(&path).unwrap();
+        assert_eq!(pages.len(), 3);
+        assert!(pages.iter().all(|p| p.last_visit == unix));
+
+        let mut h = store();
+        h.record_visit("https://local.example/").unwrap();
+        h.update_title("https://local.example/", "Local title")
+            .unwrap();
+        for _ in 0..4 {
+            h.record_visit("https://local.example/").unwrap();
+        }
+        assert_eq!(h.merge_imported(&pages).unwrap(), 2);
+        assert_eq!(h.merge_imported(&pages).unwrap(), 0);
+
+        let all = h.omnibox_candidates(10).unwrap();
+        let github = all.iter().find(|p| p.url == "https://github.com/").unwrap();
+        assert_eq!((github.visit_count, github.typed_count), (40, 12));
+        assert_eq!(github.title, "GitHub");
+        let local = all
+            .iter()
+            .find(|p| p.url == "https://local.example/")
+            .unwrap();
+        assert_eq!(local.visit_count, 5);
+        assert_eq!(local.title, "Local title");
+        assert!(!all
+            .iter()
+            .any(|p| p.url.contains("hidden") || p.url.starts_with("chrome:")));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

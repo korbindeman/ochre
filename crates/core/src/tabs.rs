@@ -2097,6 +2097,7 @@ pub fn apply_arc_import(
                 tabs: tabs_added,
                 favorites: favorites_added,
                 skipped_duplicates: skipped,
+                history: 0,
             },
             browsers_to_close,
         )

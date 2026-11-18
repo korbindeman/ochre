@@ -31,6 +31,7 @@ enum ArcImportFlow {
         let tabs: Int
         let favorites: Int
         let skippedDuplicates: Int
+        let history: Int
     }
 
     private struct ImportError: Error, LocalizedError {
@@ -169,6 +170,8 @@ enum ArcImportFlow {
                 Add to Sidebar keeps your current spaces and adds Arc's. Replace Sidebar \
                 clears everything first.
 
+                Your Arc history is added to address bar suggestions either way.
+
                 Open (“Today”) tabs from Arc are not in this file and won't import.
                 """
             alert.alertStyle = .informational
@@ -217,6 +220,11 @@ enum ArcImportFlow {
                 "Skipped \(result.skippedDuplicates) duplicate URL\(result.skippedDuplicates == 1 ? "" : "s") already in a space."
             )
         }
+        if result.history > 0 {
+            lines.append(
+                "Added \(result.history) page\(result.history == 1 ? "" : "s") from your Arc history to address bar suggestions."
+            )
+        }
         alert.informativeText = lines.joined(separator: " ")
         alert.alertStyle = .informational
         alert.runModal()
@@ -252,7 +260,8 @@ enum ArcImportFlow {
                     folders: payload["folders"] as? Int ?? 0,
                     tabs: payload["tabs"] as? Int ?? 0,
                     favorites: payload["favorites"] as? Int ?? 0,
-                    skippedDuplicates: payload["skipped_duplicates"] as? Int ?? 0)
+                    skippedDuplicates: payload["skipped_duplicates"] as? Int ?? 0,
+                    history: payload["history"] as? Int ?? 0)
             }
         }
     }

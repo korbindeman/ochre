@@ -573,6 +573,7 @@ pub unsafe extern "C" fn browser_import_arc(path: *const c_char, replace: bool) 
                 "tabs": result.tabs,
                 "favorites": result.favorites,
                 "skipped_duplicates": result.skipped_duplicates,
+                "history": result.history,
             })
         }),
     )
@@ -882,6 +883,17 @@ pub extern "C" fn browser_settings_external_links_little() -> bool {
 #[no_mangle]
 pub extern "C" fn browser_settings_set_external_links_little(enabled: bool) {
     browser_core::settings::set_external_links_little(enabled);
+}
+
+/// The window layout (ADR-0073): 0 Sidebar, 1 Classic.
+#[no_mangle]
+pub extern "C" fn browser_settings_layout() -> i32 {
+    browser_core::settings::layout().to_i32()
+}
+
+#[no_mangle]
+pub extern "C" fn browser_settings_set_layout(layout: i32) {
+    browser_core::settings::set_layout(browser_core::settings::Layout::from_i32(layout));
 }
 
 #[no_mangle]
