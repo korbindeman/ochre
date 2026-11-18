@@ -9,9 +9,13 @@
 # in the keychain. Team ID: $BROWSER_TEAM_ID, else the (TEAMID) suffix on the
 # identity name.
 #
-# Tries Browser.production.entitlements first (web-browser passkey capability).
-# If Apple has not granted that managed entitlement yet, falls back to
-# Browser.signed.entitlements (JIT + Chromium webauthn keychain group).
+# Host entitlements (ADR-0070): restricted entitlements (keychain-access-groups,
+# com.apple.developer.web-browser*) need an embedded provisioning profile, or
+# AMFI SIGKILLs the app at launch. codesign itself never rejects them, so the
+# choice is made up front:
+#   $BROWSER_PROVISIONING_PROFILE set -> embed it, sign Browser.production.entitlements
+#   otherwise                         -> sign Browser.release.entitlements (no restricted keys)
+# A final check refuses a signature that carries restricted keys without a profile.
 set -euo pipefail
 
 APP="${1:?usage: codesign-macos-app.sh /path/to/Ochre.app}"
@@ -64,6 +68,7 @@ trap 'rm -rf "$TMP"' EXIT
 subst_ents "$MACOS/Browser.helper.entitlements" "$TMP/helper.entitlements"
 subst_ents "$MACOS/Browser.signed.entitlements" "$TMP/signed.entitlements"
 subst_ents "$MACOS/Browser.production.entitlements" "$TMP/production.entitlements"
+subst_ents "$MACOS/Browser.release.entitlements" "$TMP/release.entitlements"
 
 sign() {
   local path="$1"
@@ -111,12 +116,27 @@ done
 shopt -u nullglob
 
 echo "[codesign] host app"
-if sign "$APP" --entitlements "$TMP/production.entitlements"; then
-  echo "[codesign] stamped web-browser + public-key-credential entitlements"
+PROFILE="${BROWSER_PROVISIONING_PROFILE:-}"
+if [[ -n "$PROFILE" ]]; then
+  if [[ ! -f "$PROFILE" ]]; then
+    echo "[codesign] error: BROWSER_PROVISIONING_PROFILE not found: $PROFILE" >&2
+    exit 1
+  fi
+  cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
+  echo "[codesign] embedded provisioning profile; signing restricted entitlements"
+  sign "$APP" --entitlements "$TMP/production.entitlements"
 else
-  echo "[codesign] production entitlements rejected (Apple has not granted the web-browser passkey capability yet)"
-  echo "[codesign] retrying with JIT + keychain-access-groups only"
-  sign "$APP" --entitlements "$TMP/signed.entitlements"
+  rm -f "$APP/Contents/embedded.provisionprofile"
+  echo "[codesign] no provisioning profile; signing without restricted entitlements (passkeys stay off)"
+  sign "$APP" --entitlements "$TMP/release.entitlements"
+fi
+
+# Guard (ADR-0070): restricted keys without a profile launch-kill the app.
+ents="$(codesign -d --entitlements :- "$APP" 2>/dev/null || true)"
+if grep -Eq "keychain-access-groups|com\.apple\.developer\." <<<"$ents" \
+  && [[ ! -f "$APP/Contents/embedded.provisionprofile" ]]; then
+  echo "[codesign] error: restricted entitlements signed without a provisioning profile; AMFI would kill the app at launch" >&2
+  exit 1
 fi
 
 codesign --verify --strict --verbose=2 "$APP"

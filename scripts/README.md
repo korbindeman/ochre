@@ -45,9 +45,18 @@ the keychain: exit 0 and leave the ad-hoc signature. Never `codesign --deep`
 |---|---|
 | `BROWSER_CODESIGN_IDENTITY` | Override (name or hash). Default: first `Developer ID Application` identity |
 | `BROWSER_TEAM_ID` | 10-character team id. Default: `(TEAMID)` suffix on the identity name |
+| `BROWSER_PROVISIONING_PROFILE` | Path to a Developer ID profile. Set: embed it and sign `Browser.production.entitlements`. Unset: sign `Browser.release.entitlements` (no restricted keys) |
 
-Tries `Browser.production.entitlements` first; if Apple has not granted the
-web-browser passkey capability, falls back to `Browser.signed.entitlements`.
+The script fails if the host ends up with restricted entitlements and no
+embedded profile, because AMFI would kill that build at launch (ADR-0070).
+
+## Notarize (`notarize-macos-app`)
+
+`scripts/notarize-macos-app.sh <App.app>` submits a Developer ID signed app,
+waits, staples, and runs `spctl`. Credentials: `NOTARY_KEY_ID` +
+`NOTARY_ISSUER_ID` + `NOTARY_KEY` (API key, CI) or `NOTARY_PROFILE` (local
+keychain profile). Without credentials it skips, unless `NOTARY_REQUIRED=1`.
+The full release runbook is `docs/release.md`.
 
 **Bypass / tuning**
 

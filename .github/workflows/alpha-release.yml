@@ -1,12 +1,17 @@
-# Alpha release - build the macOS .app with proprietary codecs and publish a public
-# pre-release on this repo. See docs/adr/0040 (codec build) and 0042 (why public
-# builds ship codecs, and the maintainer-codecs / contributor-codecless split).
+# Alpha release - build the macOS .app with proprietary codecs, Developer ID
+# sign and notarize it, and publish a public pre-release with signed update
+# artifacts. See docs/adr/0040 (codec build), 0042 (codec split), 0052
+# (updater), 0063 (friends get signed builds) and 0070 (release path).
 #
-# Prerequisite (one-time, manual): a fine-grained PAT with read-only "Contents"
-# on the private korbindeman/ochre_cef repo, stored here as the repo secret
-# CEF_ARTIFACT_TOKEN. The built-in GITHUB_TOKEN is scoped to this repo only and
-# cannot read a separate private repo. Fork PRs never receive this secret - that
-# is deliberate (ADR-0042): forks build codec-less, only maintainer runs ship codecs.
+# Repo secrets (one-time setup, see docs/release.md):
+#   CEF_ARTIFACT_TOKEN           read Contents on the private korbindeman/ochre_cef
+#   DEVELOPER_ID_P12_BASE64      Developer ID Application cert + key, base64 .p12
+#   DEVELOPER_ID_P12_PASSWORD    its export password
+#   NOTARY_KEY_ID / NOTARY_ISSUER_ID / NOTARY_KEY   App Store Connect API key (.p8 contents)
+#   UPDATE_SIGNING_PRIVATE_KEY (+ _PASSWORD)        minisign key matching update.rs
+#   PROVISIONING_PROFILE_BASE64  optional; only once Apple grants the passkey entitlement
+# Every one except the profile is required: the run fails instead of publishing
+# a build a friend cannot open or update.
 name: Alpha release
 
 on:
@@ -46,6 +51,47 @@ jobs:
           rustc --version
           brew install xcodegen just minisign
 
+      - name: Check release secrets
+        env:
+          P12: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+          UPDATE_KEY: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY }}
+        run: |
+          missing=""
+          [ -n "$P12" ] || missing="$missing DEVELOPER_ID_P12_BASE64"
+          [ -n "$NOTARY_KEY" ] || missing="$missing NOTARY_KEY"
+          [ -n "$UPDATE_KEY" ] || missing="$missing UPDATE_SIGNING_PRIVATE_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing release secrets:$missing. See docs/release.md."
+            exit 1
+          fi
+
+      # A throwaway keychain holding only the Developer ID identity; deleted at
+      # the end of the job.
+      - name: Import Developer ID certificate
+        env:
+          P12: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          PROFILE: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          kc="$RUNNER_TEMP/release.keychain-db"
+          kc_pass="$(uuidgen)"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/devid.p12"
+          security create-keychain -p "$kc_pass" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kc_pass" "$kc"
+          security import "$RUNNER_TEMP/devid.p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/devid.p12"
+          echo "RELEASE_KEYCHAIN=$kc" >> "$GITHUB_ENV"
+          security find-identity -v -p codesigning "$kc" | grep -q "Developer ID Application" \
+            || { echo "::error::The .p12 holds no Developer ID Application identity."; exit 1; }
+          if [ -n "$PROFILE" ]; then
+            printf '%s' "$PROFILE" | base64 --decode > "$RUNNER_TEMP/release.provisionprofile"
+            echo "BROWSER_PROVISIONING_PROFILE=$RUNNER_TEMP/release.provisionprofile" >> "$GITHUB_ENV"
+          fi
+
       # Pin CFBundleShortVersionString to the release tag so the updater can
       # compare running vs remote (ADR-0052).
       - name: Set marketing version from tag
@@ -79,8 +125,20 @@ jobs:
         run: echo "name=$(python3 scripts/product.py name)" >> "$GITHUB_OUTPUT"
 
       # CEF_PATH is already exported above, so with-work-gate.sh won't re-resolve it.
-      - name: Build app (Release)
-        run: just build-release
+      - name: Build and sign app (Release)
+        run: |
+          just build-release
+          app="apps/macos/build/Build/Products/Release/${{ steps.product.outputs.name }}.app"
+          codesign -dv "$app" 2>&1 | grep -q "Authority=Developer ID Application" \
+            || { echo "::error::The app is not Developer ID signed."; exit 1; }
+
+      - name: Notarize and staple
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+          NOTARY_REQUIRED: "1"
+        run: scripts/notarize-macos-app.sh "apps/macos/build/Build/Products/Release/${{ steps.product.outputs.name }}.app"
 
       - name: Verify the build actually has proprietary codecs
         run: |
@@ -93,8 +151,8 @@ jobs:
             exit 1
           fi
 
-      # ditto (not zip) so the .app's frameworks, symlinks and the ad-hoc
-      # signature survive archiving intact. Also produce the updater archive
+      # ditto (not zip) so the .app's frameworks, symlinks, signature and
+      # stapled ticket survive archiving intact. Also produce the updater archive
       # (<App>.app.tar.gz + latest.json, minisign-signed) - ADR-0052.
       - name: Package
         env:
@@ -114,12 +172,15 @@ jobs:
             "$RUNNER_TEMP/update-artifacts"
           cp "$RUNNER_TEMP/update-artifacts/${name}.app.tar.gz" .
           cp "$RUNNER_TEMP/update-artifacts/latest.json" .
-          # Fail the release if we expected a signature but got an empty one.
-          if [ -n "${UPDATE_SIGNING_PRIVATE_KEY:-}" ]; then
-            python3 -c 'import json,sys; d=json.load(open("latest.json")); s=d["platforms"]["darwin-aarch64"]["signature"]; sys.exit(0 if s else 1)'
-          else
-            echo "::warning::UPDATE_SIGNING_PRIVATE_KEY secret missing - latest.json has no signature; in-app updates will fail verify."
-          fi
+          # An unsigned manifest would make every installed copy refuse the update.
+          python3 -c 'import json,sys; d=json.load(open("latest.json")); s=d["platforms"]["darwin-aarch64"]["signature"]; sys.exit(0 if s else 1)' \
+            || { echo "::error::latest.json has no update signature."; exit 1; }
+          # The signature must verify against the key compiled into update.rs.
+          pub="$(grep -o 'PUBLIC_KEY_B64: &str = "[^"]*"' crates/core/src/update.rs | cut -d'"' -f2 | base64 --decode)"
+          printf '%s\n' "$pub" > "$RUNNER_TEMP/update.pub"
+          python3 -c 'import json,base64,sys; d=json.load(open("latest.json")); sys.stdout.buffer.write(base64.b64decode(d["platforms"]["darwin-aarch64"]["signature"]))' > "$RUNNER_TEMP/update.minisig"
+          minisign -V -p "$RUNNER_TEMP/update.pub" -m "${name}.app.tar.gz" -x "$RUNNER_TEMP/update.minisig" \
+            || { echo "::error::Update signature does not match the public key in update.rs."; exit 1; }
 
       - name: Publish pre-release
         env:
@@ -135,26 +196,14 @@ jobs:
           - **macOS 26 (Tahoe)** or newer
 
           ### Install
-          This build is not yet notarized by Apple, so macOS will refuse to open it
-          until you clear its quarantine flag. That takes one extra step, done once:
-
           1. Double-click the downloaded `.zip` file to unpack it. You get `__PRODUCT__.app`.
-          2. Drag `__PRODUCT__.app` into your **Applications** folder in Finder.
-          3. Open the **Terminal** app: press `Cmd` + `Space`, type `Terminal`, press `Return`.
-          4. Copy the line below, paste it into the Terminal window, and press `Return`:
+          2. Drag `__PRODUCT__.app` into your **Applications** folder.
+          3. Open it. It is signed and notarized by Apple, so it opens like any other app.
 
-             ```
-             xattr -cr /Applications/__PRODUCT__.app
-             ```
+          To bring your Arc tabs and Spaces over: Settings > General > Switching from Arc.
 
-             Nothing visible happens when it works. That's normal.
-          5. Open `__PRODUCT__.app` from Applications. From now on it opens like any other app.
-
-          If you put the app somewhere other than Applications: in step 4, type
-          `xattr -cr ` (with a space after it), drag `__PRODUCT__.app` from Finder into
-          the Terminal window (this fills in its location), then press `Return`.
-
-          Installed builds check for updates automatically (sidebar card → Update & Restart).
+          After that the app updates itself: when a new version is out, a card in
+          the sidebar offers **Update & Restart**.
 
           ### Notes
           Includes proprietary codecs (H.264/AAC), so mainstream MP4 video plays.
@@ -168,3 +217,8 @@ jobs:
             --prerelease \
             --title "${name} ${tag} (alpha)" \
             --notes-file "$RUNNER_TEMP/release-notes.md"
+
+      - name: Remove release keychain
+        if: always()
+        run: |
+          if [ -n "${RELEASE_KEYCHAIN:-}" ]; then security delete-keychain "$RELEASE_KEYCHAIN" || true; fi
