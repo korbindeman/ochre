@@ -111,9 +111,12 @@ pub fn parse_arc_sidebar(bytes: &[u8]) -> Result<ArcImport, ArcImportError> {
         .get("containers")
         .and_then(Value::as_array)
         .ok_or(ArcImportError::MissingSidebar)?;
+    // Current Arc writes more than one container with `spaces` (a near-empty
+    // one can come first); the user's sidebar is the one holding the items.
     let main = containers
         .iter()
-        .find(|c| c.get("spaces").is_some())
+        .filter(|c| c.get("spaces").is_some())
+        .max_by_key(|c| c.get("items").and_then(Value::as_array).map_or(0, Vec::len))
         .ok_or(ArcImportError::MissingSidebar)?;
 
     let items = collect_items(main.get("items").unwrap_or(&Value::Null));
@@ -434,6 +437,32 @@ mod tests {
         assert_eq!(preview.folders, 1);
         assert_eq!(preview.tabs, 2);
         assert_eq!(preview.favorites, 1);
+    }
+
+    /// Arc now writes a near-empty container with `spaces` before the real
+    /// sidebar. Picking the first one imported a single empty Space.
+    #[test]
+    fn picks_the_container_holding_the_sidebar_items() {
+        let real: Value = serde_json::from_slice(&fixture()).unwrap();
+        let main = real["sidebar"]["containers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c.get("spaces").is_some())
+            .unwrap()
+            .clone();
+        let decoy = serde_json::json!({
+            "spaces": ["decoy", { "id": "decoy", "containerIDs": ["unpinned", "decoy-c"] }],
+            "items": [],
+            "topAppsContainerIDs": []
+        });
+        let doc = serde_json::json!({ "sidebar": { "containers": [
+            { "littleBrowser": {} }, decoy, { "global": {} }, main
+        ] } });
+        let parsed = parse_arc_sidebar(&serde_json::to_vec(&doc).unwrap()).unwrap();
+        let expected = parse_arc_sidebar(&fixture()).unwrap().preview();
+        assert_eq!(parsed.preview().tabs, expected.tabs);
+        assert!(expected.tabs > 0);
     }
 
     #[test]

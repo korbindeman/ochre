@@ -77,6 +77,25 @@ if CommandLine.arguments.contains("--little-selftest") {
     }
 }
 
+// One-shot dogfood import: `--import-arc-replace` replaces every Space and tab
+// with Arc's current sidebar (the Settings import with Replace chosen), without
+// clicking through the UI. Logs the result; no-op when Arc's data is missing.
+if CommandLine.arguments.contains("--import-arc-replace") {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        MainActor.assumeIsolated {
+            guard let url = ArcImportFlow.detectedSidebarURL() else {
+                NSLog("[arc-import] no Arc sidebar found")
+                return
+            }
+            if let error = ArcImportFlow.importSidebarError(at: url, replace: true) {
+                NSLog("[arc-import] failed: \(error)")
+            } else {
+                NSLog("[arc-import] replaced from \(url.path)")
+            }
+        }
+    }
+}
+
 // New-tab create path: direct openTab + Navigation.open (.newTab) + ⌘T commit.
 var newTabSelfTest: NewTabSelfTest?
 if CommandLine.arguments.contains("--newtab-selftest") {
