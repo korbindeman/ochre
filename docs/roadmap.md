@@ -7,6 +7,18 @@ developers, and people who love beautiful, clean browsers - and in what order do
 Cross-refs: bare `§N` = this doc; `spec §N` = architecture.md; `mvp` = mvp1.md. Where this doc revisits a
 decision locked in the spec, it says so explicitly and presents options + a recommendation - the call is yours.
 
+> **Current direction (2026-11-18).** Read the rest of this doc through these decisions:
+>
+> - **Personal first** (ADR-0063). Ochre is Korbin's browser, shared with friends leaving Arc as it
+>   shuts down. All of them are on macOS. They need what exists: Arc import, Spaces, Favorites /
+>   Pinned / Open. A public launch is parked: §6.5, §7, and the Zen positioning are `later`. Phase 2
+>   below means "the friends' daily driver", not a public beta.
+> - **Friends get signed builds** from GitHub Releases, kept current by auto-update (§6.2, ADR-0052).
+> - **SwiftUI is the only frontend for now** (ADR-0064). A vitae (Rust) frontend comes later, once
+>   vitae renders native UI, and replaces Swift when shared selftests and screenshot comparisons prove
+>   parity. vitae is also the future Windows/Linux path; the WinUI track (ADR-0047) is superseded.
+> - **Every fix adds a mechanical guard; core invariants get property tests** (ADR-0065).
+
 ---
 
 ## 1. Thesis & positioning
@@ -323,11 +335,9 @@ Five phases. Each: **goal · scope · exit criteria · key risks.** Effort is ex
 > "how complete/releasable is the product" and are written from the macOS lead frontend. **Platform
 > expansion is an orthogonal track:** because ~80% of behavior is in the shared Rust core, a second
 > frontend is mostly native view + binding, gated only on the core (done) - not on any later phase.
-> **Windows is now starting as a parallel frontend track** (README: "Windows is next"), building
-> against `parity.md`'s Win column as macOS MVP1 completes - *not* deferred behind the Phase-4 AI
-> work it was originally filed under (§5.4). So read Phase 2/3 as the macOS-lead product bar with a
-> concurrent Windows build catching up to parity beneath it; the two converge, they aren't
-> sequential. Sequencing detail: `spec §8,§16`.
+> **Update 2026-11-18 (ADR-0064):** the second frontend is a later vitae (Rust) frontend, not WinUI.
+> It starts once vitae renders native UI, and covers Windows/Linux too. Until then SwiftUI is the only
+> frontend. Sequencing detail: `spec §8,§16`.
 
 ### 5.0 Phase 0 - Foundation (de-risk the thesis) · *mostly done*
 
@@ -466,7 +476,7 @@ identity. **Risk:** this is forever; the security treadmill and performance defe
 |---|---|---|---|
 | **0** | Foundation | No | The thesis physically works on a signed build |
 | **1** | MVP1 (= `mvp1.md`) | No (dogfood) | *You* can daily-drive the Arc-in-native-chrome UX |
-| **2** | Public Beta - "a complete browser" | **Yes** | A stranger switches without a week-one wall; you can ship patches |
+| **2** | Friends' daily driver (was: Public Beta) | Friends | Arc refugees switch and stay; signed builds auto-update (ADR-0063) |
 | **3** | 1.0 - "power-user & dev browser" | **Yes** | Power users/devs choose it over the alternatives |
 | **4** | Top-tier - AI, cross-platform | Yes | Genuinely top-tier, cross-platform, AI-clean |
 

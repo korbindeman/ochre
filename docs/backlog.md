@@ -173,6 +173,10 @@ Goal (rm §5.1 / mvp): the Arc interaction model in native chrome, good enough f
 | P1-35 | **Favorite selection is the glass chip** - idle Favorites are a quiet quaternary fill (deepens on hover); the active Favorite is Liquid Glass with the site-color tint. Drops the inset edge bloom that fought the material. | done | ~8k | P1-34 | ADR-0059 · style §4 · `PinnedTabStrip.swift`; user request 2026-08-14 · landed 2026-08-14 |
 | P1-36 | **Product identity is Ochre** - user-facing name (`.app`, menu, window title, Finder, Application Support, release artifacts) comes from `product.toml`; code identifiers stay `browser` / `Browser`. Rename skill + `just product-check` so the next rename cannot miss a surface. | done | ~25k | - | ADR-0060 · `product.toml`; user request 2026-08-14 · landed 2026-08-14 |
 | P1-37 | **Drop Jujutsu (jj)** - repo is git-only. Remove `.jj/` and rewrite the CLAUDE.md VCS section. | done | ~2k | - | CLAUDE.md; user request 2026-08-14 · landed 2026-08-14 |
+| P1-39 | **Property tests for core invariants** (ADR-0065) - proptest over the Favorite/Pinned/Open tree operations in `tabs.rs`, session save/restore round-trips in `session.rs`, Pinned URL rules (ADR-0056/0057), and Arc import. Catch data loss before friends hit it | next | ~60k | - | ADR-0063/0065; user decision 2026-11-18 |
+| P1-40 | **Turn prose gotchas into guards** (ADR-0065) - mechanical checks in `just verify` or tests for the CLAUDE.md gotchas: full-size overlays on gesture trees (CRASH-0001), key-event-only properties on `NSApp.currentEvent` without a type check (CRASH-0002), one shared `BrowserHandler` per client (ADR-0037). Each gotcha either gets a guard or a note why it can't | next | ~30k | - | ADR-0065; user decision 2026-11-18 |
+| P1-41 | **Friends release path, end to end** (ADR-0063) - cut a real `alpha-release.yml` release: Developer ID signed, notarized, published to GitHub Releases; a second Mac installs it, auto-update moves it to the next release. Fix whatever breaks. Manual prereq: signing and notarization secrets in the repo | next | ~25k | P0-2 signing (landed) | ADR-0052/0063 · rm §6.2 |
+| P1-42 | **Slim the steer harness** - move `done` rows and landed-notes out of `backlog.md` (git history keeps them), shorten the skill, keep only the current window | next | ~15k | - | ADR-0001; user decision 2026-11-18 |
 | P1-38 | **Single Open-section separator** - Pinned + Open stacked two rules (a leftover `Divider` plus `TabSectionHeader`'s Clear line). Keep one separator with Clear while open tabs exist; empty Open shows New Tab only | done | ~2k | P1-34 | style §4 · `Spaces.swift`; user bug 2026-08-14 · landed 2026-08-14 |
 
 Notes (reconciled 2026-07-08):
@@ -986,6 +990,9 @@ in `roadmap.md`; pull more rows as Phase 3 nears exit.
 
 | ID | Item | Status | Est | Deps | Refs |
 |----|------|--------|-----|------|------|
+| P4-2 | **Frontend-agnostic selftest harness** (ADR-0064) - move focus/drag/close/new-tab and the other selftests behind a core-owned harness driven through the shared command surface, so one suite runs against Swift or vitae | later | ~80k | vitae native rendering | ADR-0064 |
+| P4-3 | **vitae frontend** (ADR-0064) - Rust crate calling `browser-core` directly; one Rust command/snapshot API under both the C FFI and vitae; `parity.md` vitae column | later | large | vitae native rendering (vitae repo) · P4-2 | ADR-0064 |
+| P4-4 | **Screenshot parity checks** (ADR-0064) - compare key screens against the Swift reference; with P4-2, the gate for replacing Swift | later | ~40k | P4-3 | ADR-0064 |
 | P4-1 | **Commands - agentic create/edit** - in-app AI authoring in the Commands manager: describe a workflow (or iterate in chat), agent generates/edits TypeScript via `command_upsert`, user reviews code + enables with existing consent gates; execution stays human-initiated. Chrome-automation counterpart to agent-authored Tweaks (§20). | later | ~40k | P3-15 · P3-16 · agent layer | ADR-0034 · spec §19/§21 · rm §5.4; user request 2026-07-08 |
 
 ## Decisions pending (unblock future work)

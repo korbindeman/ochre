@@ -100,9 +100,10 @@ unless the user only asked for analysis, or a real design fork needs a call.
 2. Fix the **mechanism**, not a symptom-only guard (project rule).
 3. Prefer a standing regression when the path is testable (`just *-selftest`,
    unit test, or a documented manual repro).
-4. When fixed: write `docs/crashes/NNNN-….md` from `0000-template.md`, index row
+4. Add a mechanical guard that would have caught it (lint, `just verify` check, test, or selftest; ADR-0065), or say in the post-mortem why none is possible.
+5. When fixed: write `docs/crashes/NNNN-….md` from `0000-template.md`, index row
    in `docs/crashes/README.md`, and a `CLAUDE.md` gotcha if it is a standing rule.
-5. File backlog rows only for genuine follow-ups, not for the fix you just did.
+6. File backlog rows only for genuine follow-ups, not for the fix you just did.
 
 Non-trivial forks (e.g. Crashpad vs local dumps, or multiple valid FS designs):
 present options with tradeoffs, recommend one, let the user decide - then implement.

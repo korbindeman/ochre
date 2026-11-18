@@ -1,6 +1,6 @@
 # ADR-0047: Windows is a parallel frontend track, not gated behind Phase 4
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0064
 - **Date:** 2026-07-13
 
 ## Context
