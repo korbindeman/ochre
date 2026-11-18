@@ -61,6 +61,11 @@ fn reconcile_warm_budget() {
 }
 
 fn schedule_reconcile() {
+    // Unit tests drive the tab store without CEF loaded; posting a CEF task
+    // there dereferences an unloaded library.
+    if cfg!(test) {
+        return;
+    }
     let generation = {
         let mut guard = PENDING_RECONCILE
             .lock()

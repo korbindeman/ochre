@@ -109,3 +109,6 @@ objc2-app-kit = { workspace = true, features = [
 
 [build-dependencies]
 anyhow = { workspace = true }
+
+[dev-dependencies]
+proptest.workspace = true

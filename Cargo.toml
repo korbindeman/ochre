@@ -41,6 +41,8 @@ libc = "0.2"
 # IPv6, userinfo, ports) instead of hand-rolled splitting on a security boundary.
 # Already compiled in via `adblock`, so this adds no new crate to the build.
 url = "2"
+# Property tests for core invariants (ADR-0065).
+proptest = "1"
 
 # Password vault crypto (ADR-0016 / spec §10) - the Bitwarden key hierarchy and
 # EncString. Standard RustCrypto crates; all load-bearing for the scheme.

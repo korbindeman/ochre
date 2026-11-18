@@ -505,6 +505,54 @@ impl TabStore {
         browser
     }
 
+    /// A favorite is global (ADR-0032), so its `space` is only where it was
+    /// created. When it leaves the strip it joins the Space the user is acting
+    /// in, and every other Space that was showing it moves on to a tab it holds.
+    /// Call after clearing `favorite` on a tab that had it.
+    fn rehome_unfavorited(&mut self, id: TabId) {
+        let active_space = self.active_space;
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
+            tab.space = active_space;
+        }
+        let stale: Vec<SpaceId> = self
+            .spaces
+            .iter()
+            .filter(|s| s.active == Some(id) && !self.can_be_active_in(s.id, id))
+            .map(|s| s.id)
+            .collect();
+        for space in stale {
+            let next = self.next_canvas_tab_after_close(space, id);
+            self.set_space_active(space, next);
+        }
+    }
+
+    /// Favorites are global (ADR-0032): removing or demoting the Space a
+    /// favorite was created in must not take the favorite with it. Hand them to
+    /// `to` before `from` goes away.
+    fn adopt_favorites(&mut self, from: SpaceId, to: SpaceId) {
+        for tab in self
+            .tabs
+            .iter_mut()
+            .filter(|t| t.space == from && t.favorite)
+        {
+            tab.space = to;
+        }
+    }
+
+    /// After bulk removals, point every Space whose remembered tab is gone or
+    /// no longer belongs there at its first tab (or an empty canvas).
+    fn repair_dangling_actives(&mut self) {
+        let repairs: Vec<(SpaceId, Option<TabId>)> = self
+            .spaces
+            .iter()
+            .filter(|s| s.active.is_some_and(|t| !self.can_be_active_in(s.id, t)))
+            .map(|s| (s.id, self.first_tab_in(s.id)))
+            .collect();
+        for (space, active) in repairs {
+            self.set_space_active(space, active);
+        }
+    }
+
     /// Record `id` on the closed-tab stack (so ⌘⇧T can bring it back), then
     /// remove it via [`remove_tab`]. The reopen-aware close: only the single-tab
     /// close paths use this; bulk removals call [`remove_tab`] directly and are
@@ -628,7 +676,13 @@ impl TabStore {
         if favorite && !self.can_show_favorite(id) {
             return;
         }
-        let space = self.tabs[from].space;
+        let leaving_strip = self.tabs[from].favorite && !favorite;
+        // A favorite dragged out of the strip lands in the Space being viewed.
+        let space = if leaving_strip {
+            self.active_space
+        } else {
+            self.tabs[from].space
+        };
         let (favorite, pinned, folder) = if favorite {
             (true, false, None)
         } else {
@@ -643,6 +697,7 @@ impl TabStore {
         let was_saved = self.tabs[from].saved_url.is_some();
         {
             let tab = &mut self.tabs[from];
+            tab.space = space;
             tab.favorite = favorite;
             tab.pinned = pinned;
             tab.folder = folder;
@@ -670,6 +725,9 @@ impl TabStore {
                 .map_or(self.tabs.len(), |p| p + 1)
         });
         self.tabs.insert(index, tab);
+        if leaving_strip {
+            self.rehome_unfavorited(id);
+        }
     }
 
     /// Fresh store: one default Home space, no tabs (first launch / no session).
@@ -781,16 +839,20 @@ impl TabStore {
             spaces,
             closed: Vec::new(),
         };
-        // Validate each space's remembered active tab; fall back to its first
-        // tab so a restored space never points at a tab it doesn't hold.
+        // Validate each space's remembered active tab; a dangling one falls back
+        // to the space's first tab so a restored space never points at a tab it
+        // doesn't hold. A saved empty canvas (`None`, e.g. after closing the
+        // active pinned tab) stays empty: relaunch must not resurrect a tab the
+        // user closed.
         let repairs: Vec<(SpaceId, Option<TabId>)> = store
             .spaces
             .iter()
             .map(|s| {
-                let active = s
-                    .active
-                    .filter(|tid| store.can_be_active_in(s.id, *tid))
-                    .or_else(|| store.first_tab_in(s.id));
+                let active = match s.active {
+                    None => None,
+                    Some(tid) if store.can_be_active_in(s.id, tid) => Some(tid),
+                    Some(_) => store.first_tab_in(s.id),
+                };
                 (s.id, active)
             })
             .collect();
@@ -1378,9 +1440,11 @@ pub fn can_reopen_closed() -> bool {
 /// folder membership. Saving clears the favorite strip.
 pub fn set_pinned(id: TabId, pinned: bool) {
     structural(|store| {
+        let mut left_strip = false;
         if let Some(tab) = store.tabs.iter_mut().find(|t| t.id == id) {
             tab.pinned = pinned;
             if pinned {
+                left_strip = tab.favorite;
                 tab.favorite = false;
                 tab.ensure_saved_url();
             } else {
@@ -1389,6 +1453,9 @@ pub fn set_pinned(id: TabId, pinned: bool) {
                     tab.clear_saved_url();
                 }
             }
+        }
+        if left_strip {
+            store.rehome_unfavorited(id);
         }
     });
 }
@@ -1400,7 +1467,9 @@ pub fn set_favorite(id: TabId, favorite: bool) {
         if favorite && !store.can_show_favorite(id) {
             return;
         }
+        let mut left_strip = false;
         if let Some(tab) = store.tabs.iter_mut().find(|t| t.id == id) {
+            left_strip = tab.favorite && !favorite;
             tab.favorite = favorite;
             if favorite {
                 tab.pinned = false;
@@ -1409,6 +1478,9 @@ pub fn set_favorite(id: TabId, favorite: bool) {
             } else if !tab.pinned {
                 tab.clear_saved_url();
             }
+        }
+        if left_strip {
+            store.rehome_unfavorited(id);
         }
     });
 }
@@ -1424,6 +1496,12 @@ pub fn replace_pinned_url(id: TabId) -> bool {
 /// in the tab's space.
 pub fn move_to_folder(id: TabId, folder: Option<FolderId>) {
     structural(|store| {
+        // Filing into a folder is a relocation: one path owns the kind change,
+        // including a favorite leaving the strip (re-homed to this Space).
+        if folder.is_some() {
+            store.relocate_tab(id, false, true, folder, None);
+            return;
+        }
         let Some(space) = store.tab(id).map(|t| t.space) else {
             return;
         };
@@ -1658,6 +1736,9 @@ pub fn delete_space(id: SpaceId) {
         if store.spaces.len() <= 1 || !store.spaces.iter().any(|s| s.id == id) {
             return Vec::new();
         }
+        if let Some(heir) = store.spaces.iter().map(|s| s.id).find(|&s| s != id) {
+            store.adopt_favorites(id, heir);
+        }
         // Suspended tabs have no browser to close - they are simply removed.
         let browsers: Vec<Browser> = store
             .tabs
@@ -1680,6 +1761,7 @@ pub fn delete_space(id: SpaceId) {
                 .or_else(|| store.first_tab_in(new_space));
             store.set_space_active(new_space, active);
         }
+        store.repair_dangling_actives();
         browsers
     })
     .unwrap_or_default();
@@ -1951,6 +2033,8 @@ pub fn folder_to_space(folder_id: FolderId) -> SpaceId {
         }
         store.set_space_active(sid, first);
         store.active_space = sid;
+        // The source Space may have been showing one of the moved tabs.
+        store.repair_dangling_actives();
         sid
     })
     .unwrap_or(NONE_ID)
@@ -1983,6 +2067,7 @@ pub fn space_to_folder(space_id: SpaceId) -> FolderId {
             return (NONE_ID, Vec::new());
         }
         let target = store.active_space;
+        store.adopt_favorites(space_id, target);
         let name = store
             .spaces
             .iter()
@@ -2018,6 +2103,7 @@ pub fn space_to_folder(space_id: SpaceId) -> FolderId {
         }
         store.folders.retain(|f| f.space != space_id);
         store.spaces.retain(|s| s.id != space_id);
+        store.repair_dangling_actives();
         (folder_id, ephemeral)
     })
     .unwrap_or((NONE_ID, Vec::new()));
@@ -2270,6 +2356,10 @@ pub fn snapshot() -> Snapshot {
         tabs: Vec::new(),
     })
 }
+
+#[cfg(test)]
+#[path = "tabs_proptest.rs"]
+mod proptests;
 
 #[cfg(test)]
 mod tests {
