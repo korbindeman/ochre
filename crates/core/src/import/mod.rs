@@ -39,11 +39,23 @@ pub fn preview_arc_import(path: &str) -> Result<ArcImportPreview, String> {
     Ok(parsed.preview())
 }
 
-/// Parse `path` and merge the sidebar into the tab model.
+/// Parse `path` and merge the sidebar into the tab model, then merge Arc's
+/// browsing history from beside it (`User Data/Default/History`) so the
+/// omnibox knows the user's sites from the start. History never replaces:
+/// it only merges, and a missing or unreadable file skips it without failing
+/// the sidebar import.
 pub fn import_arc_sidebar(path: &str, replace: bool) -> Result<ApplyResult, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("could not read {path}: {e}"))?;
     let parsed = parse_arc_sidebar(&bytes).map_err(|e| e.to_string())?;
-    apply_arc_import(&parsed, replace).map_err(|e| e.to_string())
+    let mut result = apply_arc_import(&parsed, replace).map_err(|e| e.to_string())?;
+    let history = Path::new(path).with_file_name("User Data/Default/History");
+    if history.is_file() {
+        match crate::history::read_chromium_history(&history) {
+            Ok(pages) => result.history = crate::history::import_pages(&pages),
+            Err(err) => eprintln!("[import] Arc history skipped: {err}"),
+        }
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -169,5 +181,23 @@ mod tests {
         );
         assert!(preview.spaces > 0);
         assert!(preview.tabs > 0);
+    }
+
+    /// Manual: merge the live Arc history into a profile's history store.
+    /// `OCHRE_HISTORY=<profile>/history.sqlite cargo test -p browser-core real_arc_history -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn real_arc_history_into_profile() {
+        let (Some(sidebar), Ok(target)) =
+            (default_arc_sidebar_path(), std::env::var("OCHRE_HISTORY"))
+        else {
+            return;
+        };
+        let source = Path::new(&sidebar).with_file_name("User Data/Default/History");
+        let pages = crate::history::read_chromium_history(&source).expect("read Arc history");
+        crate::history::init(&target);
+        let merged = crate::history::import_pages(&pages);
+        eprintln!("read={} merged={merged}", pages.len());
+        assert!(!pages.is_empty());
     }
 }

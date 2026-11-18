@@ -573,6 +573,7 @@ pub unsafe extern "C" fn browser_import_arc(path: *const c_char, replace: bool) 
                 "tabs": result.tabs,
                 "favorites": result.favorites,
                 "skipped_duplicates": result.skipped_duplicates,
+                "history": result.history,
             })
         }),
     )
