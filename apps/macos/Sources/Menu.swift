@@ -26,6 +26,7 @@ enum MainMenu {
         mainMenu.addItem(viewMenu(actions: actions))
         mainMenu.addItem(historyMenu(actions: actions))
         mainMenu.addItem(windowMenu(actions: actions))
+        mainMenu.addItem(helpMenu(actions: actions))
         return mainMenu
     }
 
@@ -386,6 +387,20 @@ enum MainMenu {
             action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         // Let AppKit auto-manage the window list under this menu.
         NSApp.windowsMenu = menu
+        return submenu(menu)
+    }
+
+    // MARK: - Help menu
+
+    private static func helpMenu(actions: AppDelegate) -> NSMenuItem {
+        let menu = NSMenu(title: "Help")
+        let report = target(
+            NSMenuItem(
+                title: "Report a Problem…",
+                action: #selector(AppDelegate.reportProblem), keyEquivalent: "b"), actions)
+        report.keyEquivalentModifierMask = [.command, .option]
+        menu.addItem(report)
+        NSApp.helpMenu = menu
         return submenu(menu)
     }
 

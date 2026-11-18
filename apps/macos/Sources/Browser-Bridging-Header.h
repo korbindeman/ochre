@@ -47,6 +47,11 @@ void browser_set_event_callback(void (*callback)(int32_t event_type,
 // Heap-allocated by Rust - free with browser_string_free.
 char *browser_structure_json(void);
 
+// Save a friction report (structure, log tail, note, focused surface) and
+// return its directory for the host to add window.png; NULL on failure.
+// Heap-allocated by Rust - free with browser_string_free.
+char *browser_capture_friction(const char *note, const char *focused);
+
 // Create a new tab rendering into `parent_view` (NSView*) at the given size,
 // loading `url` (NUL-terminated UTF-8, or NULL for blank). Returns the tab id
 // (>= 0) or negative on failure. The tab becomes active (open / working set).

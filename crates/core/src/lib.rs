@@ -21,6 +21,7 @@ pub mod consent;
 pub mod crash_report;
 pub mod embed;
 pub mod favicon_selftest;
+pub mod friction;
 pub mod fuzzy;
 pub mod history;
 pub mod import;

@@ -181,6 +181,26 @@ pub extern "C" fn browser_structure_json() -> *mut c_char {
         .unwrap_or(std::ptr::null_mut())
 }
 
+/// Save a friction report (P1-44): the structure, diagnostics log tail, the
+/// user's `note`, and the `focused` surface, into a new directory under the
+/// support folder. Returns that directory so the host can add `window.png`,
+/// or NULL on failure. Free with [`browser_string_free`]. Main thread only.
+///
+/// # Safety
+/// `note` and `focused` must be NULL or valid NUL-terminated UTF-8 strings.
+#[no_mangle]
+pub unsafe extern "C" fn browser_capture_friction(
+    note: *const c_char,
+    focused: *const c_char,
+) -> *mut c_char {
+    let Some(dir) = browser_core::friction::capture(&cstr(note), &cstr(focused)) else {
+        return std::ptr::null_mut();
+    };
+    CString::new(dir.to_string_lossy().into_owned())
+        .map(CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
 /// Pin (persist) or unpin tab `id`. Unpinning returns it to "today" and clears
 /// its folder. Emits `StructureChanged`. Main thread only.
 #[no_mangle]

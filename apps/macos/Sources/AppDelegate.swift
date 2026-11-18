@@ -611,6 +611,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
+    /// Help > Report a Problem (⌥⌘B, P1-44). Captures the window first, before
+    /// the note prompt covers it, then asks what went wrong and has the core
+    /// write the bundle (structure, log tail, note, focus). Saved locally only.
+    @objc func reportProblem() {
+        let focused = describeFocus()
+        let shot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("friction-\(UUID().uuidString).png")
+        if let window = NSApp.keyWindow ?? focusedController.window {
+            let capture = Process()
+            capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            capture.arguments = ["-x", "-o", "-l\(window.windowNumber)", shot.path]
+            try? capture.run()
+            capture.waitUntilExit()
+        }
+        defer { try? FileManager.default.removeItem(at: shot) }
+
+        let alert = NSAlert()
+        alert.messageText = "What went wrong?"
+        alert.informativeText =
+            "Saved on this Mac with the tab list, the recent log and a screenshot of this window."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        field.placeholderString = "What you did and what happened"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        guard let raw = browser_capture_friction(field.stringValue, focused) else { return }
+        let dir = URL(fileURLWithPath: String(cString: raw))
+        browser_string_free(raw)
+        try? FileManager.default.moveItem(at: shot, to: dir.appendingPathComponent("window.png"))
+    }
+
+    /// Which surface had focus when the report started, in words an agent can
+    /// match to code: open overlays first, then the key window's first responder.
+    private func describeFocus() -> String {
+        var parts: [String] = []
+        if commandBar.isVisible { parts.append("command bar") }
+        let state = BrowserState.shared
+        if state.isHistoryOpen { parts.append("history") }
+        if state.isVaultOpen { parts.append("passwords") }
+        if state.isSettingsOpen { parts.append("settings") }
+        if let window = NSApp.keyWindow {
+            let responder = window.firstResponder.map { String(describing: type(of: $0)) }
+            parts.append("window \(window.windowNumber) responder \(responder ?? "none")")
+        }
+        return parts.joined(separator: "; ")
+    }
+
     /// Reopen the most recently closed tab (⌘⇧T). The core restores it into its
     /// original space/section and makes it active; `RootView` hydrates it on the
     /// resulting `StructureChanged`, exactly like a session-restored tab. Dismiss

@@ -150,6 +150,7 @@ Everything is reachable from the keyboard; the command bar is the hub. Shortcuts
 | DevTools (toggle) | `Cmd+Opt+I` / `F12` |
 | Inspect element | right-click → *Inspect Element* |
 | Fullscreen | `Cmd+Ctrl+F` |
+| Report a problem (saves a local evidence bundle) | `Cmd+Opt+B` |
 
 - **Keep this table the source of truth.** Add a shortcut here before wiring it, and mirror it on every platform (Cmd↔Ctrl). Don't invent per-platform-only shortcuts for shared actions.
 - **No dead ends.** If an action exists in a menu or on hover, it has a shortcut. Power users should be able to drive tabs, spaces, and navigation without the mouse.
