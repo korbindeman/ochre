@@ -59,6 +59,36 @@ impl VaultAutoLock {
     }
 }
 
+/// The window layout (ADR-0073). Global, not per window. Behavior is the same
+/// in both; only where the tabs and the address field are drawn differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Layout {
+    /// Arc: vertical tabs, controls and the URL chip in the sidebar.
+    #[default]
+    Sidebar,
+    /// Safari compact: one row of tabs; the active tab is the address field.
+    Classic,
+}
+
+impl Layout {
+    /// FFI wire value: 0 Sidebar, 1 Classic.
+    pub fn to_i32(self) -> i32 {
+        match self {
+            Layout::Sidebar => 0,
+            Layout::Classic => 1,
+        }
+    }
+
+    /// Unknown values fall back to the default layout.
+    pub fn from_i32(value: i32) -> Self {
+        match value {
+            1 => Layout::Classic,
+            _ => Layout::Sidebar,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct SettingsState {
     #[serde(default)]
@@ -77,6 +107,9 @@ struct SettingsState {
     /// a sidebar tab (P1-45, Arc default: on).
     #[serde(default = "default_true")]
     external_links_little: bool,
+    /// Window layout (ADR-0073).
+    #[serde(default)]
+    layout: Layout,
     /// Legacy timed setting - read for migration only.
     #[serde(default, skip_serializing)]
     vault_lock_timeout_secs: Option<u64>,
@@ -90,6 +123,7 @@ impl Default for SettingsState {
             private_vault_enabled: false,
             private_vault_prompt_seen: false,
             external_links_little: true,
+            layout: Layout::Sidebar,
             vault_lock_timeout_secs: None,
         }
     }
@@ -101,6 +135,7 @@ static STATE: Mutex<SettingsState> = Mutex::new(SettingsState {
     private_vault_enabled: false,
     private_vault_prompt_seen: false,
     external_links_little: true,
+    layout: Layout::Sidebar,
     vault_lock_timeout_secs: None,
 });
 
@@ -296,6 +331,22 @@ pub fn set_external_links_little(enabled: bool) {
     save();
 }
 
+/// The window layout (ADR-0073).
+pub fn layout() -> Layout {
+    STATE.lock().unwrap_or_else(|p| p.into_inner()).layout
+}
+
+pub fn set_layout(layout: Layout) {
+    {
+        let mut state = STATE.lock().unwrap_or_else(|p| p.into_inner());
+        if state.layout == layout {
+            return;
+        }
+        state.layout = layout;
+    }
+    save();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +380,7 @@ mod tests {
             private_vault_enabled: false,
             private_vault_prompt_seen: false,
             external_links_little: true,
+            layout: Layout::Sidebar,
             vault_lock_timeout_secs: None,
         };
         let back: SettingsState =
@@ -348,6 +400,27 @@ mod tests {
     }
 
     #[test]
+    fn layout_wire_value_round_trips() {
+        for layout in [Layout::Sidebar, Layout::Classic] {
+            assert_eq!(Layout::from_i32(layout.to_i32()), layout);
+        }
+        assert_eq!(Layout::from_i32(-1), Layout::Sidebar);
+    }
+
+    #[test]
+    fn layout_defaults_to_sidebar_and_persists() {
+        let old: SettingsState =
+            serde_json::from_str(r#"{"vault_auto_lock":"on_browser_close"}"#).unwrap();
+        assert_eq!(old.layout, Layout::Sidebar);
+
+        let classic: SettingsState = serde_json::from_str(r#"{"layout":"classic"}"#).unwrap();
+        assert_eq!(classic.layout, Layout::Classic);
+        let back: SettingsState =
+            serde_json::from_slice(&serde_json::to_vec(&classic).unwrap()).unwrap();
+        assert_eq!(back.layout, Layout::Classic);
+    }
+
+    #[test]
     fn timed_setting_migrates_to_event_policy() {
         let mut state = SettingsState {
             vault_auto_lock: VaultAutoLock::OnBrowserClose,
@@ -355,6 +428,7 @@ mod tests {
             private_vault_enabled: false,
             private_vault_prompt_seen: false,
             external_links_little: true,
+            layout: Layout::Sidebar,
             vault_lock_timeout_secs: Some(300),
         };
         migrate_timed_auto_lock(&mut state);
@@ -366,6 +440,7 @@ mod tests {
             private_vault_enabled: false,
             private_vault_prompt_seen: false,
             external_links_little: true,
+            layout: Layout::Sidebar,
             vault_lock_timeout_secs: Some(0),
         };
         migrate_timed_auto_lock(&mut never);

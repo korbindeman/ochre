@@ -885,6 +885,17 @@ pub extern "C" fn browser_settings_set_external_links_little(enabled: bool) {
     browser_core::settings::set_external_links_little(enabled);
 }
 
+/// The window layout (ADR-0073): 0 Sidebar, 1 Classic.
+#[no_mangle]
+pub extern "C" fn browser_settings_layout() -> i32 {
+    browser_core::settings::layout().to_i32()
+}
+
+#[no_mangle]
+pub extern "C" fn browser_settings_set_layout(layout: i32) {
+    browser_core::settings::set_layout(browser_core::settings::Layout::from_i32(layout));
+}
+
 #[no_mangle]
 pub extern "C" fn browser_settings_private_vault_enabled() -> bool {
     browser_core::settings::private_vault_enabled()
