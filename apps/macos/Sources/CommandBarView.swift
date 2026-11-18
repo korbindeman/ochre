@@ -15,8 +15,8 @@ final class CommandBarPresentation: ObservableObject {
 ///
 /// The field text and inline-completion behaviour live in the shared
 /// `AutocompleteField`; keyboard navigation (arrows/return/escape) is handled by
-/// the host's key monitor in `CommandBarController`. The expand/collapse uses the
-/// platform's `glassEffectID` morph inside a `GlassEffectContainer` (mvp M3).
+/// the host's key monitor in `CommandBarController`. Open and close are one
+/// fade-and-settle driven by `CommandBarPresentation`.
 struct CommandBarView: View {
     @ObservedObject var presentation: CommandBarPresentation
     @ObservedObject var controller: SuggestionController
@@ -31,39 +31,29 @@ struct CommandBarView: View {
     /// Prefilled field text (selected on focus), e.g. the URL being edited.
     var initialQuery: String = ""
 
-    @Namespace private var glassNamespace
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let cornerRadius: CGFloat = 24
-    private var morphAnimation: Animation? {
-        reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.78)
+
+    /// One motion for open and close: the whole surface fades and settles from
+    /// a hair smaller, anchored at the top like Spotlight. No capsule morph and
+    /// no window-alpha fade: Liquid Glass does not reliably follow either, which
+    /// left an empty glass bubble on screen after close. Result rows change
+    /// instantly, matching the panel's instant resize.
+    private var presentAnimation: Animation {
+        reduceMotion ? .linear(duration: 0.06) : .easeOut(duration: 0.14)
     }
 
     var body: some View {
-        GlassEffectContainer {
-            Group {
-                if presentation.isPresented {
-                    expandedSurface
-                        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius))
-                } else {
-                    // Collapsed morph origin - a compact capsule the glass expands
-                    // from on present (Spotlight-style).
-                    Color.clear
-                        .frame(height: 28)
-                        .glassEffect(.regular.interactive(), in: .capsule)
-                }
-            }
+        expandedSurface
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius))
             .frame(width: barWidth)
-            .glassEffectID("command-bar", in: glassNamespace)
-        }
-        .padding(shadowInset)
-        .animation(morphAnimation, value: presentation.isPresented)
-        .animation(morphAnimation, value: controller.suggestions.isEmpty)
-        .onAppear {
-            withAnimation(morphAnimation) {
-                presentation.isPresented = true
-            }
-        }
+            .opacity(presentation.isPresented ? 1 : 0)
+            .scaleEffect(
+                presentation.isPresented || reduceMotion ? 1 : 0.97, anchor: .top)
+            .padding(shadowInset)
+            .animation(presentAnimation, value: presentation.isPresented)
+            .onAppear { presentation.isPresented = true }
     }
 
     private var expandedSurface: some View {

@@ -58,10 +58,12 @@ final class CommandBarController {
     /// Panel height with only the field showing (field row + shadow margins).
     var collapsedHeight: CGFloat { fieldHeight + shadowInset * 2 }
 
-    /// How long to wait for the morph-out before ordering the panel away.
-    private var morphOutDelay: TimeInterval {
-        MotionPolicy.reduceMotion ? 0.06 : 0.26
+    /// Matches `CommandBarView`'s fade, so the panel leaves as the glass does.
+    private var fadeOutDuration: TimeInterval {
+        MotionPolicy.reduceMotion ? 0.06 : 0.14
     }
+    /// Bumped on every show; a pending hide for an older presentation is dropped.
+    private var presentationGeneration = 0
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
@@ -76,6 +78,8 @@ final class CommandBarController {
         // Fresh state each presentation. The command bar is the ⌘T new-tab
         // surface (editing the current tab's URL is inline in the sidebar now -
         // ADR-0014), so commits always open a new tab and the field starts empty.
+        presentationGeneration += 1
+        isHiding = false
         suggestions.reset()
         suggestions.showZeroState()
         presentation.isPresented = false
@@ -117,86 +121,55 @@ final class CommandBarController {
             }
         installKeyMonitor()
 
-        // Hide the panel *before* it is ever placed on screen, then reveal it.
-        // A freshly-made panel defaults to alphaValue 1, so ordering it in first
-        // (as `addChildWindow` does) and lowering the alpha afterwards let its
-        // not-yet-composited-as-glass content present one opaque frame - the
-        // square that flashed under the bar on the *first* ⌘T only. The glass
-        // morph (CommandBarView) carries the entrance; keep a short alpha ramp so
-        // the first frame never flashes raw content.
-        panel.alphaValue = 0
+        // The content starts at opacity 0 and fades in (CommandBarView), so the
+        // panel itself stays fully opaque: no window-alpha ramp for the glass to
+        // ignore, and no raw frame before the glass composites.
+        panel.alphaValue = 1
         positionPanel(height: collapsedHeight)
-        parent.addChildWindow(panel, ordered: .above)
+        resizeToFit()
+        if panel.parent !== parent {
+            panel.parent?.removeChildWindow(panel)
+            parent.addChildWindow(panel, ordered: .above)
+        }
         panel.makeKeyAndOrderFront(nil)
         NSLog("[focus] commandbar opened → panel is key")
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = MotionPolicy.reduceMotion ? 0.08 : 0.14
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            panel.animator().alphaValue = 1
-        }
     }
 
-    /// Render the bar as hidden (the machine's renderer only).
+    /// Render the bar as hidden (the machine's renderer only): fade the
+    /// content, then take the panel off screen. A reopen during the fade bumps
+    /// `presentationGeneration`, which cancels the pending teardown.
     func hide() {
         guard let panel, panel.isVisible, !isHiding else { return }
         isHiding = true
         removeKeyMonitor()
         suggestionsObserver = nil
-
-        // Morph the glass closed, then tear the panel down once the animation
-        // settles. Under Reduce Motion the delay is minimal.
         presentation.isPresented = false
-        let delay = morphOutDelay
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            MainActor.assumeIsolated { self?.finishHide(panel: panel) }
+        let generation = presentationGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + fadeOutDuration) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.presentationGeneration == generation else { return }
+                self.finishHide(panel: panel)
+            }
         }
     }
 
     private func finishHide(panel: KeyablePanel) {
-        // Reopened during the morph-out: the machine says shown, so stay shown.
-        if case .commandBar = OverlayMachine.state {
-            isHiding = false
-            return
-        }
+        isHiding = false
         suggestions.reset()
-        NSAnimationContext.runAnimationGroup(
-            { context in
-                context.duration = MotionPolicy.reduceMotion ? 0.06 : 0.1
-                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-                panel.animator().alphaValue = 0
-            },
-            completionHandler: { [weak self] in
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    if case .commandBar = OverlayMachine.state {
-                        self.isHiding = false
-                        return
-                    }
-                    panel.parent?.removeChildWindow(panel)
-                    panel.orderOut(nil)
-                    self.isHiding = false
-                    // Make the browser window key again, then deterministically
-                    // return keyboard focus to the active tab's web view. Relying on
-                    // AppKit to restore the first responder is not enough: if the
-                    // pre-open responder was the bare window (e.g. after a sidebar
-                    // click resigned the page), `makeKey()` alone leaves keystrokes
-                    // falling on the floor. Driving CEF `set_focus` mirrors the
-                    // tab-switch path and matches Safari/Arc (dismissing the address
-                    // bar returns focus to the page).
-                    // Only when nothing replaced the bar: an address edit that
-                    // opened meanwhile owns the keyboard.
-                    guard OverlayMachine.state == .none else { return }
-                    self.parentWindow?.makeKey()
-                    browser_focus_active_tab()
-                    // P0-1 observability: log what AppKit settled on; the paired
-                    // `[focus] cef on_got_focus` in the Rust log confirms the page
-                    // actually took keyboard focus.
-                    let responder = self.parentWindow?.firstResponder
-                    NSLog(
-                        "[focus] commandbar closed → refocus page; window.firstResponder=%@",
-                        responder.map { String(describing: type(of: $0)) } ?? "nil"
-                    )
-                }
-            })
+        panel.parent?.removeChildWindow(panel)
+        panel.orderOut(nil)
+        // Make the browser window key again, then deterministically return
+        // keyboard focus to the active tab's web view. `makeKey()` alone leaves
+        // keystrokes falling on the floor when the pre-open responder was the
+        // bare window. Only when nothing replaced the bar: an address edit that
+        // opened meanwhile owns the keyboard.
+        guard OverlayMachine.state == .none else { return }
+        parentWindow?.makeKey()
+        browser_focus_active_tab()
+        let responder = parentWindow?.firstResponder
+        NSLog(
+            "[focus] commandbar closed → refocus page; window.firstResponder=%@",
+            responder.map { String(describing: type(of: $0)) } ?? "nil"
+        )
     }
 }
