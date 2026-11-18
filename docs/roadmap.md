@@ -18,6 +18,10 @@ decision locked in the spec, it says so explicitly and presents options + a reco
 >   vitae renders native UI, and replaces Swift when shared selftests and screenshot comparisons prove
 >   parity. vitae is also the future Windows/Linux path; the WinUI track (ADR-0047) is superseded.
 > - **Every fix adds a mechanical guard; core invariants get property tests** (ADR-0065).
+> - **North star: a drop-in Arc replacement.** It imports Arc and feels the same (Arc's UX copied,
+>   Little Arc included); it blocks ads without breaking sites; it never crashes and stays fast; it has
+>   first-class agent browsing; nothing else. Every item is judged against this. UI interaction state
+>   lives in explicit state machines in the core; the codebase stays modular and agent-friendly.
 
 ---
 
