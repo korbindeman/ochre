@@ -167,6 +167,31 @@ final class NewTabSelfTest {
                 "address-commit-navigates-current-tab", pass,
                 "count=\(count) expected=\(self.beforeCount + 3) url=\(url) state=\(OverlayMachine.state)")
         }))
+
+        // ADR-0068 cross-surface rules: a page closes the find bar, and an
+        // address edit cannot start while a page covers the web view.
+        steps.append(("surface-open-find", { self.app.performFind() }))
+        steps.append(("surface-open-history", {
+            let findUp = self.app.findBar.isVisible
+            self.check("find-opens", findUp && OverlayMachine.current.find == 0, "visible=\(findUp)")
+            BrowserState.shared.openHistory()
+        }))
+        steps.append(("surface-assert-history", {
+            let state = BrowserState.shared
+            URLBarModel.shared.beginEditing()
+            let pass =
+                state.isHistoryOpen && OverlayMachine.current.find == nil
+                && !self.app.findBar.isVisible && OverlayMachine.state == .none
+                && !URLBarModel.shared.isEditing
+            self.check(
+                "page-closes-find-and-blocks-address-edit", pass,
+                "history=\(state.isHistoryOpen) find=\(String(describing: OverlayMachine.current.find)) findVisible=\(self.app.findBar.isVisible) editing=\(URLBarModel.shared.isEditing)")
+            BrowserState.shared.closeHistory()
+        }))
+        steps.append(("surface-assert-web", {
+            let pass = !BrowserState.shared.isSurfaceOpen && OverlayMachine.current.pages.isEmpty
+            self.check("closing-the-page-returns-to-web", pass)
+        }))
     }
 
     private func performShortcut(_ key: String, _ modifiers: NSEvent.ModifierFlags) -> Bool {

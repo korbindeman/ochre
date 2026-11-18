@@ -53,7 +53,7 @@ final class FindBarController {
             onQueryChange: { [weak self] query in self?.search(query) },
             onNext: { [weak self] in self?.findNext() },
             onPrevious: { [weak self] in self?.findPrevious() },
-            onClose: { [weak self] in self?.hide() }
+            onClose: { OverlayMachine.closeFind() }
         ))
 
         positionPanel()
@@ -199,7 +199,7 @@ final class FindBarController {
         guard isVisible else { return false }
         let plain = modifiers.intersection([.command, .option, .control]).isEmpty
         if keyCode == 53, plain { // escape
-            hide()
+            OverlayMachine.closeFind()
             return true
         }
         // Return steps matches only when typing in the field.

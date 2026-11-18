@@ -151,14 +151,14 @@ final class BrowserState: ObservableObject {
     /// this; opening a tab or Escape closes it. It also counts as covering the
     /// canvas, so the empty-state floating sidebar tucks away while it's up and
     /// returns when it closes (derived - see `isFloatingSidebarShown`).
-    @Published var isHistoryOpen = false
+    @Published private(set) var isHistoryOpen = false
 
     /// Whether the Passwords (vault) surface is showing (ADR-0010/0016). Same
     /// content-area-surface model as History (and same empty-canvas rule).
-    @Published var isVaultOpen = false
+    @Published private(set) var isVaultOpen = false
 
     /// Whether the Settings surface is showing (ADR-0010).
-    @Published var isSettingsOpen = false
+    @Published private(set) var isSettingsOpen = false
 
     // ─── Adblock (ADR-0020) ────────────────────────────────────────────────
     // Mirrors the core's adblock state for the sidebar shield + menu items. The
@@ -574,54 +574,31 @@ final class BrowserState: ObservableObject {
     func toggleVault() { isVaultOpen ? closeVault() : openVault() }
     func toggleSettings() { isSettingsOpen ? closeSettings() : openSettings() }
 
-    /// Show a surface, closing the other one first - only one covers the canvas.
-    /// Goes straight to the booleans (not through `close*`) so switching between
-    /// surfaces never bounces focus down to the web view in between.
-    func openHistory() {
-        URLBarModel.shared.endEditing()
-        isVaultOpen = false
-        isSettingsOpen = false
-        isHistoryOpen = true
-    }
+    /// Show a page in this window. The core machine (ADR-0068) replaces any
+    /// other page, closes the command bar / address edit and this window's
+    /// find bar; `apply(page:)` renders the result.
+    func openHistory() { OverlayMachine.openPage(.history, window: windowId) }
+    func openVault() { OverlayMachine.openPage(.passwords, window: windowId) }
+    func openSettings() { OverlayMachine.openPage(.settings, window: windowId) }
 
-    func openVault() {
-        URLBarModel.shared.endEditing()
-        isHistoryOpen = false
-        isSettingsOpen = false
-        isVaultOpen = true
-    }
+    /// Close a page. Ignored by the machine unless that page is the one shown.
+    func closeHistory() { OverlayMachine.closePage(.history, window: windowId) }
+    func closeVault() { OverlayMachine.closePage(.passwords, window: windowId) }
+    func closeSettings() { OverlayMachine.closePage(.settings, window: windowId) }
 
-    func openSettings() {
-        URLBarModel.shared.endEditing()
-        isHistoryOpen = false
-        isVaultOpen = false
-        isSettingsOpen = true
-    }
+    /// Back to the web view - used by ⌘W and by paths that need the canvas back
+    /// (opening a new tab, reopening a closed one).
+    func closeSurfaces() { OverlayMachine.showWeb(window: windowId) }
 
-    func closeHistory() {
-        guard isHistoryOpen else { return }
-        isHistoryOpen = false
-        restoreWebFocus()
-    }
-
-    func closeVault() {
-        guard isVaultOpen else { return }
-        isVaultOpen = false
-        restoreWebFocus()
-    }
-
-    func closeSettings() {
-        guard isSettingsOpen else { return }
-        isSettingsOpen = false
-        restoreWebFocus()
-    }
-
-    /// Dismiss whichever surface is showing - used by ⌘W and by paths that need
-    /// the canvas back (opening a new tab, reopening a closed one).
-    func closeSurfaces() {
-        closeHistory()
-        closeVault()
-        closeSettings()
+    /// Render the machine's page for this window. Switching page to page goes
+    /// straight between booleans, so focus never bounces to the web view; it
+    /// returns to the page only when the web view is back and `focusWeb` holds.
+    func apply(page: OverlayMachine.Page?, focusWeb: Bool) {
+        let wasOpen = isSurfaceOpen
+        isHistoryOpen = page == .history
+        isVaultOpen = page == .passwords
+        isSettingsOpen = page == .settings
+        if wasOpen, page == nil, focusWeb { browser_focus_active_tab() }
     }
 
     /// Handle a sidebar tab click with modifier keys for multi-select.
@@ -682,22 +659,13 @@ final class BrowserState: ObservableObject {
     /// the surface, where the visible tab doesn't change. Main thread only.
     func selectTab(_ id: Int32) {
         let hadSurface = isSurfaceOpen
-        isHistoryOpen = false
-        isVaultOpen = false
-        isSettingsOpen = false
+        OverlayMachine.showWeb(window: windowId)
         if isPrivate {
             browser_private_tab_select(windowId, id)
         } else {
             browser_tab_select(id)
         }
         if hadSurface { browser_focus_active_tab() }
-    }
-
-    /// Return keyboard focus to the active tab's web view once no surface covers
-    /// it (no-op in the empty state). Surface-to-surface switches go through
-    /// `open*`, which never calls this, so focus stays on the incoming surface.
-    private func restoreWebFocus() {
-        if !isSurfaceOpen { browser_focus_active_tab() }
     }
 
     /// Hover-reveal the collapsed sidebar. `RootView` owns the dismissal timing -

@@ -116,6 +116,7 @@ final class LittleWindowController: NSObject, NSWindowDelegate {
             container.detachCEFView()
         }
         browser_set_focused_little(-1)
+        OverlayMachine.windowClosed(OverlayMachine.littleWindowId(tab: tabId))
         window?.delegate = nil
         onClose(self)
     }

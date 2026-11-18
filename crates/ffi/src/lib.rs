@@ -220,37 +220,53 @@ pub extern "C" fn browser_set_focused_little(id: i32) {
     browser_core::embed::set_focused_little((id >= 0).then_some(id));
 }
 
-/// Send one input to the overlay state machine (P1-46, ADR-0068) and get back
-/// `{"overlay":{"kind":...,"dest":...},"effects":[{"kind":"navigate","dest","url"}]}`.
-/// `input`: 0 open command bar (`arg` = dest), 1 begin address edit, 2 close
-/// (`arg` = 0 command bar / 1 address edit), 3 commit `url`. `dest`: 0 new tab,
-/// 1 current tab, 2 little window. Free with [`browser_string_free`]. Main
-/// thread only.
+/// Send one input to the UI surface state machine (P1-46, ADR-0068) and get
+/// back `{"ui":{"overlay":{...},"find":w|null,"pages":{"w":"history"}},
+/// "effects":[{"kind":"navigate","dest","url"}]}`.
+///
+/// `input`: 0 open command bar (`arg` = dest: 0 new tab, 1 current tab,
+/// 2 little window), 1 begin address edit in `window`, 2 close (`arg` = 0
+/// command bar, 1 address edit), 3 commit `url`, 4 open page / 5 close page
+/// (`arg` = 0 history, 1 passwords, 2 settings) in `window`, 6 show the web
+/// view in `window`, 7 open find in `window`, 8 close find, 9 `window` closed.
+/// Free with [`browser_string_free`]. Main thread only.
 ///
 /// # Safety
 /// `url` must be NULL or a valid NUL-terminated UTF-8 string.
 #[no_mangle]
-pub unsafe extern "C" fn browser_overlay_send(
+pub unsafe extern "C" fn browser_surface_send(
     input: i32,
     arg: i32,
+    window: i32,
     url: *const c_char,
 ) -> *mut c_char {
-    use browser_core::overlay::{self, Dest, Input, Kind};
+    use browser_core::overlay::{self, Dest, Input, Kind, Page};
     let dest = match arg {
         1 => Dest::CurrentTab,
         2 => Dest::LittleWindow,
         _ => Dest::NewTab,
     };
+    let page = match arg {
+        1 => Page::Passwords,
+        2 => Page::Settings,
+        _ => Page::History,
+    };
     let url = cstr(url);
     let input = match input {
         0 => Input::OpenCommandBar(dest),
-        1 => Input::BeginAddressEdit,
+        1 => Input::BeginAddressEdit(window),
         2 if arg == 1 => Input::Close(Kind::AddressEdit),
         2 => Input::Close(Kind::CommandBar),
-        _ => Input::Commit(&url),
+        3 => Input::Commit(&url),
+        4 => Input::OpenPage(window, page),
+        5 => Input::ClosePage(window, page),
+        6 => Input::ShowWeb(window),
+        7 => Input::OpenFind(window),
+        8 => Input::CloseFind,
+        _ => Input::WindowClosed(window),
     };
-    let (state, effects) = overlay::send(input);
-    let json = serde_json::json!({ "overlay": state, "effects": effects }).to_string();
+    let (ui, effects) = overlay::send(input);
+    let json = serde_json::json!({ "ui": ui, "effects": effects }).to_string();
     CString::new(json)
         .map(CString::into_raw)
         .unwrap_or(std::ptr::null_mut())

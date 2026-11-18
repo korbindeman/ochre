@@ -183,6 +183,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate {
         }
         spaceSwipeMonitor?.uninstall()
         spaceSwipeMonitor = nil
+        OverlayMachine.windowClosed(windowId)
         if isPrivate {
             browser_private_destroy_window(windowId)
             (NSApp.delegate as? AppDelegate)?.didClosePrivateWindow(windowId)

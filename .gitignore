@@ -4,6 +4,7 @@
 
 # Rust
 /target
+/spikes/*/target
 **/*.rs.bk
 
 # macOS

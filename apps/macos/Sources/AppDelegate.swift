@@ -28,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func makeWindow() {
         OverlayMachine.render = { [weak self] old, new, query in
-            self?.renderOverlay(from: old, to: new, initialQuery: query)
+            self?.renderSurfaces(from: old, to: new, initialQuery: query)
         }
         // Install the menu bar first: it owns every app-level shortcut (⌘T, ⌘R,
         // ⌘[, …) as a key equivalent, so it must exist before the browser view
@@ -84,7 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let env = ProcessInfo.processInfo.environment
         if env["BROWSER_VAULT_DEMO"] != nil || env["BROWSER_VAULT_OPEN"] != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                BrowserState.shared.isVaultOpen = true
+                BrowserState.shared.openVault()
                 // `BROWSER_VAULT_EDIT` also opens the editor for the seeded login.
                 if env["BROWSER_VAULT_EDIT"] != nil {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
@@ -319,14 +319,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Render an overlay transition from the core machine (ADR-0068): hide what
     /// left, show what arrived. The only place these surfaces change visibility.
-    private func renderOverlay(
-        from old: OverlayMachine.State, to new: OverlayMachine.State, initialQuery: String
+    private func renderSurfaces(
+        from oldUI: OverlayMachine.Snapshot, to newUI: OverlayMachine.Snapshot,
+        initialQuery: String
     ) {
+        let old = oldUI.overlay
+        let new = newUI.overlay
+        // The page gets the keyboard back only when nothing else is up there.
+        let webGetsFocus = new == .none && newUI.pages[keyWindowId] == nil
+
+        // Pages, per window. Switching page to page never bounces focus.
+        for id in Set(oldUI.pages.keys).union(newUI.pages.keys)
+        where oldUI.pages[id] != newUI.pages[id] {
+            BrowserState.registry[id]?.apply(page: newUI.pages[id], focusWeb: new == .none)
+        }
+
+        // Find: one bar, shown in at most one window.
+        if oldUI.find != newUI.find {
+            if oldUI.find != nil { findBar.hide() }
+            if let id = newUI.find, let window = window(forSurface: id) {
+                findBar.parentWindow = window
+                findBar.show()
+            }
+        }
+
+        guard old != new else { return }
         if case .commandBar = old {
             if case .commandBar = new {} else { commandBar.hide() }
         }
         if old == .addressEdit {
-            URLBarModel.shared.renderEnd(focusPage: new == .none)
+            URLBarModel.shared.renderEnd(focusPage: webGetsFocus)
         }
         switch new {
         case .commandBar:
@@ -784,7 +806,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         if findBar.isVisible {
-            findBar.hide()
+            OverlayMachine.closeFind()
             return
         }
         // `isARepeat` may only be asked of key events - on anything else (a
@@ -797,8 +819,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Find-in-page (⌘F / ⌘G / ⇧⌘G). The bar owns the search state; these just
     // open it and step matches. Find Next/Previous are gated in validateMenuItem.
     @objc func performFind() {
-        findBar.parentWindow = keyLittle?.window ?? focusedController.window
-        findBar.show()
+        OverlayMachine.openFind(window: keyWindowId)
+    }
+
+    /// The machine's id for the key window (ADR-0068): a little window's, or
+    /// the focused normal / private window's.
+    private var keyWindowId: Int32 {
+        if let little = keyLittle { return OverlayMachine.littleWindowId(tab: little.tabId) }
+        return focusedController.windowId
+    }
+
+    /// The NSWindow for a machine window id.
+    private func window(forSurface id: Int32) -> NSWindow? {
+        if id < 0 {
+            return littleControllers.first {
+                OverlayMachine.littleWindowId(tab: $0.tabId) == id
+            }?.window
+        }
+        if id == 0 { return normalController?.window }
+        return privateControllers[id]?.window
     }
     @objc func findNext() { findBar.findNext() }
     @objc func findPrevious() { findBar.findPrevious() }

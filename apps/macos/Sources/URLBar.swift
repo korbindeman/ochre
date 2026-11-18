@@ -37,8 +37,9 @@ final class URLBarModel: ObservableObject {
     /// the empty chip is a new-tab launcher instead.
     func beginEditing() {
         let state = BrowserState.shared
-        guard !isEditing, !state.isSurfaceOpen, state.activeTab != nil else { return }
-        OverlayMachine.beginAddressEdit()
+        guard !isEditing, state.activeTab != nil else { return }
+        // The machine ignores this while a page covers the web view.
+        OverlayMachine.beginAddressEdit(window: state.windowId)
     }
 
     /// Leave editing (Escape, focus loss, a surface opening). Scoped: a no-op
