@@ -46,7 +46,7 @@ Durable decisions live in `docs/adr/` as numbered Architecture Decision Records 
 This repo is **git**. It stays on git until Aether is ready (ADR-0065).
 
 - Use normal git commands (`status`, `add`, `commit`, `switch`, `stash`, `rebase`, `push`).
-- **`.gitignore` must cover new build outputs before you generate them.** `/target`, the generated `apps/macos/Browser.xcodeproj`, and `apps/macos/build/` are already ignored; keep it that way when adding new ones.
+- **`.gitignore` must cover new build outputs before you generate them.** `/target`, the generated `apps/macos/Browser.xcodeproj`, and `apps/macos/build.noindex/` (the `.noindex` suffix keeps build copies of the app out of Spotlight) are already ignored; keep it that way when adding new ones.
 - **Parallel agents** share one working tree. Isolation is `git worktree add` if you need a separate checkout; work leases (`just work-begin` / `work-end`) serialize builds, not directories. Do not `git reset --hard`, `git checkout` other people's files, or `git stash` the whole tree to clean up concurrent work.
 
 ## Commands

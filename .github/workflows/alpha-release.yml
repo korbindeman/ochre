@@ -128,7 +128,7 @@ jobs:
       - name: Build and sign app (Release)
         run: |
           just build-release
-          app="apps/macos/build/Build/Products/Release/${{ steps.product.outputs.name }}.app"
+          app="apps/macos/build.noindex/Build/Products/Release/${{ steps.product.outputs.name }}.app"
           codesign -dv "$app" 2>&1 | grep -q "Authority=Developer ID Application" \
             || { echo "::error::The app is not Developer ID signed."; exit 1; }
 
@@ -138,12 +138,12 @@ jobs:
           NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
           NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
           NOTARY_REQUIRED: "1"
-        run: scripts/notarize-macos-app.sh "apps/macos/build/Build/Products/Release/${{ steps.product.outputs.name }}.app"
+        run: scripts/notarize-macos-app.sh "apps/macos/build.noindex/Build/Products/Release/${{ steps.product.outputs.name }}.app"
 
       - name: Verify the build actually has proprietary codecs
         run: |
           name="${{ steps.product.outputs.name }}"
-          fw="apps/macos/build/Build/Products/Release/${name}.app/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"
+          fw="apps/macos/build.noindex/Build/Products/Release/${name}.app/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"
           if grep -q -a "h264_annex_b_to_avc_bitstream_converter" "$fw"; then
             echo "H.264 code present in the shipped framework"
           else
@@ -161,7 +161,7 @@ jobs:
           RELEASE_NOTES: "Alpha build. Expect rough edges."
         run: |
           name="${{ steps.product.outputs.name }}"
-          app="apps/macos/build/Build/Products/Release/${name}.app"
+          app="apps/macos/build.noindex/Build/Products/Release/${name}.app"
           ditto -c -k --keepParent \
             "$app" \
             "${name}-${{ steps.meta.outputs.tag }}-macos-arm64.zip"

@@ -60,8 +60,8 @@ fmt:
 #
 # Run the native development app for the current platform.
 run: gen-macos
-    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
-    ./apps/macos/build/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}}
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build.noindex build'
+    ./apps/macos/build.noindex/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}}
 
 # A pure-Rust AppKit NSWindow hosting the embedded browser (native_shell.rs) - the
 # same embed.rs hosting path the SwiftUI app uses, minus SwiftUI + FFI. Reach for
@@ -99,7 +99,7 @@ gen-macos:
 
 # Build the macOS app without running it (generate project first if missing).
 build-macos: gen-macos
-    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser build'
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -derivedDataPath build.noindex build'
 
 # P0-1 focus-routing regression (ADR-0018): builds the app and runs the in-process
 # synthetic-input focus self-test, which drives page ↔ command-bar ↔ tab-switch ↔
@@ -107,8 +107,8 @@ build-macos: gen-macos
 # non-zero on any failure. Runs under a throwaway $HOME so it never collides with
 # a running instance on Chromium's process singleton.
 focus-selftest: gen-macos
-    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
-    HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --focus-selftest
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build.noindex build'
+    HOME="$(mktemp -d)" ./apps/macos/build.noindex/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --focus-selftest
 
 # P1-27 sidebar drag regression (ADR-0035): builds the app and runs the in-process
 # drag self-test, which drives reorder / save / folder / favorite / cancel drags
@@ -116,8 +116,8 @@ focus-selftest: gen-macos
 # resulting structure after each. Exits non-zero on any failure. Throwaway $HOME
 # so it never collides with a running instance on Chromium's process singleton.
 drag-selftest: gen-macos
-    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
-    HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --drag-selftest
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build.noindex build'
+    HOME="$(mktemp -d)" ./apps/macos/build.noindex/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --drag-selftest
 
 # P1-30 ⌘W close-path regression (ADR-0037): builds the app and runs the
 # in-process close self-test, which drives ⌘W through the menu against an
@@ -126,22 +126,22 @@ drag-selftest: gen-macos
 # closes from the empty canvas. Exits non-zero on any failure. Throwaway $HOME
 # so it never collides with a running instance on Chromium's process singleton.
 close-selftest: gen-macos
-    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
-    HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --close-selftest
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build.noindex build'
+    HOME="$(mktemp -d)" ./apps/macos/build.noindex/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --close-selftest
 
 # New-tab and overlay commit paths: direct open, command-bar commit, and the
 # ADR-0068 late-close regression (an address edit must survive the command
 # bar's late close and navigate the current tab). Loads example.* pages.
 newtab-selftest: gen-macos
-    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
-    HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --newtab-selftest
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build.noindex build'
+    HOME="$(mktemp -d)" ./apps/macos/build.noindex/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --newtab-selftest
 
 # Little-window regression (P1-45, ADR-0067): opens a little window, checks
 # it stays out of the sidebar, promotes it with Cmd+O semantics (live page kept),
 # and closes another. Throwaway $HOME so it never touches the real session.
 little-selftest: gen-macos
-    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
-    HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --little-selftest
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build.noindex build'
+    HOME="$(mktemp -d)" ./apps/macos/build.noindex/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --little-selftest
 
 # ── Dogfood (release) ───────────────────────────────────────────────
 
@@ -150,13 +150,13 @@ little-selftest: gen-macos
 #
 # Release build of the macOS .app (no install).
 build-release: gen-macos
-    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Release -derivedDataPath build build'
-    ./scripts/codesign-macos-app.sh apps/macos/build/Build/Products/Release/{{app_name}}.app
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Release -derivedDataPath build.noindex build'
+    ./scripts/codesign-macos-app.sh apps/macos/build.noindex/Build/Products/Release/{{app_name}}.app
 
 # Release build, install to /Applications, and launch.
 # Replaces any existing /Applications/{{app_name}}.app (quits a running instance first).
 dogfood: build-release
-    ./scripts/install-dogfood.sh apps/macos/build/Build/Products/Release/{{app_name}}.app
+    ./scripts/install-dogfood.sh apps/macos/build.noindex/Build/Products/Release/{{app_name}}.app
 
 # ── Convenience ─────────────────────────────────────────────────────
 
