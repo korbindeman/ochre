@@ -60,7 +60,8 @@ extension CommandBarController {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, !self.keepPresentedForDemo else { return }
-                self.hide()
+                // Scoped: a no-op if another surface already replaced the bar.
+                OverlayMachine.closeCommandBar()
             }
         }
         return panel

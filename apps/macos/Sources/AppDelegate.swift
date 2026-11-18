@@ -27,6 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingExternalURLs: [URL] = []
 
     func makeWindow() {
+        OverlayMachine.render = { [weak self] old, new, query in
+            self?.renderOverlay(from: old, to: new, initialQuery: query)
+        }
         // Install the menu bar first: it owns every app-level shortcut (⌘T, ⌘R,
         // ⌘[, …) as a key equivalent, so it must exist before the browser view
         // starts receiving key events.
@@ -110,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["BROWSER_COMMANDBAR_DEMO"] != nil {
             commandBar.keepPresentedForDemo = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                self.commandBar.show()
+                OverlayMachine.openCommandBar(.newTab)
             }
         }
 
@@ -200,9 +203,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// File > New Little Window (⌥⌘N): the command bar, committing into a new
     /// little window.
     @objc func newLittleWindow() {
-        URLBarModel.shared.endEditing()
         commandBar.parentWindow = NSApp.keyWindow ?? normalController.window
-        commandBar.show(route: .littleWindow)
+        OverlayMachine.openCommandBar(.littleWindow)
     }
 
     /// File > Open in Main Window (⌘O): move the key little window's page into
@@ -307,9 +309,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // reaches CEF's web view.
 
     @objc func toggleCommandBar() {
-        URLBarModel.shared.endEditing()
+        if case .commandBar = OverlayMachine.state {
+            OverlayMachine.closeCommandBar()
+            return
+        }
         commandBar.parentWindow = keyLittle?.window ?? focusedController.window
-        commandBar.toggle()
+        OverlayMachine.openCommandBar(.newTab)
+    }
+
+    /// Render an overlay transition from the core machine (ADR-0068): hide what
+    /// left, show what arrived. The only place these surfaces change visibility.
+    private func renderOverlay(
+        from old: OverlayMachine.State, to new: OverlayMachine.State, initialQuery: String
+    ) {
+        if case .commandBar = old {
+            if case .commandBar = new {} else { commandBar.hide() }
+        }
+        if old == .addressEdit {
+            URLBarModel.shared.renderEnd(focusPage: new == .none)
+        }
+        switch new {
+        case .commandBar:
+            if commandBar.parentWindow == nil { commandBar.parentWindow = focusedController.window }
+            commandBar.show(initialQuery: initialQuery)
+        case .addressEdit:
+            URLBarModel.shared.renderBegin()
+        case .none:
+            break
+        }
     }
 
     /// Edit the active tab's address in place (⌘L / clicking the URL chip):
@@ -321,12 +348,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // bar, prefilled and committing into the same tab.
         if let little = keyLittle {
             commandBar.parentWindow = little.window
-            commandBar.show(route: .currentTab, initialQuery: little.tab?.url ?? "")
+            OverlayMachine.openCommandBar(.currentTab, initialQuery: little.tab?.url ?? "")
             return
         }
         guard !BrowserState.shared.isSurfaceOpen else { return }
         guard BrowserState.shared.activeTab != nil else {
-            commandBar.toggle()
+            toggleCommandBar()
             return
         }
         if !BrowserState.shared.isViewportURLBarEnabled,
@@ -753,7 +780,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // so hold-to-close-tab stops at the empty canvas instead of blowing
         // through it into the window close.
         if commandBar.isVisible {
-            commandBar.hide()
+            OverlayMachine.closeCommandBar()
             return
         }
         if findBar.isVisible {

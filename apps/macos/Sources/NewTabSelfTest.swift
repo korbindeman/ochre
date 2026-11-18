@@ -89,7 +89,7 @@ final class NewTabSelfTest {
         }))
 
         steps.append(("navigation-open-newTab", {
-            Navigation.route = .newTab
+            OverlayMachine.openCommandBar(.newTab)
             Navigation.open("https://example.com/")
         }))
         steps.append(("assert-navigation-create", {
@@ -112,7 +112,6 @@ final class NewTabSelfTest {
         }))
 
         steps.append(("cmd-t-then-commit", {
-            Navigation.route = .newTab
             _ = self.performShortcut("t", [.command])
         }))
         steps.append(("cmd-t-assert-visible", {
@@ -124,7 +123,7 @@ final class NewTabSelfTest {
             let bar = self.app.focusTestCommandBar
             bar.suggestions.prime(query: "https://example.org/")
             Navigation.open(bar.suggestions.commitQuery)
-            bar.hide()
+            OverlayMachine.closeCommandBar()
         }))
         steps.append(("assert-cmd-t-commit", {
             let state = BrowserState.shared
@@ -136,6 +135,37 @@ final class NewTabSelfTest {
                 pass,
                 "count=\(count) expected=\(self.beforeCount + 3) url=\(url)"
             )
+        }))
+
+        // P1-46 / ADR-0068 regression: ⌘T, then start an address edit, then the
+        // command bar's panel reports its close late (it resigns key after the
+        // edit began). The edit must survive, and Return must navigate the
+        // current tab instead of opening a new one.
+        steps.append(("late-close-open-bar", { _ = self.performShortcut("t", [.command]) }))
+        steps.append(("late-close-begin-edit", {
+            URLBarModel.shared.beginEditing()
+            OverlayMachine.closeCommandBar()
+        }))
+        steps.append(("late-close-assert-edit", {
+            let pass = OverlayMachine.state == .addressEdit && URLBarModel.shared.isEditing
+            self.check(
+                "late-bar-close-keeps-address-edit", pass,
+                "state=\(OverlayMachine.state) editing=\(URLBarModel.shared.isEditing)")
+            URLBarModel.shared.suggestions.prime(query: "https://example.net/")
+            URLBarModel.shared.commit()
+        }))
+        // Let the navigation report its URL (network load).
+        for _ in 0..<4 { steps.append(("late-close-settle", {})) }
+        steps.append(("late-close-assert-navigate", {
+            let state = BrowserState.shared
+            let count = state.tabs.count
+            let url = state.activeTab?.url ?? ""
+            let pass =
+                count == self.beforeCount + 3 && url.contains("example.net")
+                && OverlayMachine.state == .none
+            self.check(
+                "address-commit-navigates-current-tab", pass,
+                "count=\(count) expected=\(self.beforeCount + 3) url=\(url) state=\(OverlayMachine.state)")
         }))
     }
 

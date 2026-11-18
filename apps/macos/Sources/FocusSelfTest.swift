@@ -169,7 +169,7 @@ final class FocusSelfTest {
             self.check("cmd-t-routes-to-menu", routed && self.app.focusTestCommandBar.isVisible,
                        "routed=\(routed) visible=\(self.app.focusTestCommandBar.isVisible)")
         }))
-        steps.append(("cmdbar-close", { self.app.focusTestCommandBar.hide() }))
+        steps.append(("cmdbar-close", { OverlayMachine.closeCommandBar() }))
         steps.append(("assert-C-cmdbar-refocus", {
             self.check("cmdbar-close-refocuses-page", self.pageHasFocus(),
                        "fr=\(self.firstResponderName())")
@@ -186,7 +186,7 @@ final class FocusSelfTest {
                        "fr=\(self.firstResponderName())")
         }))
         steps.append(("regression-cmdbar-open", { _ = self.performShortcut("t", [.command]) }))
-        steps.append(("regression-cmdbar-close", { self.app.focusTestCommandBar.hide() }))
+        steps.append(("regression-cmdbar-close", { OverlayMachine.closeCommandBar() }))
         steps.append(("assert-D-refocus-from-bare-window", {
             self.check("cmdbar-close-recovers-focus-from-bare-window", self.pageHasFocus(),
                        "fr=\(self.firstResponderName())")

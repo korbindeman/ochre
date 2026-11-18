@@ -49,6 +49,12 @@ void browser_set_event_callback(void (*callback)(int32_t event_type,
 // Heap-allocated by Rust - free with browser_string_free.
 char *browser_structure_json(void);
 
+// Overlay state machine (P1-46): input 0 open command bar (arg = dest
+// 0 new tab / 1 current tab / 2 little window), 1 begin address edit, 2 close
+// (arg 0 command bar / 1 address edit), 3 commit url. Returns JSON
+// {"overlay":{...},"effects":[...]}; free with browser_string_free.
+char *browser_overlay_send(int32_t input, int32_t arg, const char *url);
+
 // Little windows (P1-45): a tab in its own small window, outside the sidebar.
 // Content events arrive on window 0; the snapshot lists them in little_tabs.
 int32_t browser_little_tab_create(void *parent_view, int32_t width, int32_t height,

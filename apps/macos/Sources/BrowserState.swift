@@ -798,27 +798,16 @@ func browserTabEventCallback(
 /// ⌘T / empty state opens a **new tab**; ⌘L / the URL chip edits the **current
 /// tab** in place. URLs load directly; anything else becomes a web search.
 enum Navigation {
-    /// `littleWindow`: open the commit in a new little window (P1-45).
+    /// Where a command-bar commit lands. The destination is part of the core
+    /// overlay state (ADR-0068), never a global the surfaces write.
     enum Route { case newTab, currentTab, littleWindow }
 
-    /// Where the next commit lands - set by the command bar before it opens.
-    static var route: Route = .newTab
-
+    /// Commit typed input or a suggestion's URL from the surface that is up.
     static func open(_ input: String) {
         let query = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return }
         let url = resolve(query)
-        MainActor.assumeIsolated {
-            switch route {
-            case .newTab:
-                (NSApp.delegate as? AppDelegate)?.openTab(
-                    url: url, windowId: BrowserState.current.windowId)
-            case .currentTab:
-                url.withCString { browser_navigate($0) }
-            case .littleWindow:
-                (NSApp.delegate as? AppDelegate)?.openLittleWindow(url: url)
-            }
-        }
+        MainActor.assumeIsolated { OverlayMachine.commit(url) }
     }
 
     private static func resolve(_ query: String) -> String {

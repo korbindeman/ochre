@@ -65,13 +65,10 @@ final class CommandBarController {
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
-    func toggle() {
-        isVisible ? hide() : show()
-    }
-
-    /// Present the bar. `route` says where a commit lands; `initialQuery`
-    /// prefills the field (selected, address-bar style) for editing a URL.
-    func show(route: Navigation.Route = .newTab, initialQuery: String = "") {
+    /// Render the bar as shown. Only `OverlayMachine`'s renderer calls this;
+    /// intents go through the machine. `initialQuery` prefills the field
+    /// (selected, address-bar style) for editing a URL.
+    func show(initialQuery: String = "") {
         guard let parent = parentWindow else { return }
         let panel = self.panel ?? makePanel()
         self.panel = panel
@@ -81,7 +78,6 @@ final class CommandBarController {
         // ADR-0014), so commits always open a new tab and the field starts empty.
         suggestions.reset()
         suggestions.showZeroState()
-        Navigation.route = route
         presentation.isPresented = false
 
         // Host the SwiftUI content pinned top/left/right at a fixed width, with
@@ -91,9 +87,9 @@ final class CommandBarController {
             rootView: CommandBarView(
                 presentation: presentation,
                 controller: suggestions,
-                onChoose: { [weak self] suggestion in
+                onChoose: { suggestion in
                     suggestion.run()
-                    self?.hide()
+                    OverlayMachine.closeCommandBar()
                 },
                 shadowInset: shadowInset,
                 barWidth: barWidth,
@@ -140,11 +136,10 @@ final class CommandBarController {
         }
     }
 
+    /// Render the bar as hidden (the machine's renderer only).
     func hide() {
         guard let panel, panel.isVisible, !isHiding else { return }
         isHiding = true
-        // Back to the default target for the next ⌘T.
-        Navigation.route = .newTab
         removeKeyMonitor()
         suggestionsObserver = nil
 
@@ -158,6 +153,11 @@ final class CommandBarController {
     }
 
     private func finishHide(panel: KeyablePanel) {
+        // Reopened during the morph-out: the machine says shown, so stay shown.
+        if case .commandBar = OverlayMachine.state {
+            isHiding = false
+            return
+        }
         suggestions.reset()
         NSAnimationContext.runAnimationGroup(
             { context in
@@ -168,6 +168,10 @@ final class CommandBarController {
             completionHandler: { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
+                    if case .commandBar = OverlayMachine.state {
+                        self.isHiding = false
+                        return
+                    }
                     panel.parent?.removeChildWindow(panel)
                     panel.orderOut(nil)
                     self.isHiding = false
@@ -179,6 +183,9 @@ final class CommandBarController {
                     // falling on the floor. Driving CEF `set_focus` mirrors the
                     // tab-switch path and matches Safari/Arc (dismissing the address
                     // bar returns focus to the page).
+                    // Only when nothing replaced the bar: an address edit that
+                    // opened meanwhile owns the keyboard.
+                    guard OverlayMachine.state == .none else { return }
                     self.parentWindow?.makeKey()
                     browser_focus_active_tab()
                     // P0-1 observability: log what AppKit settled on; the paired

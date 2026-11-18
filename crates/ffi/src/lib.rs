@@ -220,6 +220,42 @@ pub extern "C" fn browser_set_focused_little(id: i32) {
     browser_core::embed::set_focused_little((id >= 0).then_some(id));
 }
 
+/// Send one input to the overlay state machine (P1-46, ADR-0068) and get back
+/// `{"overlay":{"kind":...,"dest":...},"effects":[{"kind":"navigate","dest","url"}]}`.
+/// `input`: 0 open command bar (`arg` = dest), 1 begin address edit, 2 close
+/// (`arg` = 0 command bar / 1 address edit), 3 commit `url`. `dest`: 0 new tab,
+/// 1 current tab, 2 little window. Free with [`browser_string_free`]. Main
+/// thread only.
+///
+/// # Safety
+/// `url` must be NULL or a valid NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn browser_overlay_send(
+    input: i32,
+    arg: i32,
+    url: *const c_char,
+) -> *mut c_char {
+    use browser_core::overlay::{self, Dest, Input, Kind};
+    let dest = match arg {
+        1 => Dest::CurrentTab,
+        2 => Dest::LittleWindow,
+        _ => Dest::NewTab,
+    };
+    let url = cstr(url);
+    let input = match input {
+        0 => Input::OpenCommandBar(dest),
+        1 => Input::BeginAddressEdit,
+        2 if arg == 1 => Input::Close(Kind::AddressEdit),
+        2 => Input::Close(Kind::CommandBar),
+        _ => Input::Commit(&url),
+    };
+    let (state, effects) = overlay::send(input);
+    let json = serde_json::json!({ "overlay": state, "effects": effects }).to_string();
+    CString::new(json)
+        .map(CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
 /// Save a friction report (P1-44): the structure, diagnostics log tail, the
 /// user's `note`, and the `focused` surface, into a new directory under the
 /// support folder. Returns that directory so the host can add `window.png`,

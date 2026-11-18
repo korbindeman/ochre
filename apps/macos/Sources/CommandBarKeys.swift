@@ -41,14 +41,14 @@ extension CommandBarController {
         case 125:  // down arrow
             suggestions.moveSelection(by: 1)
         case 53:  // escape
-            hide()
+            OverlayMachine.closeCommandBar()
         case 36, 76:  // return, enter
             if let selected = suggestions.selected() {
                 selected.run()
             } else {
                 Navigation.open(suggestions.commitQuery)
             }
-            hide()
+            OverlayMachine.closeCommandBar()
         default:
             return false
         }

@@ -129,6 +129,13 @@ close-selftest: gen-macos
     ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
     HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --close-selftest
 
+# New-tab and overlay commit paths: direct open, command-bar commit, and the
+# ADR-0068 late-close regression (an address edit must survive the command
+# bar's late close and navigate the current tab). Loads example.* pages.
+newtab-selftest: gen-macos
+    ./scripts/with-work-gate.sh bash -c 'cd apps/macos && xcodebuild -scheme Browser -configuration Debug -derivedDataPath build build'
+    HOME="$(mktemp -d)" ./apps/macos/build/Build/Products/Debug/{{app_name}}.app/Contents/MacOS/{{app_name}} --newtab-selftest
+
 # Little-window regression (P1-45, ADR-0067): opens a little window, checks
 # it stays out of the sidebar, promotes it with Cmd+O semantics (live page kept),
 # and closes another. Throwaway $HOME so it never touches the real session.

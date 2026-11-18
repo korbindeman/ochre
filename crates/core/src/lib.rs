@@ -28,6 +28,7 @@ pub mod import;
 pub mod inject;
 pub mod mac;
 pub mod native_shell;
+pub mod overlay;
 pub mod private_window;
 pub mod product;
 pub mod redirect_selftest;

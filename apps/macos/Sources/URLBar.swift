@@ -37,8 +37,19 @@ final class URLBarModel: ObservableObject {
     /// the empty chip is a new-tab launcher instead.
     func beginEditing() {
         let state = BrowserState.shared
-        guard !isEditing, !state.isSurfaceOpen, let tab = state.activeTab else { return }
-        Navigation.route = .currentTab
+        guard !isEditing, !state.isSurfaceOpen, state.activeTab != nil else { return }
+        OverlayMachine.beginAddressEdit()
+    }
+
+    /// Leave editing (Escape, focus loss, a surface opening). Scoped: a no-op
+    /// once another surface replaced the edit.
+    func endEditing() {
+        OverlayMachine.closeAddressEdit()
+    }
+
+    /// Render the edit as begun (the machine's renderer only).
+    func renderBegin() {
+        guard let tab = BrowserState.shared.activeTab else { return }
         initialQuery = tab.url
         suggestions.reset()
         if !initialQuery.isEmpty { suggestions.prime(query: initialQuery) }
@@ -46,15 +57,14 @@ final class URLBarModel: ObservableObject {
         isEditing = true
     }
 
-    /// Leave editing and hand keyboard focus back to the page. Mirrors the
-    /// command bar's dismissal: the field resigned first responder as it left the
-    /// hierarchy, so drive CEF `set_focus` to land keystrokes on the page again.
-    func endEditing() {
+    /// Render the edit as ended. The field resigned first responder as it left
+    /// the hierarchy, so drive CEF `set_focus` to land keystrokes on the page
+    /// again, but only when no other surface took over.
+    func renderEnd(focusPage: Bool) {
         guard isEditing else { return }
         isEditing = false
-        Navigation.route = .newTab
         suggestions.reset()
-        browser_focus_active_tab()
+        if focusPage { browser_focus_active_tab() }
     }
 
     /// Commit the typed query (Return with nothing highlighted).
