@@ -21,15 +21,15 @@ struct BrowserCommandsProvider: SuggestionProvider {
         let commands = await MainActor.run { BrowserCommandMenu.snapshot() }
 
         return commands.compactMap { command in
-            guard let match = FuzzyMatch.match(query: query, text: command.searchText) else {
-                return nil
-            }
+            guard FuzzyMatch.startsWords(query: query, text: command.searchText),
+                let match = FuzzyMatch.match(query: query, text: command.searchText)
+            else { return nil }
             let titleMatches = FuzzyMatch.match(query: query, text: command.title)?.indices ?? []
             return Suggestion(
                 id: "command:\(command.id)",
                 icon: .system("command"),
                 title: command.title,
-                subtitle: command.path,
+                subtitle: command.path.isEmpty ? nil : command.path,
                 run: { BrowserCommandMenu.run(command.id) },
                 score: SuggestionScore.command + match.score,
                 titleMatches: titleMatches
@@ -49,7 +49,9 @@ struct SpaceCommandsProvider: SuggestionProvider {
         return spaces.compactMap { space in
             let title = "Switch to \(space.name)"
             let searchable = "\(title) space \(space.icon)"
-            guard let match = FuzzyMatch.match(query: query, text: searchable) else { return nil }
+            guard FuzzyMatch.startsWords(query: query, text: searchable),
+                let match = FuzzyMatch.match(query: query, text: searchable)
+            else { return nil }
             let titleMatches = FuzzyMatch.match(query: query, text: title)?.indices ?? []
             return Suggestion(
                 id: "space:\(space.id)",
@@ -93,10 +95,10 @@ private enum BrowserCommandMenu {
     ) -> [BrowserCommandDescriptor] {
         menu.items.flatMap { item -> [BrowserCommandDescriptor] in
             if let submenu = item.submenu {
-                return collect(menu: submenu, path: path + [item.title], app: app)
+                return collect(menu: submenu, path: path + [submenu.title], app: app)
             }
             guard isCommand(item, app: app), let action = item.action else { return [] }
-            let menuPath = path.joined(separator: " › ")
+            let menuPath = path.filter { !$0.isEmpty }.joined(separator: " › ")
             return [BrowserCommandDescriptor(
                 id: commandId(action: action, tag: item.tag, path: menuPath),
                 title: item.title,
@@ -111,12 +113,12 @@ private enum BrowserCommandMenu {
     ) -> NSMenuItem? {
         for item in menu.items {
             if let submenu = item.submenu,
-                let found = find(id: id, menu: submenu, path: path + [item.title], app: app)
+                let found = find(id: id, menu: submenu, path: path + [submenu.title], app: app)
             {
                 return found
             }
             guard let action = item.action else { continue }
-            let menuPath = path.joined(separator: " › ")
+            let menuPath = path.filter { !$0.isEmpty }.joined(separator: " › ")
             if commandId(action: action, tag: item.tag, path: menuPath) == id,
                 isCommand(item, app: app)
             {

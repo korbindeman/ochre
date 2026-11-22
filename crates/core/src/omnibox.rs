@@ -180,7 +180,9 @@ pub fn rank(request: &Request, sources: &Sources) -> Response {
         }
     }
 
-    // History pages.
+    // History pages. Every page that could complete inline is a candidate;
+    // only the strongest one completes (below).
+    let mut candidates: Vec<(String, &OmniboxPage, f64)> = Vec::new();
     for page in &sources.pages {
         let Some(m) = page_match(text, &q, &page.url, &page.title) else {
             if let Some(&strength) = learned.get(page.url.as_str()) {
@@ -189,13 +191,15 @@ pub fn rank(request: &Request, sources: &Sources) -> Response {
             continue;
         };
         let learned_strength = learned.get(page.url.as_str()).copied().unwrap_or(0.0);
-        let mut row = page_row(page, &m, sources.now, learned_strength);
         if inline_ok {
             if let Some(fill) = inline_fill(&typed_prefix, page, learned_strength) {
-                row = completion_row(page, fill, sources.now);
+                candidates.push((fill, page, learned_strength));
             }
         }
-        add(&mut rows, row);
+        add(&mut rows, page_row(page, &m, sources.now, learned_strength));
+    }
+    if let Some((fill, page)) = inline_winner(&candidates, &sources.pages, sources.now) {
+        add(&mut rows, completion_row(page, fill));
     }
 
     // Open tabs: switch instead of opening again.
@@ -333,7 +337,7 @@ fn page_relevance(m: &PageMatch, frecency: i32, learned: f64, display: &str) -> 
     let band = [900, 1000, 1100, 1300][m.class as usize];
     let depth = display.matches('/').count() as i32;
     let learned_bonus = (learned.min(10.0) * 8.0) as i32;
-    (band + (m.detail / 4).min(20) + (frecency / 6).min(40) + learned_bonus - depth * 3)
+    (band + (m.detail / 4).min(20) + (frecency / 8).min(60) + learned_bonus - depth * 3)
         .min(HISTORY_MAX)
 }
 
@@ -427,8 +431,58 @@ fn inline_fill(typed: &str, page: &OmniboxPage, learned: f64) -> Option<String> 
     }
 }
 
+/// The one completion the field shows when several sites start with the input
+/// ("you": youtube.com and yoursmileis.art). Like Firefox's origin autofill,
+/// it is the completed site with the most use: visits and typings of every
+/// page under that host or path, weighted by recency and never capped, so 960
+/// visits beat 9. Learned picks for this input add to it. Ties go to the more
+/// typed site, then the shorter fill. Returns the fill and the page to open.
+fn inline_winner<'a>(
+    candidates: &[(String, &'a OmniboxPage, f64)],
+    pages: &[OmniboxPage],
+    now: i64,
+) -> Option<(String, &'a OmniboxPage)> {
+    let mut fills: HashMap<&str, (f64, &'a OmniboxPage)> = HashMap::new();
+    for (fill, page, learned) in candidates {
+        let entry = fills.entry(fill.as_str()).or_insert((0.0, page));
+        entry.0 = entry.0.max(*learned);
+        // The page to open: the most typed one, then the most visited.
+        if (page.typed_count, page.visit_count) > (entry.1.typed_count, entry.1.visit_count) {
+            entry.1 = page;
+        }
+    }
+    let mut best: Option<(f64, i64, &str, &'a OmniboxPage)> = None;
+    for (fill, (learned, page)) in fills {
+        let (mut use_score, mut typed) = (0.0, 0);
+        for p in pages {
+            if under(&history::display_url(&p.url).to_lowercase(), fill) {
+                let weight = recency_weight(p.last_visit, now);
+                use_score += (p.visit_count as f64 + 2.0 * p.typed_count as f64) * weight;
+                typed += p.typed_count;
+            }
+        }
+        let score = (use_score + 1.0).ln() + learned;
+        let better = best.as_ref().is_none_or(|(s, t, f, _)| {
+            (score, typed, std::cmp::Reverse(fill.len()))
+                .partial_cmp(&(*s, *t, std::cmp::Reverse(f.len())))
+                .is_some_and(|o| o.is_gt())
+        });
+        if better {
+            best = Some((score, typed, fill, page));
+        }
+    }
+    best.map(|(_, _, fill, page)| (fill.to_string(), page))
+}
+
+/// Whether `display` is `fill` itself or a page inside it.
+fn under(display: &str, fill: &str) -> bool {
+    display
+        .strip_prefix(fill)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '?', '#']))
+}
+
 /// The row an inline completion stands for: the completed host or path.
-fn completion_row(page: &OmniboxPage, fill: String, now: i64) -> Row {
+fn completion_row(page: &OmniboxPage, fill: String) -> Row {
     let display = history::display_url(&page.url);
     let scheme = if page.url.starts_with("http://") {
         "http://"
@@ -462,7 +516,7 @@ fn completion_row(page: &OmniboxPage, fill: String, now: i64) -> Row {
         tab: None,
         title_matches: Vec::new(),
         subtitle_matches: Vec::new(),
-        relevance: INLINE_BASE + (frecency(page, now) / 100).min(3),
+        relevance: INLINE_BASE,
         default_ok: true,
         fill: Some(fill),
     }
@@ -554,18 +608,22 @@ fn as_url(text: &str) -> Option<String> {
     })
 }
 
-/// Visit frequency weighted by recency (Chromium HQP's buckets).
+/// Recency buckets (Chromium HQP's): how much a page's last visit still counts.
+fn recency_weight(last_visit: i64, now: i64) -> f64 {
+    match (now - last_visit).max(0) / 86_400 {
+        0..=4 => 1.0,
+        5..=14 => 0.7,
+        15..=31 => 0.5,
+        32..=90 => 0.3,
+        _ => 0.1,
+    }
+}
+
+/// Visit frequency weighted by recency, on a log scale. Not capped: a page
+/// visited 960 times must outrank one visited 9 times.
 fn frecency(page: &OmniboxPage, now: i64) -> i32 {
-    let days = (now - page.last_visit).max(0) / 86_400;
-    let weight = match days {
-        0..=4 => 100,
-        5..=14 => 70,
-        15..=31 => 50,
-        32..=90 => 30,
-        _ => 10,
-    };
-    let visits = page.visit_count.min(10) as f64 + page.typed_count.min(10) as f64 * 0.5;
-    ((visits * weight as f64 + 1.0).ln() * 40.0) as i32
+    let visits = page.visit_count as f64 + page.typed_count as f64 * 0.5;
+    ((visits * 100.0 * recency_weight(page.last_visit, now) + 1.0).ln() * 40.0) as i32
 }
 
 fn now() -> i64 {
@@ -637,6 +695,60 @@ mod tests {
         let r = rank(&req("git"), &s);
         assert_eq!(r.inline.as_deref(), Some("github.com"));
         assert_eq!(r.rows[0].url, "https://github.com/");
+    }
+
+    #[test]
+    fn the_most_used_site_wins_inline_when_several_share_the_prefix() {
+        // Real history (Korbin's, 2026-11-22): "you" completed to a saved
+        // store page's root because every typed site scored the same capped
+        // frecency and the tie broke alphabetically. Accepting it then left a
+        // learned pick for the wrong site, which must not outweigh 960 visits.
+        let mut youtube = page("https://www.youtube.com/", "YouTube", 960, 358);
+        youtube.last_visit = NOW - 600;
+        let mut store = page("https://yoursmileis.art/b/bubblegum", "Bubblegum", 9, 7);
+        store.last_visit = NOW - 18 * 86_400;
+        let mut s = sources(vec![
+            store,
+            page("https://yoursmileis.art/", "", 3, 2),
+            youtube,
+            page("https://www.youtube.com/feed/history", "History", 19, 0),
+        ]);
+        let r = rank(&req("you"), &s);
+        assert_eq!(r.inline.as_deref(), Some("youtube.com"));
+        assert_eq!(r.rows[0].url, "https://www.youtube.com/");
+        // Only one row completes; the other site is an ordinary suggestion.
+        assert_eq!(
+            r.rows
+                .iter()
+                .filter(|row| row.relevance >= INLINE_BASE)
+                .count(),
+            1
+        );
+        assert!(r
+            .rows
+            .iter()
+            .any(|row| row.key.starts_with("yoursmileis.art")));
+
+        s.shortcuts = vec![
+            Shortcut {
+                input: "you".into(),
+                url: "https://yoursmileis.art/".into(),
+                use_count: 1.9,
+                last_used: NOW,
+            },
+            Shortcut {
+                input: "you".into(),
+                url: "https://www.youtube.com/".into(),
+                use_count: 1.0,
+                last_used: NOW,
+            },
+        ];
+        assert_eq!(rank(&req("you"), &s).inline.as_deref(), Some("youtube.com"));
+        // Typing past the shared prefix still reaches the other site.
+        assert_eq!(
+            rank(&req("yours"), &s).inline.as_deref(),
+            Some("yoursmileis.art")
+        );
     }
 
     #[test]

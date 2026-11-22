@@ -15,6 +15,7 @@ final class NewTabSelfTest {
     private var steps: [(name: String, run: () -> Void)] = []
     private var stepIndex = 0
     private var omniboxBefore = 0
+    private var commandRows: [String: [Suggestion]] = [:]
     private var failures = 0
     private var beforeCount = 0
     private var afterDirect: Int32 = -1
@@ -193,6 +194,26 @@ final class NewTabSelfTest {
                 BrowserState.shared.tabs.count == self.omniboxBefore + 1
                     && url.contains("example.org/omnibox"),
                 "url=\(url)")
+        }))
+
+        // Command rows sit under the default, so they need a word-start match
+        // ("debar" is mid-word in "Sidebar"), and their subtitle is the menu's
+        // name, never AppKit's placeholder item title.
+        steps.append(("commands-query", {
+            for query in ["debar", "toggle side"] {
+                Task { @MainActor in
+                    self.commandRows[query] = await BrowserCommandsProvider().suggestions(for: query)
+                }
+            }
+        }))
+        for _ in 0..<3 { steps.append(("commands-settle", {})) }
+        steps.append(("commands-assert", {
+            let midWord = self.commandRows["debar"] ?? []
+            let row = self.commandRows["toggle side"]?.first { $0.title == "Toggle Sidebar" }
+            self.check(
+                "commands-need-word-starts",
+                !midWord.contains { $0.title == "Toggle Sidebar" } && row?.subtitle == "View",
+                "midWord=\(midWord.map(\.title)) subtitle=\(row?.subtitle ?? "nil")")
         }))
 
         // ADR-0068 cross-surface rules: a page closes the find bar, and an

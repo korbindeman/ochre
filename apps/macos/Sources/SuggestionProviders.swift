@@ -46,6 +46,15 @@ enum FuzzyMatch {
         let score: Int
         let indices: [Int]
     }
+
+    /// Whether every word of `query` starts a word of `text`. Command rows sit
+    /// right under the default, so they need this stronger match: "you" must
+    /// not surface "Classic Layout" through the middle of "Layout".
+    static func startsWords(query: String, text: String) -> Bool {
+        let words = text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        let parts = query.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        return !parts.isEmpty && parts.allSatisfy { part in words.contains { $0.hasPrefix(part) } }
+    }
 }
 
 // ─── Search suggestions ──────────────────────────────────────────────────
