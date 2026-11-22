@@ -741,6 +741,14 @@ pub fn import_arc(path: &str, replace: bool) -> Result<crate::import::ApplyResul
     crate::import::import_arc_sidebar(path, replace)
 }
 
+/// Import Arc's cookies so sites stay signed in. Asynchronous: macOS asks the
+/// user for keychain access first; `done` runs on the main thread. Main thread.
+pub fn import_arc_cookies(
+    done: impl FnOnce(Result<crate::import::CookieImportResult, String>) + Send + 'static,
+) {
+    crate::import::import_arc_cookies(done);
+}
+
 /// Process teardown after [`run_message_loop`] returns. Nothing to release:
 /// WebKit's processes exit with ours.
 pub fn shutdown() {}

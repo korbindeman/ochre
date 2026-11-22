@@ -47,6 +47,8 @@ pbkdf2 = "0.12"
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
 hmac = "0.12"
 sha2 = "0.10"
+# Chromium cookie key derivation (PBKDF2-HMAC-SHA1) for the Arc cookie import.
+sha1 = "0.10"
 hkdf = "0.12"
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }

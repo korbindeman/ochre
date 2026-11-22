@@ -31,6 +31,8 @@ pbkdf2 = { workspace = true }
 argon2 = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
+# Arc cookie import: Chromium derives its cookie key with PBKDF2-HMAC-SHA1.
+sha1 = { workspace = true }
 hkdf = { workspace = true }
 aes = { workspace = true }
 cbc = { workspace = true }

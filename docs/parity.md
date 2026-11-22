@@ -184,7 +184,7 @@ window/lifecycle surface a Windows build must reproduce.
 | Private / incognito windows (⌘⇧N; incognito `RequestContext`, ephemeral tabs, privacy gates, opt-in vault fill) | Inv | ✅ | ⬜ | ⬜ | ADR-0031 |
 | Little windows (⌥⌘N; one normal-profile tab outside the sidebar; ⌘O moves the live page into the main window; links from other apps and a favorite's off-site links open one) | Inv | ✅ | ⬜ | ⬜ | ADR-0067 |
 | Set as default browser + open links from other apps | Idiom | ✅ | ⬜ | ⬜ | rm §4.1 · `DefaultBrowser.swift` |
-| Import from Chrome / Safari / Arc (spaces/folders/tabs; passwords via vault import) | Inv | 🚧 (Arc sidebar export in Settings; Chrome/Safari extraction → P2-18) | ⬜ | ⬜ | rm §5.2 · `ArcImport.swift` |
+| Import from Chrome / Safari / Arc (spaces/folders/tabs; passwords via vault import) | Inv | 🚧 (Arc sidebar, history and sign-in cookies in Settings; Chrome/Safari extraction → P2-18) | ⬜ | ⬜ | rm §5.2 · `ArcImport.swift` |
 
 ## Engine & feature surface
 

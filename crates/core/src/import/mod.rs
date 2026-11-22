@@ -6,6 +6,7 @@
 
 mod apply;
 mod arc;
+pub mod cookies;
 
 pub use apply::{apply_arc_import, ApplyError, ApplyResult};
 pub use arc::{
@@ -56,6 +57,53 @@ pub fn import_arc_sidebar(path: &str, replace: bool) -> Result<ApplyResult, Stri
         }
     }
     Ok(result)
+}
+
+/// What an Arc cookie import did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CookieImportResult {
+    /// Cookies now in Ochre's store.
+    pub added: usize,
+    /// Arc cookies Ochre already had; left as they were.
+    pub kept: usize,
+    /// Expired, partitioned or undecryptable Arc cookies.
+    pub skipped: usize,
+}
+
+/// Import Arc's cookies into the normal profile, so sites stay signed in.
+/// Reading the keychain blocks on the user's answer to the macOS prompt, so
+/// the read and decrypt run on a worker thread; the WebKit writes run on the
+/// main thread, and `done` runs there too. Never overwrites a cookie Ochre
+/// already holds. Call on the main thread.
+pub fn import_arc_cookies(done: impl FnOnce(Result<CookieImportResult, String>) + Send + 'static) {
+    std::thread::spawn(move || {
+        let read = read_arc_cookies();
+        crate::main_thread::post(move || match read {
+            Err(err) => done(Err(err)),
+            Ok(read) => {
+                let skipped = read.skipped;
+                crate::engine::cookies::import(read.cookies, move |added, kept| {
+                    done(Ok(CookieImportResult {
+                        added,
+                        kept,
+                        skipped,
+                    }));
+                });
+            }
+        });
+    });
+}
+
+fn read_arc_cookies() -> Result<cookies::CookieRead, String> {
+    let path = cookies::default_arc_cookies_path()
+        .filter(|path| path.is_file())
+        .ok_or("Arc's cookie file was not found. Open Arc once on this Mac.")?;
+    let password = cookies::arc_safe_storage_password()?;
+    let key = cookies::derive_key(&password);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    cookies::read_chromium_cookies(&path, &key, now)
 }
 
 #[cfg(test)]

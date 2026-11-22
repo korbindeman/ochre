@@ -145,6 +145,10 @@ enum MainMenu {
                 action: #selector(AppDelegate.importFromArc), keyEquivalent: ""), actions)
         target(
             menu.addItem(
+                withTitle: "Import Sign-ins from Arc…",
+                action: #selector(AppDelegate.importSignInsFromArc), keyEquivalent: ""), actions)
+        target(
+            menu.addItem(
                 withTitle: "Replace Pinned URL with Current",
                 action: #selector(AppDelegate.replaceActivePinnedURL), keyEquivalent: ""), actions)
         target(

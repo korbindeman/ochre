@@ -602,6 +602,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func closeTabs(_ ids: [Int32]) {
         for id in ids { closeTab(id) }
         BrowserState.shared.clearTabSelection()
+    /// Opens Settings on the Arc group and starts the sign-in (cookie) import
+    /// there, so the keychain prompt and the result share one place (ADR-0077).
+    @objc func importSignInsFromArc(_ sender: Any?) {
+        _ = sender
+        BrowserState.shared.openSettings()
+        SettingsModel.shared.section = .general
+        SettingsModel.shared.importArcCookies()
+    }
+
     }
 
     func renameFolder(_ id: Int32) {

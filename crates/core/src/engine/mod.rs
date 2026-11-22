@@ -19,6 +19,7 @@
 //! bridge and the compiled ad-block rules.
 
 pub mod content_rules;
+pub(crate) mod cookies;
 mod delegate;
 pub mod favicon;
 mod ui;

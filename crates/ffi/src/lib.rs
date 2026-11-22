@@ -579,6 +579,26 @@ pub unsafe extern "C" fn browser_import_arc(path: *const c_char, replace: bool) 
     )
 }
 
+/// Called once with an import JSON envelope (`{"ok", "payload" | "error"}`).
+/// The string is only valid during the call; copy it.
+pub type ImportCallback = extern "C" fn(json: *const c_char, context: *mut c_void);
+
+/// Import Arc's cookies into the normal profile so sites stay signed in. macOS
+/// asks for access to "Arc Safe Storage" first. `callback` runs once on the
+/// main thread with `{added, kept, skipped}` or an error. Main thread only.
+#[no_mangle]
+pub extern "C" fn browser_import_arc_cookies(callback: ImportCallback, context: *mut c_void) {
+    let context = context as usize;
+    browser_core::embed::import_arc_cookies(move |result| {
+        let json = import_json_envelope(result.map(
+            |r| serde_json::json!({ "added": r.added, "kept": r.kept, "skipped": r.skipped }),
+        ));
+        callback(json, context as *mut c_void);
+        // SAFETY: `json` came from `import_json_envelope` and is freed once.
+        unsafe { browser_string_free(json) };
+    });
+}
+
 fn import_json_envelope(result: Result<serde_json::Value, String>) -> *mut c_char {
     let value = match result {
         Ok(payload) => serde_json::json!({ "ok": true, "payload": payload }),

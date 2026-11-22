@@ -175,6 +175,9 @@ int32_t browser_space_to_folder(int32_t id);
 char *browser_import_arc_default_path(void);
 char *browser_import_arc_preview(const char *path);
 char *browser_import_arc(const char *path, bool replace);
+/// Imports Arc's cookies (asks for keychain access); `callback` runs once on the
+/// main thread with a JSON envelope valid only during the call.
+void browser_import_arc_cookies(void (*callback)(const char *json, void *context), void *context);
 
 // Run the CEF message loop. Blocks until browser_quit / all browsers close.
 void browser_run_message_loop(void);

@@ -258,6 +258,28 @@ private struct ArcImportSettingsGroup: View {
                     .foregroundStyle(.secondary)
             }
             SettingsFootnote(model.arcImportFootnote)
+            Divider()
+            SettingsRow(
+                title: "Sign-ins",
+                subtitle: "Copy Arc's cookies so your sites stay signed in."
+            ) {
+                if model.arcCookiesImporting {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Import Sign-ins") {
+                        model.importArcCookies()
+                    }
+                    .buttonStyle(.glass)
+                }
+            }
+            if let status = model.arcCookieStatus {
+                Text(status)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            SettingsFootnote(
+                "macOS asks to allow access to \u{201C}Arc Safe Storage\u{201D}, the key Arc encrypts cookies with. Cookies you already have here are left as they are."
+            )
         }
     }
 }
@@ -642,6 +664,8 @@ final class SettingsModel: ObservableObject {
     func reload() {
         themePreference = browser_theme_preference()
         BrowserState.shared.refreshAdblock()
+    @Published var arcCookiesImporting = false
+    @Published var arcCookieStatus: String?
         adblockEnabled = BrowserState.shared.adblockEnabled
         consentEnabled = BrowserState.shared.consentEnabled
         vaultAutoLock = VaultAutoLockPolicy.from(policy: browser_settings_vault_auto_lock())
@@ -737,6 +761,38 @@ final class SettingsModel: ObservableObject {
         browser_theme_set_system_dark(isDark)
     }
 
+    func importArcCookies() {
+        guard !arcCookiesImporting else { return }
+        arcCookiesImporting = true
+        arcCookieStatus = "Waiting for keychain access\u{2026}"
+        browser_import_arc_cookies(arcCookieImportCallback, Unmanaged.passRetained(self).toOpaque())
+    }
+
+    func finishArcCookieImport(_ json: String) {
+        arcCookiesImporting = false
+        guard let data = json.data(using: .utf8),
+            let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            arcCookieStatus = "Import failed."
+            return
+        }
+        guard envelope["ok"] as? Bool == true, let payload = envelope["payload"] as? [String: Any]
+        else {
+            arcCookieStatus = envelope["error"] as? String ?? "Import failed."
+            return
+        }
+        let added = payload["added"] as? Int ?? 0
+        let kept = payload["kept"] as? Int ?? 0
+        var parts = ["Imported \(added) cookie\(added == 1 ? "" : "s")."]
+        if kept > 0 {
+            parts.append("Kept \(kept) you already had.")
+        }
+        if added > 0 {
+            parts.append("Reload open tabs to use them.")
+        }
+        arcCookieStatus = parts.joined(separator: " ")
+    }
+
     func setAdblockEnabled(_ enabled: Bool) {
         browser_adblock_set_enabled(enabled)
         BrowserState.shared.refreshAdblock()
@@ -764,5 +820,17 @@ final class SettingsModel: ObservableObject {
             DefaultBrowser.openSystemSettings()
         }
         isDefaultBrowser = DefaultBrowser.isDefault
+    }
+}
+
+/// C-ABI trampoline for `browser_import_arc_cookies`. Non-capturing, so it
+/// coerces to the `@convention(c)` pointer; `context` is the `SettingsModel`
+/// retained at the call, released here. Invoked once on the main thread.
+private func arcCookieImportCallback(_ json: UnsafePointer<CChar>?, _ context: UnsafeMutableRawPointer?) {
+    guard let context else { return }
+    let text = json.map { String(cString: $0) } ?? ""
+    let model = Unmanaged<SettingsModel>.fromOpaque(context).takeRetainedValue()
+    MainActor.assumeIsolated {
+        model.finishArcCookieImport(text)
     }
 }
